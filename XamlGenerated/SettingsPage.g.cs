@@ -40,6 +40,16 @@ public sealed partial class SettingsPage : Page, IComponentConnector
 		XamlScope.Wire(XamlScope.Find(this, "ThemeCombo"), "PointerWheelChanged", this, nameof(Combo_PointerWheelChanged));
 		XamlScope.Wire(XamlScope.Find(this, "BackgroundCombo"), "PointerWheelChanged", this, nameof(Combo_PointerWheelChanged));
 		XamlScope.Wire(XamlScope.Find(this, "PlaybackModeCombo"), "PointerWheelChanged", this, nameof(Combo_PointerWheelChanged));
+		// 窗口行为/功能开关：Toggled 事件挂接（此前全部缺失，开关拨动无任何效果）
+		XamlScope.Wire(XamlScope.Find(this, "FontBoldSwitch"), "Toggled", this, nameof(FontBoldSwitch_Toggled));
+		XamlScope.Wire(XamlScope.Find(this, "ShowTrayIconSwitch"), "Toggled", this, nameof(WindowBehavior_Toggled));
+		XamlScope.Wire(XamlScope.Find(this, "MinimizeToTraySwitch"), "Toggled", this, nameof(WindowBehavior_Toggled));
+		XamlScope.Wire(XamlScope.Find(this, "CloseKeepsRunningSwitch"), "Toggled", this, nameof(WindowBehavior_Toggled));
+		XamlScope.Wire(XamlScope.Find(this, "AutoStartHiddenWindowSwitch"), "Toggled", this, nameof(WindowBehavior_Toggled));
+		XamlScope.Wire(XamlScope.Find(this, "AutoPlaySwitch"), "Toggled", this, nameof(AutoPlaySwitch_Toggled));
+		XamlScope.Wire(XamlScope.Find(this, "AutoStartSwitch"), "Toggled", this, nameof(AutoStartSwitch_Toggled));
+		XamlScope.Wire(XamlScope.Find(this, "AutoStartProxySwitch"), "Toggled", this, nameof(AutoStartProxySwitch_Toggled));
+		XamlScope.Wire(XamlScope.Find(this, "DetectGameSwitch"), "Toggled", this, nameof(DetectGameSwitch_Toggled));
 	}
 
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]

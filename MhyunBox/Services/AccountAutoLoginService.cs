@@ -10,29 +10,14 @@ public static class AccountAutoLoginService
 {
 	private static readonly Dictionary<string, int> RetryCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-	// 网易风控/登录环境异常（login abnormally）账号级冷静期：期间不再发任何登录请求。
-	private static readonly Dictionary<string, DateTime> RiskCooldownUntil = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+	// 设计原则（2026-10-29 定版）：程序侧不设任何自作主张的"风控冷静期/重试上限/程序级暂停"，
+	// 服务器和网易侧没有这些限制，程序也不该替它们猜。只有会话失效才触发重登请求；
+	// 进不去、被拦截都照样照常发请求，仅记录日志供排查。重试计数仅用于日志显示"第 N 次"。
 
-	private static readonly object RiskSync = new object();
-
-	private static readonly TimeSpan RiskCooldown = TimeSpan.FromSeconds(30.0);
-
-	// 重登次数达到上限后的「默认风控期」：程序级暂停，冷却过后该账号的重登上限追加 1 次。
-	private static readonly TimeSpan DefaultCooldown = TimeSpan.FromSeconds(10.0);
-
-	private static DateTime DefaultCooldownUntilUtc = DateTime.MinValue;
-
-	// 各账号的重登上限追加次数（重登成功后清零，上限回到默认值）。
-	private static readonly Dictionary<string, int> RetryBonus = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-	// 同一账号同一时间只允许一个重登任务，避免 S003/S004 两路连接同时失败时各登一次、
-	// 既浪费次数又把网易风控触发得更狠。
+	// 同一账号同一时间只允许一个重登任务，避免 S003/S004 两路连接同时失败时各登一次、重复请求。
 	private static readonly Dictionary<string, Task<bool>> InFlight = new Dictionary<string, Task<bool>>(StringComparer.OrdinalIgnoreCase);
 
 	private static readonly object InFlightSync = new object();
-
-	/// <summary>单账号自动重登次数上限（默认 5）。达到上限后进入默认风控期 10 秒，冷却过后上限追加 1 次；重登成功后计数清零、上限回到默认。</summary>
-	private const int MaxRetry = 5;
 
 	private static readonly Random DelayRandom = new Random();
 
@@ -92,11 +77,6 @@ public static class AccountAutoLoginService
 									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 正在游戏内，跳过周期保活");
 									continue;
 								}
-								if (IsRiskCoolingDown(acc.Channel, acc.Account, out TimeSpan remaining))
-								{
-									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 风控冷静期剩余 " + (int)Math.Ceiling(remaining.TotalSeconds) + " 秒，跳过周期保活");
-									continue;
-								}
 								bool flag = await ReloginViaCookieAsync(acc).ConfigureAwait(continueOnCapturedContext: false);
 								ResetRetry(acc);
 								if (flag)
@@ -149,11 +129,6 @@ public static class AccountAutoLoginService
 								if (ProxyCaptureService.IsAccountInGame(acc.Channel, acc.Account))
 								{
 									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 正在游戏内，跳过账密保活");
-									continue;
-								}
-								if (IsRiskCoolingDown(acc.Channel, acc.Account, out TimeSpan remaining))
-								{
-									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 风控冷静期剩余 " + (int)Math.Ceiling(remaining.TotalSeconds) + " 秒，跳过账密保活");
 									continue;
 								}
 								bool flag = acc.Is4399
@@ -258,15 +233,9 @@ public static class AccountAutoLoginService
 			}
 			// 拉取失败只记日志：不自动取消登录态、不标记失效（账号可能仍可用，由实际进入会话失败时按需重登兜底）
 			LogHelper.Log("[自动登录] 拉取失败: " + acc.Channel + " " + Mask(acc.Account) + " => " + LastReloginMessage);
-			// login abnormally 是风控/登录环境异常：继续账密重登只会加重风控，直接结束本次。
-			if (NeteaseLogin.IsRiskControlText(LastReloginMessage))
-			{
-				SetRiskCooldown(acc, LastReloginMessage);
-				LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 本次为网易风控/登录环境异常，跳过账密重登，进入冷静期");
-				return false;
-			}
 			// 保存了明文账密的账号：Cookie 级拉取失败立即用账密重登换新会话
 			//（4399=重登 4399 换新 Cookie；网易云=账密重新登录网易。不等失效判定，持续挂机）
+			// 注意：即使是网易拦截类失败（login abnormally）也照常继续账密重登——程序侧不做冷静期门槛。
 			if (acc.HasCredentials)
 			{
 				return await (acc.Is4399
@@ -293,12 +262,6 @@ public static class AccountAutoLoginService
 	{
 		try
 		{
-			if (IsRiskCoolingDown(acc.Channel, acc.Account, out TimeSpan remaining))
-			{
-				LastReloginMessage = "网易登录环境异常冷静期，剩余 " + (int)Math.Ceiling(remaining.TotalSeconds) + " 秒";
-				LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 处于风控冷静期，跳过 4399 账密重登");
-				return false;
-			}
 			LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 本地会话已失效，改用保存的 4399 账密直接重登换新 Cookie");
 			string cookie;
 			using (Login4399Service svc = new Login4399Service())
@@ -327,8 +290,7 @@ public static class AccountAutoLoginService
 				LastReloginMessage = result.Message ?? "";
 				if (result.RiskControl || NeteaseLogin.IsRiskControlText(LastReloginMessage))
 				{
-					SetRiskCooldown(acc, LastReloginMessage);
-					LogHelper.Log("[自动登录] 4399 换新 Cookie 后仍被网易风控拦截: " + Mask(acc.Account) + " => " + LastReloginMessage + "（已进入 " + (int)RiskCooldown.TotalSeconds + " 秒冷静期，请勿频繁重登）");
+					LogHelper.Log("[自动登录] 4399 换新 Cookie 后仍被网易拦截: " + Mask(acc.Account) + " => " + LastReloginMessage + "（仅记录，不设冷静期，下次照常请求）");
 					return false;
 				}
 				LogHelper.Log("[自动登录] 4399 换新 Cookie 后拉取仍失败: " + Mask(acc.Account) + " => " + LastReloginMessage);
@@ -364,12 +326,6 @@ public static class AccountAutoLoginService
 	{
 		try
 		{
-			if (IsRiskCoolingDown(acc.Channel, acc.Account, out TimeSpan remaining))
-			{
-				LastReloginMessage = "网易登录环境异常冷静期，剩余 " + (int)Math.Ceiling(remaining.TotalSeconds) + " 秒";
-				LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 处于风控冷静期，跳过网易账密重登");
-				return false;
-			}
 			LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 用保存的网易账密重新登录换新会话");
 			NeteaseLoginResult result;
 			NeteaseLogin login = new NeteaseLogin();
@@ -386,8 +342,7 @@ public static class AccountAutoLoginService
 				LastReloginMessage = result.Message ?? "";
 				if (result.RiskControl || NeteaseLogin.IsRiskControlText(LastReloginMessage))
 				{
-					SetRiskCooldown(acc, LastReloginMessage);
-					LogHelper.Log("[自动登录] 网易账密重登被风控拦截: " + Mask(acc.Account) + " => " + LastReloginMessage + "（已进入 " + (int)RiskCooldown.TotalSeconds + " 秒冷静期，请勿频繁重登）");
+					LogHelper.Log("[自动登录] 网易账密重登被网易拦截: " + Mask(acc.Account) + " => " + LastReloginMessage + "（仅记录，不设冷静期，下次照常请求）");
 					return false;
 				}
 				LogHelper.Log("[自动登录] 网易账密重登失败: " + Mask(acc.Account) + " => " + LastReloginMessage + "（请到账号绑定页重新验证）");
@@ -466,30 +421,10 @@ public static class AccountAutoLoginService
 		{
 			return false;
 		}
-		if (IsRiskCoolingDown(acc.Channel, acc.Account, out TimeSpan remaining))
-		{
-			LastReloginMessage = "网易登录环境异常冷静期，剩余 " + (int)Math.Ceiling(remaining.TotalSeconds) + " 秒";
-			SetStatus("风控冷静期，暂不重登：" + Mask(acc.Account));
-			LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 处于风控冷静期，跳过本次自动重登（剩余 " + (int)Math.Ceiling(remaining.TotalSeconds) + " 秒）");
-			return false;
-		}
-		if (IsDefaultCoolingDown(out TimeSpan defaultRemaining))
-		{
-			LastReloginMessage = "重登次数达上限，默认风控期，剩余 " + (int)Math.Ceiling(defaultRemaining.TotalSeconds) + " 秒";
-			SetStatus("默认风控期，暂不重登：" + Mask(acc.Account));
-			LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 处于默认风控期（重登次数达上限），跳过本次自动重登（剩余 " + (int)Math.Ceiling(defaultRemaining.TotalSeconds) + " 秒）");
-			return false;
-		}
 		LastReloginMessage = "";
 		string key = Key(acc);
 		RetryCounts.TryGetValue(key, out var value);
-		int limit = MaxRetry + GetRetryBonus(key);
-		if (value >= limit)
-		{
-			// 达到重登上限：进入默认风控期 10 秒，冷却过后该账号上限追加 1 次（成功后清零回到默认）。
-			EnterDefaultCooldown(acc, value, limit);
-			return false;
-		}
+		// 不设重试上限与冷静期：会话失效就照常重登，进不去也照常请求（设计原则见文件头注释）。
 		value++;
 		RetryCounts[key] = value;
 		SetStatus("会话失效，正在重登（第 " + value + " 次）：" + Mask(acc.Account));
@@ -512,13 +447,7 @@ public static class AccountAutoLoginService
 				SetStatus("重登成功：" + Mask(acc.Account));
 				return true;
 			}
-			// 账密登录已明确被网易风控拦截：不能再拿旧 Cookie 试，越试越糟。
-			if (NeteaseLogin.IsRiskControlText(LastReloginMessage))
-			{
-				SetRiskCooldown(acc, LastReloginMessage);
-				SetStatus("网易风控冷静期，暂不重登：" + Mask(acc.Account));
-				return false;
-			}
+			// 不因"被网易拦截"而跳过旧 Cookie 回退：照常试一次（可能只是网络抖动）。
 			if (!string.IsNullOrWhiteSpace(acc.CookieJson))
 			{
 				bool okCookie = await ReloginViaCookieAsync(acc, token).ConfigureAwait(continueOnCapturedContext: false);
@@ -632,9 +561,8 @@ public static class AccountAutoLoginService
 	}
 
 	/// <summary>
-	/// 供认证桥等外部链路登记一次网易风控/登录环境异常（例如 GameStart 阶段返回 login abnormally）。
-	/// 与重登路径命中风控时的处理一致：进入账号级冷静期，期间不再自动发任何登录请求，
-	/// 避免越登越糟。非风控文本直接忽略。
+	/// 供认证桥等外部链路记录一次网易拦截（例如 GameStart 阶段返回 login abnormally）。
+	/// 程序侧不设冷静期：只记日志，不影响任何请求节奏（设计原则见文件头注释）。
 	/// </summary>
 	public static void ReportRiskControl(string channel, string account, string message)
 	{
@@ -642,112 +570,30 @@ public static class AccountAutoLoginService
 		{
 			return;
 		}
-		AccountStore.LocalAccount? acc = AccountStore.All.FirstOrDefault((AccountStore.LocalAccount a) => string.Equals(a.Channel, channel ?? "", StringComparison.Ordinal) && string.Equals(a.Account, account.Trim(), StringComparison.OrdinalIgnoreCase));
-		if (acc == null)
-		{
-			return;
-		}
-		SetRiskCooldown(acc, message);
+		LogHelper.Log("[自动登录] " + Mask(account) + " 记录一次网易拦截: " + (message ?? "") + "（仅记录，不设冷静期，请求照常）");
 	}
 
 	private static void SetRiskCooldown(AccountStore.LocalAccount acc, string message)
 	{
-		try
-		{
-			DateTime until = DateTime.UtcNow + RiskCooldown;
-			lock (RiskSync)
-			{
-				RiskCooldownUntil[Key(acc)] = until;
-			}
-			LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 命中网易风控/登录环境异常（" + (message ?? "") + "），进入 " + (int)RiskCooldown.TotalSeconds + " 秒冷静期至 " + until.ToLocalTime().ToString("HH:mm:ss"));
-		}
-		catch
-		{
-		}
+		// 已废弃冷静期机制：仅保留日志，不登记任何拦截门槛
+		LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 命中网易拦截（" + (message ?? "") + "），仅记录不设冷静期");
 	}
 
 	private static bool IsRiskCoolingDown(string channel, string account, out TimeSpan remaining)
 	{
+		// 已废弃冷静期机制：永远不在冷静期，任何调用方照常发请求
 		remaining = TimeSpan.Zero;
-		if (string.IsNullOrWhiteSpace(account))
-		{
-			return false;
-		}
-		string key = (channel ?? "") + "|" + account.Trim();
-		DateTime until;
-		lock (RiskSync)
-		{
-			if (!RiskCooldownUntil.TryGetValue(key, out until))
-			{
-				return false;
-			}
-		}
-		TimeSpan left = until - DateTime.UtcNow;
-		if (left <= TimeSpan.Zero)
-		{
-			lock (RiskSync)
-			{
-				RiskCooldownUntil.Remove(key);
-			}
-			return false;
-		}
-		remaining = left;
-		return true;
+		return false;
 	}
 
 	private static void ClearRiskCooldown(AccountStore.LocalAccount acc)
 	{
-		lock (RiskSync)
-		{
-			RiskCooldownUntil.Remove(Key(acc));
-		}
+		// 已废弃冷静期机制：无需要清理的状态
 	}
 
 	private static void ResetRetry(AccountStore.LocalAccount acc)
 	{
 		RetryCounts.Remove(Key(acc));
-		// 重登成功即重置：上限追加次数也清零，回到默认上限（5 次）
-		lock (RiskSync)
-		{
-			RetryBonus.Remove(Key(acc));
-		}
-	}
-
-	/// <summary>程序级默认风控期（重登次数达到上限后触发）：期间所有账号的自动重登暂停。</summary>
-	private static bool IsDefaultCoolingDown(out TimeSpan remaining)
-	{
-		remaining = TimeSpan.Zero;
-		TimeSpan left = DefaultCooldownUntilUtc - DateTime.UtcNow;
-		if (left <= TimeSpan.Zero)
-		{
-			return false;
-		}
-		remaining = left;
-		return true;
-	}
-
-	/// <summary>达到重登上限：进入默认风控期 10 秒，冷却过后该账号上限追加 1 次。</summary>
-	private static void EnterDefaultCooldown(AccountStore.LocalAccount acc, int usedCount, int limit)
-	{
-		DateTime until = DateTime.UtcNow + DefaultCooldown;
-		string key = Key(acc);
-		int newLimit;
-		lock (RiskSync)
-		{
-			DefaultCooldownUntilUtc = until;
-			RetryBonus.TryGetValue(key, out int bonus);
-			RetryBonus[key] = bonus + 1;
-			newLimit = limit + 1;
-		}
-		LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 已重试 " + usedCount + " 次达到上限 " + limit + "，进入 " + (int)DefaultCooldown.TotalSeconds + " 秒默认风控期至 " + until.ToLocalTime().ToString("HH:mm:ss") + "，冷却后该账号上限提升至 " + newLimit + " 次（重登成功后恢复默认）");
-	}
-
-	private static int GetRetryBonus(string key)
-	{
-		lock (RiskSync)
-		{
-			return RetryBonus.TryGetValue(key, out int bonus) ? bonus : 0;
-		}
 	}
 
 	private static string Key(AccountStore.LocalAccount acc)

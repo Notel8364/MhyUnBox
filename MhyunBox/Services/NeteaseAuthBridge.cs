@@ -218,11 +218,11 @@ public sealed class NeteaseAuthBridge
 				{
 					string text2 = neteaseLoginResult.Message ?? "";
 					// 新游戏报错 login abnormally 属于网易风控/登录环境异常：
-					// 立即再登一次通常会再次被拒，还会加重风控，所以只登记并交给后台冷静期兜底。
+					// 程序侧不设冷静期：记录后交后台兜底重登（会话失效即照常请求）。
 					if (neteaseLoginResult.RiskControl || IsRiskControlMessage(text2))
 					{
-						LastFailReason = "网易登录环境异常（风控拦截）：" + text2 + "。请等待 5-10 分钟后重试，期间不要频繁登录";
-						LogHelper.Force($"[认证] 账号「{account.Nickname}」网易登录环境异常（{text2}），跳过立即账密重登以避免加重风控");
+						LastFailReason = "网易返回登录环境异常：" + text2 + "。程序会自动重试，无需手动操作";
+						LogHelper.Force($"[认证] 账号「{account.Nickname}」网易登录环境异常（{text2}），交后台兜底重登（照常请求）");
 						AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, text2);
 						return false;
 					}
@@ -281,12 +281,12 @@ public sealed class NeteaseAuthBridge
 			if (!tuple.Item1)
 			{
 				string gsMsg = tuple.Item2 ?? "";
-				// GameStart（login-start/start）阶段也可能直接返回 login abnormally（本次换到的会话刚被风控标记）：
-				// 与 login-otp 阶段同策略——登记账号级风控冷静期并交后台兜底，不立即再登加重风控。
+				// GameStart（login-start/start）阶段也可能直接返回 login abnormally（本次换到的会话刚被拒绝）：
+				// 程序侧不设冷静期——记录并交后台兜底重登（90 秒后照常再请求）。
 				if (IsRiskControlMessage(gsMsg))
 				{
-					LastFailReason = "网易登录环境异常（风控拦截）：游戏会话启动失败，" + gsMsg + "。请等待 5-10 分钟后重试，期间不要频繁登录";
-					LogHelper.Force($"[认证] 账号「{account.Nickname}」GameStart 阶段网易登录环境异常（{gsMsg}），登记风控冷静期并交后台兜底");
+					LastFailReason = "网易返回登录环境异常：游戏会话启动失败，" + gsMsg + "。程序会自动重试，无需手动操作";
+					LogHelper.Force($"[认证] 账号「{account.Nickname}」GameStart 阶段网易登录环境异常（{gsMsg}），记录并交后台兜底重登");
 					AccountAutoLoginService.ReportRiskControl(account.Channel, account.Account, gsMsg);
 					AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, gsMsg);
 					return false;
@@ -370,12 +370,12 @@ public sealed class NeteaseAuthBridge
 							else
 							{
 								string retryGsMsg = text5 ?? "";
-								// 重登后 GameStart 仍失败：若为风控（login abnormally），登记冷静期并交后台兜底，
-								// 不能立刻再登第三次；否则按普通会话启动失败记录。
+								// 重登后 GameStart 仍失败：若为 login abnormally，记录并交后台兜底（照常再请求）；
+								// 否则按普通会话启动失败记录。
 								if (IsRiskControlMessage(retryGsMsg))
 								{
-									LastFailReason = "网易登录环境异常（风控拦截）：自动重登后游戏会话启动仍失败，" + retryGsMsg + "。请等待 5-10 分钟后重试";
-									LogHelper.Force($"[认证] 账号「{account.Nickname}」重登后 GameStart 阶段网易登录环境异常（{retryGsMsg}），登记风控冷静期");
+									LastFailReason = "网易返回登录环境异常：自动重登后游戏会话启动仍失败，" + retryGsMsg + "。程序会自动重试";
+									LogHelper.Force($"[认证] 账号「{account.Nickname}」重登后 GameStart 阶段网易登录环境异常（{retryGsMsg}），记录并交后台兜底重登");
 									AccountAutoLoginService.ReportRiskControl(account.Channel, account.Account, retryGsMsg);
 									AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, retryGsMsg);
 								}

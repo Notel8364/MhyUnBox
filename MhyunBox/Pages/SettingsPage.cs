@@ -1189,9 +1189,34 @@ public sealed partial class SettingsPage : Page
 	private void WindowBehavior_Toggled(object sender, RoutedEventArgs e)
 	{
 		SaveAndApply();
-		if (ReferenceEquals(sender, AutoStartHiddenWindowSwitch))
+		if (!_loading)
 		{
-			SyncAutoStartRegistry();
+			if (ReferenceEquals(sender, ShowTrayIconSwitch))
+			{
+				MainWindow.Instance?.ShowToast(ShowTrayIconSwitch.IsOn ? "已开启托盘小图标" : "已关闭托盘小图标");
+			}
+			else if (ReferenceEquals(sender, MinimizeToTraySwitch))
+			{
+				MainWindow.Instance?.ShowToast(MinimizeToTraySwitch.IsOn ? "最小化时将隐藏到托盘" : "最小化时显示在任务栏");
+			}
+			else if (ReferenceEquals(sender, CloseKeepsRunningSwitch))
+			{
+				MainWindow.Instance?.ShowToast(CloseKeepsRunningSwitch.IsOn ? "关闭窗口时保留进程（托盘）" : "关闭窗口时退出程序");
+			}
+			else if (ReferenceEquals(sender, AutoStartHiddenWindowSwitch))
+			{
+				SyncAutoStartRegistry();
+				MainWindow.Instance?.ShowToast(AutoStartHiddenWindowSwitch.IsOn ? "开机自启时静默启动到托盘" : "开机自启时正常显示窗口");
+			}
+		}
+	}
+
+	private void AutoPlaySwitch_Toggled(object sender, RoutedEventArgs e)
+	{
+		SaveAndApply();
+		if (!_loading)
+		{
+			MainWindow.Instance?.ShowToast(AutoPlaySwitch.IsOn ? "已开启：启动时自动播放音乐" : "已关闭：启动时不自动播放音乐");
 		}
 	}
 
