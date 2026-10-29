@@ -824,6 +824,104 @@ public static class AppLock
 		}
 	}
 
+	/// <summary>
+	/// 账号被删除时，同步把该账号从验证账号列表与验证包裹中移除（AccountStore.Remove 调用）。
+	/// 与手动「取消验证」不同：账号已物理删除，必须移除且允许列表被清空 ——
+	/// 清空后回到「自动默认」模式（下次账号登入时 RefreshNeteaseWrap 自动补录）。
+	/// 否则会残留已删账号的验证标记：该号已不在账号列表里，「设为验证/取消验证」都碰不到它，
+	/// 但它的包裹仍能用于解锁，且占用 3 个验证账号名额。
+	/// </summary>
+	public static void RemoveAccountFromVerification(string account)
+	{
+		try
+		{
+			string name = (account ?? "").Trim();
+			if (string.IsNullOrWhiteSpace(name))
+			{
+				return;
+			}
+			LockRecord? record = _record ?? LoadRecord();
+			if (record == null)
+			{
+				return;
+			}
+			if (record != _record)
+			{
+				_record = record;
+			}
+			List<string> list = GetPreferredList(record);
+			int removedPref = list.RemoveAll((string p) => SameAccountName(p, name));
+			if (list.Count == 0 && removedPref > 0)
+			{
+				// 指定列表被清空：回到自动默认模式，不残留任何已删账号
+				record.NetAccountPreferred = "";
+				record.NetAccountPreferredList = null;
+			}
+			List<NetWrapEntry> wraps = GetNetWraps(record);
+			int removedWrap = wraps.RemoveAll((NetWrapEntry w) => SameAccountName(w.Account, name));
+			if (wraps.Count > 0)
+			{
+				// 旧单账号字段镜像第一个（兼容旧读取路径）
+				record.NetAccount = wraps[0].Account;
+				record.NetWrapSalt = wraps[0].WrapSalt;
+				record.NetWrapped = wraps[0].Wrapped;
+			}
+			else if (removedWrap > 0)
+			{
+				// 包裹全没了（被删账号是最后一个验证账号）：清空旧镜像，
+				// 该账号不得再用于解锁；下次账号登入时 RefreshNeteaseWrap 自动重建验证通道
+				record.NetAccount = "";
+				record.NetWrapSalt = "";
+				record.NetWrapped = "";
+			}
+			if (removedPref > 0 || removedWrap > 0)
+			{
+				SecureStore.Save(RecordName, JsonSerializer.Serialize(_record));
+				RefreshNeteaseWrap();
+				LogHelper.Log("[程序锁] 账号 " + MaskName(name) + " 已删除，同步移除其验证账号记录与验证包裹");
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[程序锁] 删除账号后清理验证账号记录失败");
+		}
+	}
+
+	/// <summary>清空全部账号时，把整个验证账号指定列表与包裹全部移除（回到自动默认模式）。</summary>
+	public static void ClearNetVerification()
+	{
+		try
+		{
+			LockRecord? record = _record ?? LoadRecord();
+			if (record == null)
+			{
+				return;
+			}
+			if (record != _record)
+			{
+				_record = record;
+			}
+			bool had = !string.IsNullOrEmpty(record.NetAccountPreferred)
+				|| (record.NetAccountPreferredList != null && record.NetAccountPreferredList.Count > 0)
+				|| !string.IsNullOrEmpty(record.NetWrapped);
+			record.NetAccountPreferred = "";
+			record.NetAccountPreferredList = null;
+			record.NetAccount = "";
+			record.NetWrapSalt = "";
+			record.NetWrapped = "";
+			if (had)
+			{
+				SecureStore.Save(RecordName, JsonSerializer.Serialize(_record));
+				RefreshNeteaseWrap();
+				LogHelper.Log("[程序锁] 已清空全部账号，验证账号记录与验证包裹已同步清除（下次登入自动重建）");
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[程序锁] 清空验证账号记录失败");
+		}
+	}
+
 	/// <summary>验证账号的掩码列表（如 "hq***、te***"），避免弹窗里直接暴露完整账号。</summary>
 	public static string NetAccountHint
 	{

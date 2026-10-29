@@ -178,7 +178,7 @@ public static class CliArgs
 			case 't':
 				if (text == "--theme")
 				{
-					s.ThemeMode = Normalize(value, s.ThemeMode, "system", "dark", "light");
+					s.ThemeMode = Normalize(value, s.ThemeMode, "system", "dark", "light", "black");
 				}
 				break;
 			}

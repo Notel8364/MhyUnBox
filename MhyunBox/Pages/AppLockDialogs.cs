@@ -218,6 +218,8 @@ public static class AppLockDialogs
 				(bool Ok2, string Message2) = AccountStore.BindVerified(result.Channel, account, result);
 				if (Ok2)
 				{
+					// 手动账密登录成功：解除该账号的自动登录暂停（手动不受限，成功即说明会话已恢复）
+					AccountAutoLoginService.ClearAutoLoginSuspension(result.Channel, account);
 					foreach (AccountStore.LocalAccount a in AccountStore.All)
 					{
 						if (AppLock.SameAccountName(a.Account, account) && a.Channel == result.Channel)

@@ -92,6 +92,20 @@ public sealed class ShopPage : Page
 		}
 	}
 
+	/// <summary>
+	/// 商城列表底色：透明深色下不用 ListSurface 的不透明纯深灰（在浅色壁纸上是一块死黑，
+	/// 与半透明内容卡片风格脱节），改用半透明深色让壁纸微微透出；
+	/// 黑底深色给实黑；浅色主题维持不透明白。
+	/// </summary>
+	private static Brush ListBackground()
+	{
+		if (ThemeHelper.IsDark)
+		{
+			return new SolidColorBrush(ThemeHelper.IsBlack ? Color.FromArgb(255, 10, 10, 10) : Color.FromArgb(140, 22, 22, 22));
+		}
+		return ThemeHelper.ListSurface();
+	}
+
 	public ShopPage()
 	{
 		_queue = DispatcherQueue;
@@ -102,6 +116,20 @@ public sealed class ShopPage : Page
 
 	private void OnLoaded(object sender, RoutedEventArgs e)
 	{
+		// 主题切换后页面重建前 Loaded 仍可能先走到：按当前主题重刷列表底色，避免旧快照
+		Brush listBg = ListBackground();
+		if (_accountList != null)
+		{
+			_accountList.Background = listBg;
+		}
+		if (_categoryList != null)
+		{
+			_categoryList.Background = listBg;
+		}
+		if (_itemList != null)
+		{
+			_itemList.Background = listBg;
+		}
 		PopulateAccounts();
 		PopulateServerPresets();
 		_loading = true;
@@ -700,7 +728,7 @@ public sealed class ShopPage : Page
 			IsItemClickEnabled = true,
 			ItemTemplate = AccountTemplate,
 			ItemContainerStyle = LoadLibraryItemStyle(),
-			Background = ThemeHelper.ListSurface()
+			Background = ListBackground()
 		};
 		_accountList.SelectionChanged += AccountList_SelectionChanged;
 		accountCol.Children.Add(_accountList);
@@ -768,7 +796,7 @@ public sealed class ShopPage : Page
 		{
 			SelectionMode = ListViewSelectionMode.Single,
 			ItemTemplate = CategoryTemplate,
-			Background = ThemeHelper.ListSurface()
+			Background = ListBackground()
 		};
 		_categoryList.SelectionChanged += CategoryList_SelectionChanged;
 		Border categoryBorder = WrapCard(_categoryList);
@@ -785,7 +813,7 @@ public sealed class ShopPage : Page
 		{
 			SelectionMode = ListViewSelectionMode.Single,
 			ItemTemplate = ItemTemplate,
-			Background = ThemeHelper.ListSurface()
+			Background = ListBackground()
 		};
 		_itemList.DoubleTapped += ItemList_DoubleTapped;
 		Border itemBorder = WrapCard(_itemList);

@@ -7,6 +7,8 @@ using Windows.UI;
 
 namespace MhyunBox.Services;
 
+using MhyunBox.Settings;
+
 /// <summary>
 /// 全项目统一主题解析中心。
 /// 背景：WinUI3 里代码后置（C# 构建 UI）拿不到元素级主题解析——
@@ -67,6 +69,22 @@ internal static class ThemeHelper
 		}
 	}
 
+	/// <summary>当前是否黑底深色主题（ThemeMode = black，深色的不透明变体：内容块/选项全黑底，文字清晰）。</summary>
+	public static bool IsBlack
+	{
+		get
+		{
+			try
+			{
+				return string.Equals(SettingsManager.Instance?.ThemeMode, "black", StringComparison.OrdinalIgnoreCase);
+			}
+			catch
+			{
+				return false;
+			}
+		}
+	}
+
 	/// <summary>
 	/// 按当前主题解析主题资源键。返回的画笔始终非 null。
 	/// 顺序：强调色特殊处理 → 内置调色板（深浅成对） → 框架资源查找 → 中性兜底。
@@ -88,7 +106,12 @@ internal static class ThemeHelper
 		}
 		if (Palette.TryGetValue(key, out ThemeColorPair pair))
 		{
-			return new SolidColorBrush(dark ? pair.Dark : pair.Light);
+			Color color = dark ? pair.Dark : pair.Light;
+			if (dark && IsBlack)
+			{
+				color = BlackModeColor(key, color);
+			}
+			return new SolidColorBrush(color);
 		}
 		// 框架资源兜底：浅色主题下代码查找与应用级主题一致，可直接用；
 		// 深色主题下代码查找可能拿到浅色画笔（应用级主题不会跟随切换），只有结果明显是浅色系时才改用中性深色。
@@ -175,10 +198,33 @@ internal static class ThemeHelper
 		}
 	}
 
-	/// <summary>列表容器（ListView/ListBox）的底色：必须不透明，否则深色下半透明层色与页面文字糊在一起。</summary>
+	/// <summary>列表容器（ListView/ListBox）的底色：必须不透明，否则深色下半透明层色与页面文字糊在一起。黑底深色下给纯黑底。</summary>
 	public static Brush ListSurface()
 	{
-		return new SolidColorBrush(IsDark ? Color.FromArgb(255, 36, 36, 36) : Color.FromArgb(255, 255, 255, 255));
+		if (IsDark)
+		{
+			return new SolidColorBrush(IsBlack ? Color.FromArgb(255, 10, 10, 10) : Color.FromArgb(255, 36, 36, 36));
+		}
+		return new SolidColorBrush(Color.FromArgb(255, 255, 255, 255));
+	}
+
+	/// <summary>
+	/// 黑底深色模式的调色映射：把深色半透明卡片/容器换成不透明黑系，
+	/// 内容块与选项背景都是实黑，白色文字对比清晰（用户定版 2026-10-29）。
+	/// </summary>
+	private static Color BlackModeColor(string key, Color dark)
+	{
+		return key switch
+		{
+			"CardBackgroundFillColorDefaultBrush"
+			or "AcrylicBackgroundFillColorDefaultBrush"
+			or "LayerFillColorDefaultBrush"
+			or "ApplicationPageBackgroundThemeBrush"
+			or "SolidBackgroundFillColorBase" => Color.FromArgb(255, 12, 12, 12),
+			"CardBackgroundFillColorSecondaryBrush" => Color.FromArgb(255, 18, 18, 18),
+			"ControlFillColorSecondaryBrush" => Color.FromArgb(255, 30, 30, 30),
+			_ => dark
+		};
 	}
 
 	private static Brush NeutralFill(string key = null)

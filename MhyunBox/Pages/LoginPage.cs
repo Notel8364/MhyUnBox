@@ -29,6 +29,12 @@ public sealed partial class LoginPage : Page
 
 	private bool _busy;
 
+	private Border? RiskBannerBorder;
+
+	private TextBlock? RiskBannerText;
+
+	private Microsoft.UI.Dispatching.DispatcherQueueTimer? _riskTimer;
+
 	private StackPanel LoginRoot;
 
 	private InfoBar StatusBar;
@@ -567,6 +573,30 @@ public sealed partial class LoginPage : Page
 		Grid.SetColumnSpan(AutoLoginHint, 2);
 		grid.Children.Add(AutoLoginHint);
 		stackPanel.Children.Add(grid);
+		// 网易 IP 风控标记倒计时横幅（纯信息展示，不设请求门槛；触发时出现，登录成功自动消失）
+		RiskBannerBorder = new Border
+		{
+			Background = new SolidColorBrush(Color.FromArgb(230, 120, 53, 15)),
+			CornerRadius = new CornerRadius(6.0),
+			Padding = new Thickness(10.0, 6.0, 10.0, 6.0),
+			Visibility = Visibility.Collapsed
+		};
+		RiskBannerText = new TextBlock
+		{
+			FontSize = 12.0,
+			TextWrapping = TextWrapping.Wrap,
+			Foreground = new SolidColorBrush(Colors.White)
+		};
+		RiskBannerBorder.Child = RiskBannerText;
+		stackPanel.Children.Add(RiskBannerBorder);
+		RiskNotice.Changed += OnRiskNoticeChanged;
+		_riskTimer = _queue.CreateTimer();
+		_riskTimer.Interval = TimeSpan.FromSeconds(1.0);
+		_riskTimer.Tick += delegate
+		{
+			UpdateRiskBanner();
+		};
+		_riskTimer.Start();
 		SessionListPanel = new StackPanel
 		{
 			Spacing = 8.0
@@ -737,6 +767,11 @@ public sealed partial class LoginPage : Page
 				_smsCodeSent = true;
 			}
 			ShowInfo(message, flag, flag ? "验证码已发送" : null);
+			// 验证码发送达到上限：引导改用网页验证（短信上行等），完成后可回来重试
+			if (!flag && !string.IsNullOrEmpty(message) && (message.Contains("上限") || message.Contains("频繁") || message.Contains("稍后再试") || message.Contains("too many") || message.Contains("Too Many") || message.Contains("frequency")))
+			{
+				ShowSmsLimitDialog(phone, channel);
+			}
 			UpdateChannelMarkers();
 		}
 		finally
@@ -940,6 +975,8 @@ public sealed partial class LoginPage : Page
 					neteaseLoginResult.CookieJson = Current?.CookieJson ?? "";
 				}
 				string item = AccountStore.BindVerified(storeChannel, account, neteaseLoginResult).Message;
+				// 手动登录成功：解除该账号的自动登录暂停（手动不受限，成功即说明会话已恢复）
+				AccountAutoLoginService.ClearAutoLoginSuspension(storeChannel, account);
 				// 账密登录（4399 账密 / 网易账密直登，均非短信验证码）：明文保存账密，供自动重登持续换新会话（每 30 分钟账密重拉 + 失效兜底）
 				if ((storeChannel == "4399" || storeChannel == "netease") && !smsLogin && !string.IsNullOrWhiteSpace(password))
 				{
@@ -1136,10 +1173,99 @@ public sealed partial class LoginPage : Page
 		bool flag = list.Any((AccountStore.LocalAccount a) => a.AutoLogin);
 		AutoLoginAllButton.Visibility = Visibility.Visible;
 		AutoLoginAllButton.Content = (flag ? "关闭自动登录" : "自动登录");
-		AutoLoginHint.Text = (flag ? ("自动登录已开启（已开启 " + list.Count((AccountStore.LocalAccount a) => a.AutoLogin) + " 个）：每 5 分钟自动保活换新 token，4399 账号会话失效时自动用保存的账密重登换新 Cookie（持续挂机防掉号）；进入服务器时也会自动换取新 token。当前已登录 " + num + " 个。") : "");
+		AutoLoginHint.Text = (flag ? ("自动登录已开启（已开启 " + list.Count((AccountStore.LocalAccount a) => a.AutoLogin) + " 个）：每 5 分钟自动保活换新 token，4399 账号会话失效时自动用保存的账密重登换新 Cookie（持续挂机防掉号）；进入服务器时也会自动换取新 token。当前已登录 " + num + " 个。\n⚠ 自承风控标记风险：自动登录会周期性请求网易，可能触发网易 IP 级登录环境风控（login abnormally），风险自担。") : "");
+		// 平铺展示全部账号（用户定版：不再按渠道插分组头，账号列表直接排列）
 		foreach (AccountStore.LocalAccount item in list)
 		{
 			SessionListPanel.Children.Add(BuildAccountRow(item));
+		}
+	}
+
+	private void OnRiskNoticeChanged()
+	{
+		_queue.TryEnqueue(delegate
+		{
+			UpdateRiskBanner();
+		});
+	}
+
+	private void UpdateRiskBanner()
+	{
+		if (RiskBannerBorder == null || RiskBannerText == null)
+		{
+			return;
+		}
+		string? text = RiskNotice.BannerText();
+		if (text == null)
+		{
+			RiskBannerBorder.Visibility = Visibility.Collapsed;
+			return;
+		}
+		RiskBannerText.Text = text;
+		RiskBannerBorder.Visibility = Visibility.Visible;
+	}
+
+	/// <summary>
+	/// 验证码发送达到上限时的引导弹窗：改用网页验证（短信上行等），完成后回来重试发送。
+	/// </summary>
+	private async void ShowSmsLimitDialog(string phone, string channel)
+	{
+		try
+		{
+			ContentDialog contentDialog = new ContentDialog
+			{
+				Title = "验证码发送已达上限",
+				Content = new TextBlock
+				{
+					Text = "该手机号今日免费验证码发送数量已达上限，改用网页验证：\n\n1. 点「打开网易登录页」，在网页完成登录/安全验证（如页面要求向指定号码发送验证短信，请按页面提示用手机发送）\n2. 完成后回到这里点「我已完成」，再点「发送验证码」重试\n\n网页验证通过后本机网络环境的风险等级会降低，验证码通常即可恢复发送。",
+					TextWrapping = TextWrapping.Wrap
+				},
+				PrimaryButtonText = "打开网易登录页",
+				SecondaryButtonText = "我已完成",
+				CloseButtonText = "取消",
+				DefaultButton = ContentDialogButton.Primary,
+				XamlRoot = XamlRoot
+			};
+			ContentDialogResult contentDialogResult = await contentDialog.ShowAsync();
+			if (contentDialogResult == ContentDialogResult.Primary)
+			{
+				Process.Start(new ProcessStartInfo("https://pay.163.com/")
+				{
+					UseShellExecute = true
+				});
+			}
+			else if (contentDialogResult == ContentDialogResult.Secondary)
+			{
+				SendCodeButton.IsEnabled = false;
+				StatusBar.IsOpen = false;
+				try
+				{
+					var (flag2, message2) = await Task.Run(async delegate
+					{
+						if (channel == "4399")
+						{
+							using (Login4399Service login4399Service = new Login4399Service())
+							{
+								return ((bool Ok, string Message))(await login4399Service.SendSmsCodeAsync(phone));
+							}
+						}
+						using NeteaseLogin login = new NeteaseLogin();
+						return ((bool Ok, string Message))(await login.SendSmsCodeAsync(phone));
+					});
+					if (flag2)
+					{
+						_smsCodeSent = true;
+					}
+					ShowInfo(message2, flag2, flag2 ? "验证码已发送" : null);
+				}
+				finally
+				{
+					SendCodeButton.IsEnabled = true;
+				}
+			}
+		}
+		catch
+		{
 		}
 	}
 
@@ -1254,6 +1380,8 @@ public sealed partial class LoginPage : Page
 						if (await TryReloginAsync(cur))
 						{
 							AccountStore.SetLoginState(cur.Channel, cur.Account, loggedIn: true);
+							// 手动登录成功：解除该账号的自动登录暂停（手动不受限，成功即说明会话已恢复）
+							AccountAutoLoginService.ClearAutoLoginSuspension(cur.Channel, cur.Account);
 							ElsewhereLoginNotice.Clear(cur.Channel, cur.Account);
 							ProxyCaptureService.RestartIfRunningForPreset();
 							ShowInfo("已登录该账号，加入代理分配池。", ok: true, "登录成功");
@@ -1284,7 +1412,7 @@ public sealed partial class LoginPage : Page
 		{
 			AccountStore.Remove(acc.Channel, acc.Account);
 			ProxyCaptureService.RestartIfRunningForPreset();
-			ShowInfo("已删除该账号及其保存的会话，并移除其角色记录与端口记忆。", ok: true, "删除账号");
+			ShowInfo("已删除该账号及其保存的会话，验证账号记录已同步移除。分组角色与端口记忆已保留，重新绑定同账号可继续使用；手动启动代理时会自动跳过已删账号。", ok: true, "删除账号");
 			RefreshAccountList();
 		};
 		Grid.SetColumn(button2, 3);
@@ -1379,7 +1507,7 @@ public sealed partial class LoginPage : Page
 			if (await DialogGate.ShowAsync(new ContentDialog
 			{
 				Title = "全部删除确认",
-				Content = "确定要删除全部 " + accounts.Count + " 个已保存的账号会话吗？将同时删除各账号的登录凭证与角色记录、端口记忆，且不可恢复。",
+				Content = "确定要删除全部 " + accounts.Count + " 个已保存的账号会话吗？将同时删除各账号的登录凭证与验证账号记录，且不可恢复。分组角色与端口记忆会保留（重新绑定后可继续使用，启动代理时自动跳过已删账号）。",
 				PrimaryButtonText = "全部删除",
 				CloseButtonText = "取消",
 				DefaultButton = ContentDialogButton.Close,
@@ -1397,7 +1525,7 @@ public sealed partial class LoginPage : Page
 				}
 				ProxyCaptureService.RestartIfRunningForPreset();
 				LogHelper.Log("[账号] 全部删除账号会话: " + accounts.Count + " 个");
-				ShowInfo("已删除全部 " + accounts.Count + " 个账号会话及其关联记录。", ok: true, "全部删除");
+				ShowInfo("已删除全部 " + accounts.Count + " 个账号会话及其登录凭证，验证账号记录已同步移除。分组角色与端口记忆保留。", ok: true, "全部删除");
 				RefreshAccountList();
 			}
 			catch (Exception ex)

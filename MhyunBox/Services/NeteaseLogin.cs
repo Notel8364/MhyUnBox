@@ -486,12 +486,17 @@ public sealed class NeteaseLogin : IDisposable
 			var (authOtp, text) = await LoginSessionAsync(cookieJson);
 			if (authOtp == null)
 			{
+				bool risk = IsRiskControlText(text);
+				// 文案按真实原因区分：风控拦截≠会话失效，不能一律写"会话已失效"误导用户去重新验证绑定
+				string message = risk
+					? (text ?? "login-otp 登录环境异常") + "。程序会自动重试；若持续出现，多为当前网络出口被网易风控拦截，建议更换网络环境"
+					: "会话已失效，请重新验证：" + text;
 				return new NeteaseLoginResult
 				{
 					Success = false,
-					Message = "会话已失效，请重新验证：" + text,
-					SessionExpired = true,
-					RiskControl = IsRiskControlText(text),
+					Message = message,
+					SessionExpired = !risk,
+					RiskControl = risk,
 					FailureStage = "login-otp",
 					FailureStatus = text ?? ""
 				};
@@ -1111,6 +1116,7 @@ public sealed class NeteaseLogin : IDisposable
 		}
 		string text2 = text.ToLowerInvariant();
 		return text2.Contains("login abnormally")
+			|| text2.Contains("loginabnormally")
 			|| text2.Contains("login abnormal")
 			|| text2.Contains("abnormal login")
 			|| text2.Contains("risk control")

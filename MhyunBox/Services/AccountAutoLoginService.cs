@@ -10,12 +10,24 @@ public static class AccountAutoLoginService
 {
 	private static readonly Dictionary<string, int> RetryCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-	// 设计原则（2026-10-29 定版）：程序侧不设任何自作主张的"风控冷静期/重试上限/程序级暂停"，
-	// 服务器和网易侧没有这些限制，程序也不该替它们猜。只有会话失效才触发重登请求；
-	// 进不去、被拦截都照样照常发请求，仅记录日志供排查。重试计数仅用于日志显示"第 N 次"。
+	// 设计原则（2026-10-29 定版）：程序侧不设任何自作主张的"风控冷静期"，服务器和网易侧没有的限制
+	// 程序也不替它们猜：进不去、被拦截都照样照常发请求，仅记录日志供排查。
+	// 唯一例外是用户本轮明确要求的：自动重登连续失败 3 次 → 暂停自动登录 30 分钟（手动不受限，见下方注释）。
 
 	// 同一账号同一时间只允许一个重登任务，避免 S003/S004 两路连接同时失败时各登一次、重复请求。
 	private static readonly Dictionary<string, Task<bool>> InFlight = new Dictionary<string, Task<bool>>(StringComparer.OrdinalIgnoreCase);
+
+	// 用户定版（2026-10-29）：自动重登连续失败达到 3 次时，暂停该账号的自动登录 30 分钟
+	//（防止会话彻底坏掉时无限循环打扰网易）；手动登录/手动会话拉取不受任何限制，
+	// 且手动登录成功后立即解除暂停。计数只统计「自动路径」的整体连续失败，
+	// 不受 ResetRetryFor（后台兜底新一轮清零）影响。
+	private const int MaxConsecutiveAutoFailures = 3;
+
+	private static readonly TimeSpan AutoSuspendDuration = TimeSpan.FromMinutes(30.0);
+
+	private static readonly Dictionary<string, int> ConsecutiveAutoFailures = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+	private static readonly Dictionary<string, DateTimeOffset> AutoSuspendedUntil = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
 
 	private static readonly object InFlightSync = new object();
 
@@ -77,6 +89,11 @@ public static class AccountAutoLoginService
 									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 正在游戏内，跳过周期保活");
 									continue;
 								}
+								if (IsAutoLoginSuspended(acc.Channel, acc.Account))
+								{
+									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 自动登录暂停期（连续重登失败 3 次），跳过周期保活");
+									continue;
+								}
 								bool flag = await ReloginViaCookieAsync(acc).ConfigureAwait(continueOnCapturedContext: false);
 								ResetRetry(acc);
 								if (flag)
@@ -129,6 +146,11 @@ public static class AccountAutoLoginService
 								if (ProxyCaptureService.IsAccountInGame(acc.Channel, acc.Account))
 								{
 									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 正在游戏内，跳过账密保活");
+									continue;
+								}
+								if (IsAutoLoginSuspended(acc.Channel, acc.Account))
+								{
+									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 自动登录暂停期（连续重登失败 3 次），跳过账密保活");
 									continue;
 								}
 								bool flag = acc.Is4399
@@ -191,6 +213,8 @@ public static class AccountAutoLoginService
 					else if (await ReloginAsync(acc, token).ConfigureAwait(continueOnCapturedContext: false))
 					{
 						AccountStore.SetLoginState(acc.Channel, acc.Account, loggedIn: true);
+						// 手动会话拉取成功同样解除自动登录暂停（手动不受限，成功即说明会话已恢复）
+						ClearAutoLoginSuspension(acc.Channel, acc.Account);
 						ok++;
 					}
 					else
@@ -305,6 +329,7 @@ public static class AccountAutoLoginService
 			AccountStore.BindVerified(acc.Channel, acc.Account, result);
 			AccountStore.SetLoginState(acc.Channel, acc.Account, loggedIn: true);
 			ClearRiskCooldown(acc);
+			RiskNotice.Clear();
 			ElsewhereLoginNotice.Clear(acc.Channel, acc.Account);
 			LogHelper.Log("[自动登录] 4399 账密重登成功，已换新 Cookie 并拉取 token: " + acc.Channel + " " + Mask(acc.Account));
 			return true;
@@ -361,6 +386,7 @@ public static class AccountAutoLoginService
 			AccountStore.BindVerified(acc.Channel, acc.Account, result);
 			AccountStore.SetLoginState(acc.Channel, acc.Account, loggedIn: true);
 			ClearRiskCooldown(acc);
+			RiskNotice.Clear();
 			ElsewhereLoginNotice.Clear(acc.Channel, acc.Account);
 			LogHelper.Log("[自动登录] 网易账密重登成功，已换新会话: " + acc.Channel + " " + Mask(acc.Account));
 			return true;
@@ -385,6 +411,21 @@ public static class AccountAutoLoginService
 		string key = (channel ?? "") + "|" + (account ?? "").Trim();
 		lock (InFlightSync)
 		{
+			// 用户定版限制：连续 3 次自动重登失败后暂停自动登录 30 分钟（手动登录走 ReloginAsync，不经过这里，不受限）
+			if (AutoSuspendedUntil.TryGetValue(key, out DateTimeOffset suspendedUntil) && suspendedUntil > DateTimeOffset.Now)
+			{
+				TimeSpan remaining = suspendedUntil - DateTimeOffset.Now;
+				SetStatus("自动登录已暂停（连续失败 3 次），约 " + (int)Math.Ceiling(remaining.TotalMinutes) + " 分钟后恢复：" + Mask(account));
+				LogHelper.Log("[自动登录] " + Mask(account) + " 处于自动重登暂停期（连续失败 3 次触发），剩余约 " + (int)Math.Ceiling(remaining.TotalMinutes) + " 分钟，本次自动重登跳过（手动登录不受影响）");
+				return Task.FromResult(false);
+			}
+			if (AutoSuspendedUntil.ContainsKey(key))
+			{
+				// 暂停已到期，恢复正常自动重登并重新计数
+				AutoSuspendedUntil.Remove(key);
+				ConsecutiveAutoFailures.Remove(key);
+				LogHelper.Log("[自动登录] " + Mask(account) + " 暂停期已过，恢复自动重登");
+			}
 			if (InFlight.TryGetValue(key, out Task<bool>? running) && !running.IsCompleted)
 			{
 				LogHelper.Log("[自动登录] " + Mask(account) + " 已有重登请求进行中，复用本次结果");
@@ -400,7 +441,28 @@ public static class AccountAutoLoginService
 	{
 		try
 		{
-			return await task.ConfigureAwait(continueOnCapturedContext: false);
+			bool ok = await task.ConfigureAwait(continueOnCapturedContext: false);
+			lock (InFlightSync)
+			{
+				if (ok)
+				{
+					ConsecutiveAutoFailures.Remove(key);
+				}
+				else
+				{
+					ConsecutiveAutoFailures.TryGetValue(key, out int failures);
+					failures++;
+					ConsecutiveAutoFailures[key] = failures;
+					if (failures >= MaxConsecutiveAutoFailures && !AutoSuspendedUntil.ContainsKey(key))
+					{
+						DateTimeOffset until = DateTimeOffset.Now.Add(AutoSuspendDuration);
+						AutoSuspendedUntil[key] = until;
+						LogHelper.Force("[自动登录] 账号 " + Mask(key.Split('|')[1]) + " 连续 " + failures + " 次自动重登失败，自动登录已暂停 30 分钟（至 " + until.ToLocalTime().ToString("HH:mm") + "）。手动登录/手动验证不受限制，手动成功后立即恢复");
+						SetStatus("自动登录已暂停 30 分钟（连续失败 3 次）：" + Mask(key.Split('|')[1]));
+					}
+				}
+			}
+			return ok;
 		}
 		finally
 		{
@@ -524,6 +586,8 @@ public static class AccountAutoLoginService
 		if (localAccount != null)
 		{
 			ResetRetry(localAccount);
+			// 进服成功说明会话可用，解除自动登录暂停（如有）
+			ClearAutoLoginSuspension(channel, account);
 		}
 	}
 
@@ -561,6 +625,47 @@ public static class AccountAutoLoginService
 	}
 
 	/// <summary>
+	/// 该账号的自动登录是否处于暂停期（连续 3 次自动重登失败触发，30 分钟）。
+	/// 周期保活等自动链路用这个跳过暂停账号；手动登录不应检查此方法（手动不受限）。
+	/// </summary>
+	public static bool IsAutoLoginSuspended(string channel, string account)
+	{
+		string key = (channel ?? "") + "|" + (account ?? "").Trim();
+		lock (InFlightSync)
+		{
+			if (AutoSuspendedUntil.TryGetValue(key, out DateTimeOffset until))
+			{
+				if (until > DateTimeOffset.Now)
+				{
+					return true;
+				}
+				// 暂停到期：顺便清掉状态，下次自动重登从零计数
+				AutoSuspendedUntil.Remove(key);
+				ConsecutiveAutoFailures.Remove(key);
+			}
+		}
+		return false;
+	}
+
+	/// <summary>
+	/// 解除自动登录暂停并清零连续失败计数。手动登录/手动验证成功后调用——
+	/// 手动能登上说明会话已恢复，没理由再让自动链路等满 30 分钟。
+	/// </summary>
+	public static void ClearAutoLoginSuspension(string channel, string account)
+	{
+		string key = (channel ?? "") + "|" + (account ?? "").Trim();
+		lock (InFlightSync)
+		{
+			bool had = AutoSuspendedUntil.Remove(key);
+			ConsecutiveAutoFailures.Remove(key);
+			if (had)
+			{
+				LogHelper.Log("[自动登录] " + Mask(account) + " 手动登录成功，自动登录暂停已提前解除");
+			}
+		}
+	}
+
+	/// <summary>
 	/// 供认证桥等外部链路记录一次网易拦截（例如 GameStart 阶段返回 login abnormally）。
 	/// 程序侧不设冷静期：只记日志，不影响任何请求节奏（设计原则见文件头注释）。
 	/// </summary>
@@ -571,12 +676,14 @@ public static class AccountAutoLoginService
 			return;
 		}
 		LogHelper.Log("[自动登录] " + Mask(account) + " 记录一次网易拦截: " + (message ?? "") + "（仅记录，不设冷静期，请求照常）");
+		RiskNotice.Mark(Mask(account), "进服验证");
 	}
 
 	private static void SetRiskCooldown(AccountStore.LocalAccount acc, string message)
 	{
-		// 已废弃冷静期机制：仅保留日志，不登记任何拦截门槛
+		// 已废弃冷静期机制：仅保留日志+风控标记倒计时提示（纯信息展示，不设任何请求门槛）
 		LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 命中网易拦截（" + (message ?? "") + "），仅记录不设冷静期");
+		RiskNotice.Mark(Mask(acc.Account), "自动登录");
 	}
 
 	private static bool IsRiskCoolingDown(string channel, string account, out TimeSpan remaining)

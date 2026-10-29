@@ -174,6 +174,8 @@ public sealed partial class SettingsPage : Page
 
 	private ToggleSwitch? _settingsDebugSwitch;
 
+	private Button? _exportLogButton;
+
 	private ToggleSwitch? _settingsCleanupSwitch;
 
 	private NumberBox? _settingsBackupDaysBox;
@@ -225,6 +227,17 @@ public sealed partial class SettingsPage : Page
 				};
 				_settingsDebugSwitch.Toggled += SettingsDebugSwitch_Toggled;
 				SettingsRoot.Children.Add(_settingsDebugSwitch);
+				// 一键导出问题日志：随调试模式启用（调试模式关 = 按钮禁用淡色）
+				_exportLogButton = new Button
+				{
+					Content = "一键导出问题日志（到桌面）",
+					Margin = new Thickness(0.0, 8.0, 0.0, 0.0),
+					IsEnabled = SettingsManager.Instance.DebugMode,
+					Opacity = (SettingsManager.Instance.DebugMode ? 1.0 : 0.4)
+				};
+				ToolTipService.SetToolTip(_exportLogButton, "把最近 3 天日志打包成 zip 保存到桌面，反馈问题时直接发送。需先开启调试模式。");
+				_exportLogButton.Click += ExportLog_Click;
+				SettingsRoot.Children.Add(_exportLogButton);
 				// —— 更新 / 合并裁剪之后的自动清理（默认关闭；开启后删除的东西一律先进回收站）——
 				_settingsCleanupSwitch = new ToggleSwitch
 				{
@@ -492,6 +505,11 @@ public sealed partial class SettingsPage : Page
 
 	private void SettingsDebugSwitch_Toggled(object sender, RoutedEventArgs e)
 	{
+		if (_exportLogButton != null)
+		{
+			_exportLogButton.IsEnabled = _settingsDebugSwitch.IsOn;
+			_exportLogButton.Opacity = (_settingsDebugSwitch.IsOn ? 1.0 : 0.4);
+		}
 		if (_loading || _settingsDebugSwitch == null)
 		{
 			return;
@@ -513,6 +531,32 @@ public sealed partial class SettingsPage : Page
 		catch (Exception ex)
 		{
 			LogHelper.LogError(ex, "[设置页] 切换调试模式失败");
+		}
+	}
+
+	private async void ExportLog_Click(object sender, RoutedEventArgs e)
+	{
+		Button? button = sender as Button;
+		if (button != null)
+		{
+			button.IsEnabled = false;
+		}
+		try
+		{
+			string zipPath = await Task.Run(() => LogExporter.ExportToDesktop());
+			MainWindow.Instance?.ShowToast("日志已导出到桌面：" + System.IO.Path.GetFileName(zipPath), ok: true);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[设置页] 导出问题日志失败");
+			MainWindow.Instance?.ShowToast("导出失败：" + ex.Message, false);
+		}
+		finally
+		{
+			if (button != null)
+			{
+				button.IsEnabled = true;
+			}
 		}
 	}
 
@@ -630,8 +674,9 @@ public sealed partial class SettingsPage : Page
 			MusicService.StateChanged += OnMusicStateChanged;
 			AppSettings instance = SettingsManager.Instance;
 			ComboBox themeCombo = ThemeCombo;
+			EnsureThemeComboItems();
 			string themeMode = instance.ThemeMode;
-			int selectedIndex = ((themeMode == "dark") ? 1 : ((themeMode == "light") ? 2 : 0));
+			int selectedIndex = ((themeMode == "dark") ? 1 : ((themeMode == "light") ? 2 : ((themeMode == "black") ? 3 : 0)));
 			themeCombo.SelectedIndex = selectedIndex;
 			OpacitySlider.Value = Math.Clamp(instance.BackgroundOpacity, 0.0, 1.0) * 100.0;
 			double value = Math.Clamp(instance.FontSize, 12.0, 22.0);
@@ -667,6 +712,43 @@ public sealed partial class SettingsPage : Page
 			{
 				RefreshMusicSection();
 			});
+		}
+	}
+
+	/// <summary>
+	/// 主题下拉选项：XAML 里原本只有 跟随系统/深色/浅色 三项。
+	/// 这里把「深色」改名「透明深色」（半透明卡片浮在壁纸上），并追加第 4 项「黑底深色」
+	/// （ThemeMode=black，内容块与选项实黑底、文字清晰）。
+	/// </summary>
+	private void EnsureThemeComboItems()
+	{
+		try
+		{
+			if (ThemeCombo.Items.Count > 1 && ThemeCombo.Items[1] is ComboBoxItem darkItem)
+			{
+				darkItem.Content = "透明深色（视频背景推荐）";
+			}
+			bool hasBlack = false;
+			foreach (object item in ThemeCombo.Items)
+			{
+				if (item is ComboBoxItem comboItem && string.Equals(comboItem.Tag as string, "black", StringComparison.Ordinal))
+				{
+					hasBlack = true;
+					break;
+				}
+			}
+			if (!hasBlack)
+			{
+				ThemeCombo.Items.Add(new ComboBoxItem
+				{
+					Content = "黑底深色",
+					Tag = "black"
+				});
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[设置] 主题下拉选项初始化失败");
 		}
 	}
 
@@ -1037,6 +1119,7 @@ public sealed partial class SettingsPage : Page
 		{
 			1 => "dark", 
 			2 => "light", 
+			3 => "black", 
 			_ => "system", 
 		};
 		if (1 == 0)

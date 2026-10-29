@@ -302,7 +302,7 @@ public sealed partial class MainWindow : Window
 		catch
 		{
 			return new SolidColorBrush(ThemeHelper.IsDark
-				? Color.FromArgb(byte.MaxValue, 50, 50, 50)
+				? Color.FromArgb(byte.MaxValue, ThemeHelper.IsBlack ? (byte)12 : (byte)50, ThemeHelper.IsBlack ? (byte)12 : (byte)50, ThemeHelper.IsBlack ? (byte)12 : (byte)50)
 				: Color.FromArgb(byte.MaxValue, 243, 243, 243));
 		}
 	}
@@ -502,6 +502,8 @@ public sealed partial class MainWindow : Window
 		base.DispatcherQueue.TryEnqueue(delegate
 		{
 			AccountAutoLoginService.Start();
+			// 服务器列表自动发现：后台用已登录网易账号拉取服务器并自动注册预设（默认两个保留）
+			ServerAutoDiscovery.Start(8);
 			// 本机锁：开启「默认启动自动登录」时静默解锁；否则首次创建账号 / 每次要求登录程序账号
 			if (!AppLock.TryAutoUnlock())
 			{
@@ -531,11 +533,12 @@ public sealed partial class MainWindow : Window
 	{
 		AppSettings instance = SettingsManager.Instance;
 		string themeMode = instance.ThemeMode;
-		string text = ((!(themeMode == "dark")) ? ((!(themeMode == "light")) ? "system" : "light") : "dark");
+		string text = ((!(themeMode == "dark")) ? ((!(themeMode == "light")) ? ((themeMode == "black") ? "black" : "system") : "light") : "dark");
 		bool flag = text != _lastTheme;
 		if (flag)
 		{
-			ElementTheme elementTheme = (RootGrid.RequestedTheme = ((text == "dark") ? ElementTheme.Dark : ((text == "light") ? ElementTheme.Light : ElementTheme.Default)));
+			// black（黑底深色）按深色主题渲染（白字/深色控件），差异只在背景不透明度
+			ElementTheme elementTheme = (RootGrid.RequestedTheme = ((text == "dark" || text == "black") ? ElementTheme.Dark : ((text == "light") ? ElementTheme.Light : ElementTheme.Default)));
 			ElementTheme elementTheme3 = elementTheme;
 			ElementTheme elementTheme4 = elementTheme3;
 			try
@@ -564,8 +567,11 @@ public sealed partial class MainWindow : Window
 			ContentBackground.Visibility = Visibility.Collapsed;
 			_bgVideoOpacity = Math.Clamp(instance.BackgroundOpacity, 0.0, 1.0);
 			EnsureBackgroundVideo().Opacity = _bgVideoOpacity;
-			bool flag2 = text == "dark" || (text == "system" && RootGrid.ActualTheme == ElementTheme.Dark);
-			ContentCard.Background = new SolidColorBrush(flag2 ? Color.FromArgb(192, 14, 14, 14) : Color.FromArgb(150, 247, 247, 247));
+			bool flag2 = text == "dark" || text == "black" || (text == "system" && RootGrid.ActualTheme == ElementTheme.Dark);
+			// 黑底深色：内容卡也是实黑（不透明），与半透明壁纸彻底隔开，白色文字清晰
+			ContentCard.Background = (text == "black")
+				? new SolidColorBrush(Color.FromArgb(255, 12, 12, 12))
+				: new SolidColorBrush(flag2 ? Color.FromArgb(192, 14, 14, 14) : Color.FromArgb(150, 247, 247, 247));
 		}
 		else if (text2 != null && File.Exists(text2))
 		{

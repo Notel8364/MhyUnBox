@@ -370,67 +370,15 @@ public static class AccountStore
 		{
 			SaveList(list);
 		}
-		PurgeGroupAndPortData(channel, account);
+		// 用户定版（2026-10-29）：删除账号不清分组角色/端口记忆/最近绑定/勾选记忆 ——
+		// 角色记录留着（重新绑定同账号可继续用，无非是删号期间角色进不去服务器）；
+		// 手动启动代理（BuildSavedBindings/BuildGroupBindings）构建绑定时按现存账号精确匹配，
+		// 已删账号的端口会自动跳过，无需在这里删数据。
+		// 同步移除程序锁里残留的验证账号标记/验证包裹（不清理的话已删账号仍占验证名额且可解锁）
+		AppLock.RemoveAccountFromVerification(account);
 		if (num > 0)
 		{
 			Changed?.Invoke();
-		}
-	}
-
-	private static void PurgeGroupAndPortData(string channel, string account)
-	{
-		try
-		{
-			AppSettings instance = SettingsManager.Instance;
-			if (instance == null)
-			{
-				return;
-			}
-			if (instance.ProxyGroups != null)
-			{
-				foreach (ProxyGroup proxyGroup in instance.ProxyGroups)
-				{
-					if (proxyGroup.Roles != null)
-					{
-						proxyGroup.Roles.RemoveAll((ProxyGroupRole r) => string.Equals(r.Channel ?? "", channel ?? "", StringComparison.Ordinal) && string.Equals(r.Account ?? "", account ?? "", StringComparison.OrdinalIgnoreCase));
-					}
-				}
-				instance.ProxyGroups.RemoveAll((ProxyGroup g) => g.Roles == null || g.Roles.Count == 0);
-			}
-			if (instance.RemovedAccountPortMemory != null)
-			{
-				instance.RemovedAccountPortMemory.RemoveAll((SavedProxyBinding x) => string.Equals(x.Channel, channel, StringComparison.Ordinal) && string.Equals(x.Account, account, StringComparison.OrdinalIgnoreCase));
-			}
-			if (instance.LastProxyBindings != null)
-			{
-				instance.LastProxyBindings = instance.LastProxyBindings.Where((SavedProxyBinding x) => !string.Equals(x.Channel, channel, StringComparison.Ordinal) || !string.Equals(x.Account, account, StringComparison.OrdinalIgnoreCase)).ToList();
-			}
-			if (instance.GroupRoleChecked != null)
-			{
-				string ch = channel ?? "";
-				string acc = account ?? "";
-				foreach (string item in instance.GroupRoleChecked.Keys.Where(delegate(string k)
-				{
-					if (k != null)
-					{
-						string[] array = k.Split('\0');
-						if (array != null && array.Length >= 5 && string.Equals(array[2] ?? "", ch, StringComparison.Ordinal))
-						{
-							return string.Equals(array[3] ?? "", acc, StringComparison.OrdinalIgnoreCase);
-						}
-					}
-					return false;
-				}).ToList())
-				{
-					instance.GroupRoleChecked.Remove(item);
-				}
-			}
-			SettingsManager.Save(instance);
-			LogHelper.Log("[账号] 已清理账号 " + account + "：分组角色记录、端口记忆、最近启动绑定、分组勾选记忆");
-		}
-		catch (Exception ex)
-		{
-			LogHelper.LogError(ex, "清理已删除账号关联数据失败");
 		}
 	}
 
@@ -441,6 +389,8 @@ public static class AccountStore
 			return;
 		}
 		_list = new List<LocalAccount>();
+		// 同步清掉程序锁里的验证账号记录与验证包裹（全部账号已删，验证标记不该残留）
+		AppLock.ClearNetVerification();
 		SecureStore.Delete("local_accounts");
 		SecureStore.Delete("local_account");
 		try

@@ -244,10 +244,10 @@ public static class ProxyCaptureService
 	/// <summary>最近一次客户端登录握手的真实协议版本（用于健康探测伪装，避免用固定 340 老协议号暴露代理特征触发风控）。</summary>
 	private static volatile int LastClientProtocol;
 
-	private static readonly string[] CredentialKickPhrases = new string[23]
+	private static readonly string[] CredentialKickPhrases = new string[25]
 	{
 		"会话已失效", "会话失效", "凭证失效", "凭证已失效", "请先登录", "请重新登录", "重新登录", "登录已失效", "登录失效", "登录过期",
-		"已过期", "认证失败", "验证失败", "账号或密码", "invalid session", "session expired", "not_logged_in", "not logged", "unauthorized", "authentication failed",
+		"已过期", "认证失败", "验证失败", "账号或密码", "invalid session", "session expired", "token expired", "token 过期", "not_logged_in", "not logged", "unauthorized", "authentication failed",
 		"bad login", "account expired", "credentials"
 	};
 

@@ -221,8 +221,9 @@ public sealed class NeteaseAuthBridge
 					// 程序侧不设冷静期：记录后交后台兜底重登（会话失效即照常请求）。
 					if (neteaseLoginResult.RiskControl || IsRiskControlMessage(text2))
 					{
-						LastFailReason = "网易返回登录环境异常：" + text2 + "。程序会自动重试，无需手动操作";
-						LogHelper.Force($"[认证] 账号「{account.Nickname}」网易登录环境异常（{text2}），交后台兜底重登（照常请求）");
+						// 文案已含具体原因（登录环境异常/会话失效），不再叠加前缀
+						LastFailReason = text2 + "。程序会自动重试，无需手动操作";
+						LogHelper.Force($"[认证] 账号「{account.Nickname}」login-otp 被网易拦截（{text2}），交后台兜底重登（照常请求）");
 						AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, text2);
 						return false;
 					}
