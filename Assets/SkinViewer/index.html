@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+	html, body { margin: 0; padding: 0; overflow: hidden; height: 100%; background: radial-gradient(ellipse at 50% 30%, #1d3a5c 0%, #0d1b2e 70%); }
+	#canvas { width: 100vw; height: 100vh; display: block; cursor: grab; }
+	#canvas:active { cursor: grabbing; }
+	#tip { position: absolute; left: 0; right: 0; bottom: 10px; text-align: center; color: #8fa9c4; font: 12px "Segoe UI", sans-serif; pointer-events: none; }
+	#empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #6f8aa6; font: 14px "Segoe UI", sans-serif; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="tip">拖动旋转 · 滚轮缩放 · 空格 行走/停止</div>
+<div id="empty">点击左侧角色，此处预览 3D 皮肤</div>
+<script src="skinview3d.bundle.js"></script>
+<script>
+	var canvas = document.getElementById('canvas');
+	var empty = document.getElementById('empty');
+	var viewer = new skinview3d.SkinViewer({
+		canvas: canvas,
+		width: 400,
+		height: 520
+	});
+	viewer.autoRotate = true;
+	viewer.autoRotateSpeed = 1.4;
+	viewer.fov = 40;
+
+	window._mb = {
+		loadSkin: function (url) {
+			var img = new Image();
+			img.onload = function () {
+				empty.style.display = 'none';
+				viewer.loadSkin(url);
+				window._mb.walk(true);
+			};
+			img.onerror = function () {
+				empty.textContent = '皮肤加载失败';
+			};
+			img.src = url;
+		},
+		walk: function (on) {
+			viewer.animation = on ? { walking: { speed: 0.7, rootY: 0 } } : null;
+		}
+	};
+
+	document.addEventListener('keydown', function (e) {
+		if (e.code === 'Space') {
+			e.preventDefault();
+			window._mb.walk(viewer.animation == null);
+		}
+	});
+</script>
+</body>
+</html>

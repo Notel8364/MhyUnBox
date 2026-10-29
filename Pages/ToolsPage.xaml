@@ -1,0 +1,316 @@
+﻿<Page
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    x:Class="MhyunBox.Pages.ToolsPage">
+    <Page.Content>
+        <ScrollViewer>
+            <ScrollViewer.Content>
+                <StackPanel x:Name="ToolRoot" Padding="40,28" Spacing="12" MaxWidth="680" HorizontalAlignment="Left">
+                    <StackPanel.Children>
+                        <TextBlock Text="工具" FontSize="28" FontWeight="Bold" Margin="0,0,0,8" />
+                        <TextBlock Text="常用安全防护、电脑布防、威胁清理与卸载工具入口。" FontSize="13" Opacity="0.7" TextWrapping="Wrap" />
+                        <Grid x:Name="ToolCardGrid" Margin="0,4,0,0" ColumnSpacing="16" RowSpacing="12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition />
+                                <RowDefinition />
+                                <RowDefinition />
+                                <RowDefinition />
+                                <RowDefinition />
+                                <RowDefinition />
+                                <RowDefinition />
+                            </Grid.RowDefinitions>
+                            <Grid.Children>
+                                <Border
+                                    Row="0"
+                                    Margin="0,12,0,0"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="10">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="安全防护工具下载" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.Children>
+                                                        <StackPanel Column="0" Spacing="6">
+                                                            <StackPanel.Children>
+                                                                <Button Content="360 安全卫士" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                                <Button Content="360 急救箱" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                                <Button Content="火绒安全" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                            </StackPanel.Children>
+                                                        </StackPanel>
+                                                        <StackPanel Column="1" Spacing="6">
+                                                            <StackPanel.Children>
+                                                                <Button Content="QQ 电脑管家" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                                <Button Content="卡巴斯基" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                            </StackPanel.Children>
+                                                        </StackPanel>
+                                                    </Grid.Children>
+                                                </Grid>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <Border
+                                    Row="1"
+                                    Margin="0,12,0,0"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="10">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="电脑布防 (MhyunBox)" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <TextBlock Text="部署蜜罐诱饵文件（假账号密码文件）并监控「防护被篡改」：木马翻找窃密文件、给 Defender 添加排除项、关闭实时保护、劫持杀软进程（IFEO）、写 DisallowRun、改 hosts 屏蔽杀软更新、篡改系统 DLL 等行为都会触发告警。布防自动恢复诱饵并启动银狐扫描（含特征库样本比对、系统 DLL 签名/注入检测），确认可疑项后经二次确认才运行内置威胁清理。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                <TextBlock Text="开始布防会同时注册「守护计划任务」：即使 MhyunBox 程序没有运行，也每 30 分钟自动检查蜜罐完整性、防护篡改、特征库样本与系统 DLL 签名，发现异常自动联动扫描并把告警写入日志，下次打开程序时自动展示。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                <TextBlock
+                                                    Text="如有防护需求，建议尽量安装并使用主流防护软件（360/火绒/卡巴斯基等），并保持实时防护开启——先有防护，木马才没有机会注入。"
+                                                    FontSize="12"
+                                                    Opacity="0.75"
+                                                    TextWrapping="Wrap"
+                                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <Button Content="部署/重建蜜罐诱饵" MinHeight="40" />
+                                                        <Button x:Name="StartMonitorButton" Content="开始布防监控" MinHeight="40" IsEnabled="False" />
+                                                        <Button x:Name="StopMonitorButton" Content="停止监控" MinHeight="40" IsEnabled="False" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <ToggleButton x:Name="GuardAutoScanToggle" Content="异常时自动联动扫描（静默不弹窗）" MinHeight="36" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <Button Content="检查防护状态" MinHeight="40" />
+                                                        <Button Content="一键加固（需管理员）" MinHeight="40" />
+                                                        <Button Content="紧急断网" MinHeight="40" />
+                                                        <Button Content="恢复网络" MinHeight="40" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <Button x:Name="MiningIsolationOnButton" Content="开启挖矿断网防护" MinHeight="40" />
+                                                        <Button Content="关闭挖矿断网防护" MinHeight="40" />
+                                                        <Button Content="查看挖矿断网状态" MinHeight="40" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                                <TextBlock x:Name="MiningIsolationStatusText" Text="正在读取挖矿断网防护状态..." FontSize="12" Opacity="0.75" TextWrapping="Wrap" />
+                                                <TextBlock Text="「挖矿断网防护」不再按矿池 IP 封禁（木马换 IP 就绕过），改为「默认阻断全部出站 + 白名单放行」：开启后本机仅白名单内的服务/程序能联网，木马无论换到哪个矿池 IP 都连不上。白名单文件位于 KillTools\断网白名单.txt（service:/program:/port: 三种格式），开启前请先把你常用的软件（浏览器、游戏等）以 program: 形式加进去，否则它们也无法联网。Windows 更新与 Defender 已默认放行。" FontSize="12" Opacity="0.6" TextWrapping="Wrap" />
+                                                <TextBlock x:Name="DefenseStatusText" Text="尚未部署蜜罐文件，点击「部署/重建蜜罐诱饵」开始布防。" FontSize="12" Opacity="0.75" TextWrapping="Wrap" />
+                                                <TextBlock Text="防护原理对照（参考安全厂商公开资料）：主流防护软件的核心功能 = 文件/蜜罐监控、进程与启动项监控、注册表与 IFEO 监控、行为拦截、云端查杀。MhyunBox 布防对应实现了蜜罐诱饵、防护篡改监控、特征库样本比对与系统 DLL 签名/注入检测（样本库在 KillTools\特征库.txt，可自行增补特征）。这些手段能生效的前提是「提前布好防」：一旦木马先跑起来而电脑没有任何防护，它就可能把代码注入进删不掉、关不掉的系统 DLL——先装好主流防护软件再操作，才是最稳妥的做法。" FontSize="12" Opacity="0.6" TextWrapping="Wrap" />
+                                                <TextBlock Text="布防实时日志：" FontSize="12" FontWeight="SemiBold" Opacity="0.8" />
+                                                <ScrollViewer x:Name="DefenseLogScroll" Height="150" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                                    <ScrollViewer.Content>
+                                                        <TextBox x:Name="DefenseLogBox"
+                                                            IsReadOnly="True"
+                                                            AcceptsReturn="True"
+                                                            TextWrapping="Wrap"
+                                                            FontFamily="Consolas"
+                                                            FontSize="12"
+                                                            BorderThickness="0"
+                                                            Background="#00FFFFFF"
+                                                            VerticalScrollBarVisibility="Disabled"
+                                                            SelectionIndicatorBrush="False" />
+                                                    </ScrollViewer.Content>
+                                                </ScrollViewer>
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <Button Content="清空布防日志" MinHeight="36" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <Border
+                                    Row="2"
+                                    Margin="0,12,0,0"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="10">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="恶意木马与威胁清理 (MhyunBox)" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <TextBlock Text="银狐木马会隐藏进程、劫持启动项并禁用杀毒软件。内置火绒恶性木马专杀工具与银狐综合威胁清理脚本（一键扫描并清理，实时日志）。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                <TextBlock
+                                                    Text="静默运行说明：扫描与清理默认在后台静默执行、不会弹出命令行窗口，过程与结果实时显示在下方日志；「威胁清理（扫描+清理）」需要管理员权限时只会弹出一次 UAC 授权框（属正常提示）。"
+                                                    FontSize="12"
+                                                    Opacity="0.75"
+                                                    TextWrapping="Wrap"
+                                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                                <Button Content="运行内置火绒专杀工具" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                <Button x:Name="SilverFoxKillButton" Content="威胁清理（扫描+清理）" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                <Button x:Name="SilverFoxScanButton" Content="仅扫描检测" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                <Button Content="启动系统激活工具（HEU KMS Activator）" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                <TextBlock Text="清理实时日志：" FontSize="12" FontWeight="SemiBold" Opacity="0.8" />
+                                                <ScrollViewer x:Name="KillLogScroll" Height="240" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                                    <ScrollViewer.Content>
+                                                        <TextBox x:Name="KillLogBox"
+                                                            IsReadOnly="True"
+                                                            AcceptsReturn="True"
+                                                            TextWrapping="Wrap"
+                                                            FontFamily="Consolas"
+                                                            FontSize="12"
+                                                            BorderThickness="0"
+                                                            Background="#00FFFFFF"
+                                                            VerticalScrollBarVisibility="Disabled"
+                                                            SelectionIndicatorBrush="False" />
+                                                    </ScrollViewer.Content>
+                                                </ScrollViewer>
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <Button Content="清空日志" MinHeight="36" />
+                                                        <TextBlock x:Name="KillStatusText" Text="" FontSize="12" Opacity="0.7" VerticalAlignment="Center" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <Border
+                                    Row="3"
+                                    Margin="0,12,0,0"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="10">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="卸载工具" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <TextBlock Text="HiBit Uninstaller 为便携版卸载工具，支持强制卸载、卸载残留清理、批量卸载。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <Button Content="HiBit Uninstaller 官方下载" MinHeight="40" />
+                                                        <Button Content="启动本机 HiBit 卸载工具" MinHeight="40" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <Border
+                                    Row="4"
+                                    Margin="0,12,0,0"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="10">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="其他常用工具下载" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <TextBlock Text="压缩、虚拟局域网（联机）与游戏平台工具，点击按钮跳转官网下载。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.Children>
+                                                        <StackPanel Column="0" Spacing="6">
+                                                            <StackPanel.Children>
+                                                                <Button Content="7-Zip 官方下载" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                                <Button Content="Radmin LAN 下载" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                                <Button Content="Steam 官方下载" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                            </StackPanel.Children>
+                                                        </StackPanel>
+                                                        <StackPanel Column="1" Spacing="6">
+                                                            <StackPanel.Children>
+                                                                <Button Content="Bandizip 官方下载" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                                <Button Content="DiskGenius 硬盘检测" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                            </StackPanel.Children>
+                                                        </StackPanel>
+                                                    </Grid.Children>
+                                                </Grid>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <Border
+                                    Row="5"
+                                    Margin="0,12,0,0"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="10">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="硬件驱动下载" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <TextBlock Text="显卡驱动更新，点击按钮跳转官网下载。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.Children>
+                                                        <Button Column="0" Content="NVIDIA 显卡驱动官网" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                        <Button Column="1" Content="AMD 显卡驱动官网" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                    </Grid.Children>
+                                                </Grid>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <Border
+                                    Row="6"
+                                    Margin="0,12,0,0"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="10">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="自启动工具" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <TextBlock Text="选择一个 .bat / .exe 自启动程序（或批量选择多个 NapCat 启动器），程序每次启动时自动运行这些程序和批处理文件。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.Children>
+                                                        <Button Column="0" Content="选择自启动程序（浏览 .bat）" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                        <Button Column="1" Content="批量选择 NapCat 启动器" HorizontalAlignment="Stretch" MinHeight="40" />
+                                                    </Grid.Children>
+                                                </Grid>
+                                                <TextBlock x:Name="AutoStartFolderText" Text="未设置自启动程序。" FontSize="12" Opacity="0.75" TextWrapping="Wrap" />
+                                                <TextBlock x:Name="NapCatFilesText" Text="未选择 NapCat 启动器。" FontSize="12" Opacity="0.75" TextWrapping="Wrap" />
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <Button Content="立即启动一次" MinHeight="36" />
+                                                        <Button Content="清除自启动配置" MinHeight="36" />
+                                                        <ToggleButton x:Name="AutoStartHiddenToggle" Content="隐藏启动的程序窗口" MinHeight="36" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                            </Grid.Children>
+                        </Grid>
+                    </StackPanel.Children>
+                </StackPanel>
+            </ScrollViewer.Content>
+        </ScrollViewer>
+    </Page.Content>
+</Page>

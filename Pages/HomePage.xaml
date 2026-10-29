@@ -1,0 +1,75 @@
+﻿<Page
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    x:Class="MhyunBox.Pages.HomePage">
+    <Page.Content>
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ScrollViewer.Content>
+                <StackPanel x:Name="HomeRoot" Padding="40,28" Spacing="12" MaxWidth="1000" HorizontalAlignment="Left">
+                    <StackPanel.Children>
+                        <TextBlock Text="MhyunBox" FontSize="28" FontWeight="Bold" />
+                        <Grid x:Name="HomeCardGrid" Margin="0,8,0,0" ColumnSpacing="12" RowSpacing="12">
+                            <Grid.Children>
+                                <Border x:Name="ActivationCard" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="8">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="激活状态" FontSize="14" FontWeight="SemiBold" />
+                                                <TextBlock x:Name="ActivationStatusText" TextWrapping="Wrap" />
+                                                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0">
+                                                    <StackPanel.Children>
+                                                        <TextBox x:Name="CardKeyBox" Width="300" PlaceholderText="输入卡密" VerticalAlignment="Center" />
+                                                        <Button x:Name="ActivateButton" Content="激活" />
+                                                        <Button x:Name="DeactivateButton" Content="反激活" IsEnabled="False" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+                                                    <StackPanel.Children>
+                                                        <Button x:Name="GoLoginButton" Content="进入账号绑定" />
+                                                        <Button x:Name="GoProxyButton" Content="进入代理" IsEnabled="False" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <Border x:Name="NoticeCard" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="8">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="使用须知" FontSize="14" FontWeight="SemiBold" />
+                                                <TextBlock FontSize="13" Opacity="0.85" TextWrapping="Wrap" Text="1. 在首页输入卡密并点击「激活」，激活成功后才能使用代理捕获功能；" />
+                                                <TextBlock FontSize="13" Opacity="0.85" TextWrapping="Wrap" Text="2. 前往「账号绑定」页验证并绑定账号（网易邮箱 / 网易手机号 / 4399），绑定成功会自动抓取该账号在各服务器的角色；" />
+                                                <TextBlock FontSize="13" Opacity="0.85" TextWrapping="Wrap" Text="3. 在「代理捕获」页选择目标服务器与角色后启动代理，把客户端地址指向本机监听端口即可进入对应服务器；" />
+                                                <TextBlock FontSize="13" Opacity="0.85" TextWrapping="Wrap" Text="4. 未激活时仅可浏览界面，代理启动入口不可用；激活与账号状态可在本页与「账号绑定」页查看。" />
+                                                <TextBlock FontSize="13" Opacity="0.85" TextWrapping="Wrap" Text="5. 如遇代理断连相关问题（反复重连、连上即断、不动就断等），请先排查客户端模组（Mod）兼容性，多数情况由模组或群内客户端模组包引起，与代理无关。" />
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <Border x:Name="DisclaimerCard"
+                                    Background="#40C62828"
+                                    BorderBrush="#FFE57373"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="8">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="免责声明" FontSize="14" FontWeight="Bold" />
+                                                <TextBlock FontSize="13" Opacity="0.92" TextWrapping="Wrap" Text="本工具仅供个人学习与研究使用。仅群内成员可正常使用，不推荐进行反编译相关密钥与破解，並遵守游戏服务商的相关用户协议与条款；请勿将本工具用于商业用途或任何违法违规行为。因使用本工具产生的一切后果由使用者自行承担，如遇任何账号封禁、数据损失或其他损失等问题第一时间反馈作者。" />
+                                                <Button Content="查看关于" HorizontalAlignment="Left" />
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                            </Grid.Children>
+                        </Grid>
+                    </StackPanel.Children>
+                </StackPanel>
+            </ScrollViewer.Content>
+        </ScrollViewer>
+    </Page.Content>
+</Page>

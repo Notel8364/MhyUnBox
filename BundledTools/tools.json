@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "note": "超级工具箱清单：每个工具以压缩包随程序分发，首次使用时按需解压到 %LOCALAPPDATA%\\MhyunBox\\SuperTools\\<id>\\ 再启动。新增工具：放入 zip + 在此加一条即可。",
+  "tools": [
+    {
+      "id": "simplewall",
+      "name": "Simplewall 出站防火墙",
+      "desc": "轻量出站防火墙：默认阻断全部出站、按白名单放行，木马换 IP 也连不上。需管理员权限。",
+      "zip": "simplewall.zip",
+      "exe": "simplewall\\64\\simplewall.exe",
+      "admin": true,
+      "license": "GPL-3.0",
+      "home": "https://github.com/henrypp/simplewall"
+    },
+    {
+      "id": "pe-sieve",
+      "name": "PE-sieve 进程注入扫描",
+      "desc": "hasherezade 出品：扫描进程注入 / 进程空洞 / 伪装。命令行工具，运行后在窗口按 /help 使用（如 /pid <PID>）。建议管理员权限。",
+      "zip": "pe-sieve.zip",
+      "exe": "pe-sieve.exe",
+      "admin": true,
+      "license": "BSD-2-Clause",
+      "home": "https://github.com/hasherezade/pe-sieve"
+    }
+  ]
+}

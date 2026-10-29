@@ -1,0 +1,30 @@
+# MhyunBox 断网白名单
+# 「挖矿断网防护」开启后，本机出站采用「默认全部阻断」，仅放行下列条目。
+# 木马无论把矿池换成哪个 IP / 域名，都无法建立连接（不再按 IP 封，改按程序/服务封）。
+# 每行一条（# 开头为注释），支持三种格式：
+#   service:<Windows服务名>   放行该服务出站（固定 TCP 80/443，例：service:wuauserv）
+#   program:<程序完整路径>    放行该 exe 的全部出站（例：program:C:\Program Files\Google\Chrome\Application\chrome.exe）
+#   port:<tcp|udp>:<端口>     放行某个端口出站（尽量少用，优先 program/service）
+# 注意：开启前请先把你日常要用的软件（浏览器、游戏等）以 program: 形式加入本文件，
+# 否则防护开启期间这些程序将无法联网。
+
+# —— 系统更新 / Defender 更新（服务放行，仅 TCP 80/443）——
+service:wuauserv
+service:bits
+service:WinDefend
+service:WdNisSvc
+
+# —— 基础网络服务（DNS / 时间同步 / DHCP 续租）——
+port:udp:53
+port:tcp:53
+port:udp:123
+port:udp:67
+port:udp:68
+
+# —— 常用软件示例（按需取消注释并修改路径）——
+# program:C:\Program Files\Google\Chrome\Application\chrome.exe
+# program:C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+
+# —— AstrBot 机器人（python 运行时，开启断网防护后仍可联网）——
+# 机器人本体及 LLM 请求都走 python.exe，必须放行，否则断网防护开启期间机器人无法回复。
+program:C:\Users\Administrator\AppData\Local\Programs\Python\Python314\python.exe

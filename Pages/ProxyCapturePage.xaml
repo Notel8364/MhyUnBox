@@ -1,0 +1,342 @@
+﻿<Page
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:MhyunBox.Pages"
+    x:Class="MhyunBox.Pages.ProxyCapturePage">
+    <Page.Resources>
+        <StatusRowSelector x:Key="StatusRowSelector" HeaderTemplate="{StaticResource StatusHeaderRowTemplate}" RoleTemplate="{StaticResource StatusRoleRowTemplate}" />
+        <DataTemplate x:Key="StatusRoleRowTemplate">
+            <DataTemplate.Template>
+                <Grid ColumnSpacing="12" Margin="0,2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.Children>
+                        <TextBlock FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Column="0">
+                            <TextBlock.Text>
+                                <Binding Path="Label" />
+                            </TextBlock.Text>
+                        </TextBlock>
+                        <Border
+                            Column="1"
+                            Background="{ThemeResource ControlFillColorSecondaryBrush}"
+                            BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Padding="10,4"
+                            VerticalAlignment="Center">
+                            <Border.Child>
+                                <TextBlock FontSize="13" FontFamily="Consolas" VerticalAlignment="Center">
+                                    <TextBlock.Text>
+                                        <Binding Path="Address" />
+                                    </TextBlock.Text>
+                                </TextBlock>
+                            </Border.Child>
+                        </Border>
+                        <Button
+                            Column="2"
+                            Content="复制"
+                            MinWidth="72"
+                            FontSize="13"
+                            VerticalAlignment="Center">
+                            <Button.Tag>
+                                <Binding Path="Address" />
+                            </Button.Tag>
+                        </Button>
+                    </Grid.Children>
+                </Grid>
+            </DataTemplate.Template>
+        </DataTemplate>
+        <DataTemplate x:Key="StatusHeaderRowTemplate">
+            <DataTemplate.Template>
+                <TextBlock FontSize="13" FontWeight="SemiBold" Opacity="0.85" Margin="0,4,0,0">
+                    <TextBlock.Text>
+                        <Binding Path="Label" />
+                    </TextBlock.Text>
+                </TextBlock>
+            </DataTemplate.Template>
+        </DataTemplate>
+        <DataTemplate x:Key="StatusCardTemplate">
+            <DataTemplate.Template>
+                <Border
+                    Width="350"
+                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="10,8"
+                    Margin="0,0,10,0">
+                    <Border.Child>
+                        <StackPanel Spacing="6">
+                            <StackPanel.Children>
+                                <TextBlock FontSize="13" FontWeight="Bold" Opacity="0.95">
+                                    <TextBlock.Text>
+                                        <Binding Path="Header" />
+                                    </TextBlock.Text>
+                                </TextBlock>
+                                <ScrollViewer Height="150" MaxHeight="150" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                    <ScrollViewer.Content>
+                                        <ItemsControl ItemTemplateSelector="{StaticResource StatusRowSelector}">
+                                            <ItemsControl.ItemsSource>
+                                                <Binding Path="Rows" />
+                                            </ItemsControl.ItemsSource>
+                                        </ItemsControl>
+                                    </ScrollViewer.Content>
+                                </ScrollViewer>
+                            </StackPanel.Children>
+                        </StackPanel>
+                    </Border.Child>
+                </Border>
+            </DataTemplate.Template>
+        </DataTemplate>
+    </Page.Resources>
+    <Page.Content>
+        <Grid>
+            <Grid.Children>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer.Content>
+                        <StackPanel x:Name="ProxyRoot" Padding="40,28" Spacing="12" MaxWidth="900" HorizontalAlignment="Left">
+                            <StackPanel.Children>
+                                <TextBlock x:Name="ActivationHint" TextWrapping="Wrap" Opacity="0.9" />
+                                <Button x:Name="GoHomeButton" Content="前往首页" Visibility="Collapsed" Margin="0,0,0,4" HorizontalAlignment="Left" />
+                                <TextBlock x:Name="AutoStartHint" TextWrapping="Wrap" Visibility="Collapsed" FontWeight="SemiBold" Foreground="{ThemeResource SystemFillColorSuccessBrush}" />
+                                <Border
+                                    Background="#30FFB900"
+                                    BorderBrush="#FFFFB900"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="16,10">
+                                    <Border.Child>
+                                        <TextBlock TextWrapping="Wrap" FontSize="13" Text="提示：如遇代理断连相关问题（元素之诗:反复重连、连上即断、持续加载账号），请先排查客户端模组（Mod）兼容性，基本与代理无关。" />
+                                    </Border.Child>
+                                </Border>
+                                <Grid x:Name="ProxyCardGrid" Margin="0,8,0,0" ColumnSpacing="16" RowSpacing="12">
+                                    <Grid.Children>
+                                        <Border x:Name="ControlCard"
+                                            Row="0"
+                                            Column="0"
+                                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="12"
+                                            Padding="16,12">
+                                            <Border.Child>
+                                                <StackPanel Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                                            <StackPanel.Children>
+                                                                <TextBox x:Name="ListenPortBox" Width="110" PlaceholderText="基础端口" />
+                                                                <Button x:Name="StartButton" Width="136" Content="启动代理" />
+                                                                <Button x:Name="StopButton" Width="136" Content="停止" IsEnabled="False" />
+                                                                <Button x:Name="CleanLogsButton" Width="136" Content="清理日志" />
+                                                                <Button x:Name="OneClickStartButton" Width="136" Content="一键启动" />
+                                                            </StackPanel.Children>
+                                                        </StackPanel>
+                                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                                            <StackPanel.Children>
+                                                                <Button x:Name="OpenCaptureDirButton" Width="110" Content="打开抓取目录" />
+                                                                <Button x:Name="RestartButton" Width="136" Content="重启选中服务器" IsEnabled="False" />
+                                                                <Button x:Name="StopAllButton" Width="136" Content="停止全部代理" IsEnabled="False" />
+                                                                <Button x:Name="ClearSessionsButton" Width="136" Content="清空记录" />
+                                                                <Button x:Name="OpenTutorialButton" Width="136" Content="打开教程" />
+                                                            </StackPanel.Children>
+                                                        </StackPanel>
+                                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                                            <StackPanel.Children>
+                                                                <Button x:Name="ViewSolutionButton" Content="查看教程/解决方案" />
+                                                            </StackPanel.Children>
+                                                        </StackPanel>
+                                                        <ListView x:Name="PresetListView"
+                                                            SelectionMode="None"
+                                                            IsItemClickEnabled="False"
+                                                            Background="#00FFFFFF"
+                                                            BorderThickness="0"
+                                                            Padding="0"
+                                                            Margin="-8,0,0,0"
+                                                            HorizontalScrollBarVisibility="Disabled"
+                                                            VerticalScrollBarVisibility="Disabled">
+                                                            <ListView.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <ItemsPanelTemplate.Template>
+                                                                        <ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="3" ItemWidth="196" ItemHeight="52" />
+                                                                    </ItemsPanelTemplate.Template>
+                                                                </ItemsPanelTemplate>
+                                                            </ListView.ItemsPanel>
+                                                            <ListView.ItemContainerStyle>
+                                                                <Style TargetType="ListViewItem">
+                                                                    <Setter Property="MinHeight" Value="52" />
+                                                                    <Setter Property="Padding" Value="4,10" />
+                                                                    <Setter Property="Margin" Value="0,0,12,6" />
+                                                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                                    <Setter Property="VerticalContentAlignment" Value="Center" />
+                                                                </Style>
+                                                            </ListView.ItemContainerStyle>
+                                                            <ListView.Items>
+                                                                <RadioButton x:Name="PresetElement" GroupName="preset" Content="元素之诗" Tag="元素之诗" />
+                                                                <RadioButton x:Name="PresetLost" GroupName="preset" Content="失落世界" Tag="失落世界" />
+                                                                <RadioButton x:Name="PresetBjd" GroupName="preset" Content="布吉岛" Tag="布吉岛" />
+                                                                <RadioButton x:Name="PresetDoMCer" GroupName="preset" Content="DoMCer" Tag="DoMCer" />
+                                                                <RadioButton x:Name="PresetFzy" GroupName="preset" Content="枫之屿" Tag="枫之屿" />
+                                                            </ListView.Items>
+                                                        </ListView>
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                            </Border.Child>
+                                        </Border>
+                                        <StackPanel x:Name="StatusSection" Row="1" Column="0" Spacing="4">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="角色端口栏 / 状态" FontWeight="SemiBold" />
+                                                <Border
+                                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="12"
+                                                    Padding="10,8">
+                                                    <Border.Child>
+                                                        <ScrollViewer x:Name="StatusCardsScroller"
+                                                            Height="216"
+                                                            HorizontalScrollBarVisibility="Auto"
+                                                            VerticalScrollBarVisibility="Disabled"
+                                                            HorizontalScrollMode="Enabled"
+                                                            VerticalScrollMode="Disabled">
+                                                            <ScrollViewer.Content>
+                                                                <Grid>
+                                                                    <Grid.Children>
+                                                                        <ItemsControl x:Name="StatusCardsList" ItemTemplate="{StaticResource StatusCardTemplate}">
+                                                                            <ItemsControl.ItemsPanel>
+                                                                                <ItemsPanelTemplate>
+                                                                                    <ItemsPanelTemplate.Template>
+                                                                                        <StackPanel Orientation="Horizontal" />
+                                                                                    </ItemsPanelTemplate.Template>
+                                                                                </ItemsPanelTemplate>
+                                                                            </ItemsControl.ItemsPanel>
+                                                                        </ItemsControl>
+                                                                        <TextBlock x:Name="StatusEmptyHint" Text="暂无运行中的代理，启动后在此查看各角色端口" Opacity="0.7" Visibility="Collapsed" Margin="4,8" />
+                                                                    </Grid.Children>
+                                                                </Grid>
+                                                            </ScrollViewer.Content>
+                                                        </ScrollViewer>
+                                                    </Border.Child>
+                                                </Border>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                        <StackPanel x:Name="PclSection" Row="2" Column="0" Spacing="4">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="PCL 启动器" FontWeight="SemiBold" />
+                                                <Border
+                                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="12"
+                                                    Padding="16,12">
+                                                    <Border.Child>
+                                                        <StackPanel Spacing="8">
+                                                            <StackPanel.Children>
+                                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                                    <StackPanel.Children>
+                                                                        <TextBox x:Name="PclPathBox" Width="360" PlaceholderText="PCL 启动器路径，如 G:\PCL\PCL2.exe" />
+                                                                        <Button x:Name="PclBrowseButton" Content="浏览…" />
+                                                                        <Button x:Name="PclFindButton" Content="查找此电脑上的PCL" />
+                                                                        <Button x:Name="PclModsButton" Content="打开mods" />
+                                                                    </StackPanel.Children>
+                                                                </StackPanel>
+                                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                                    <StackPanel.Children>
+                                                                        <Button x:Name="PclGameLaunchButton" Content="启动PCL我的世界" IsEnabled="False" />
+                                                                        <Button x:Name="PclInjectButton" Content="注入元素之诗模组" IsEnabled="False" />
+                                                                    </StackPanel.Children>
+                                                                </StackPanel>
+                                                                <StackPanel Orientation="Horizontal" Spacing="16">
+                                                                    <StackPanel.Children>
+                                                                        <CheckBox x:Name="PclAutoLaunchCheck" Content="我的世界自加入指定端口" IsEnabled="False" />
+                                                                        <CheckBox x:Name="PclAutoStartCheck" Content="自启动选中PCL" IsEnabled="False" />
+                                                                        <CheckBox x:Name="LanListenCheck" Content="允许局域网设备连接（手机连接脱盒）" />
+                                                                    </StackPanel.Children>
+                                                                </StackPanel>
+                                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                                    <StackPanel.Children>
+                                                                        <TextBlock Text="指定端口" VerticalAlignment="Center" Opacity="0.8" />
+                                                                        <TextBox x:Name="PclJoinPortBox" Width="110" PlaceholderText="留空自动" IsEnabled="False" />
+                                                                    </StackPanel.Children>
+                                                                </StackPanel>
+                                                                <TextBlock x:Name="PclPathHint" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                            </StackPanel.Children>
+                                                        </StackPanel>
+                                                    </Border.Child>
+                                                </Border>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                        <StackPanel x:Name="SessionSection" Row="3" Column="0" Spacing="4">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="会话" FontWeight="SemiBold" />
+                                                <Border
+                                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="12"
+                                                    Padding="8">
+                                                    <Border.Child>
+                                                        <ListView x:Name="SessionList" Height="180" Background="#00FFFFFF" IsItemClickEnabled="False" SelectionMode="None">
+                                                            <ListView.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <DataTemplate.Template>
+                                                                        <Grid ColumnSpacing="12" Padding="4,2">
+                                                                            <Grid.ColumnDefinitions>
+                                                                                <ColumnDefinition Width="Auto" />
+                                                                                <ColumnDefinition Width="100" />
+                                                                                <ColumnDefinition Width="*" />
+                                                                            </Grid.ColumnDefinitions>
+                                                                            <Grid.Children>
+                                                                                <TextBlock FontWeight="Bold" VerticalAlignment="Center" Column="0">
+                                                                                    <TextBlock.Text>
+                                                                                        <Binding Path="IdLabel" />
+                                                                                    </TextBlock.Text>
+                                                                                </TextBlock>
+                                                                                <TextBlock Opacity="0.85" VerticalAlignment="Center" Column="1">
+                                                                                    <TextBlock.Text>
+                                                                                        <Binding Path="Status" />
+                                                                                    </TextBlock.Text>
+                                                                                </TextBlock>
+                                                                                <TextBlock TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Column="2">
+                                                                                    <TextBlock.Text>
+                                                                                        <Binding Path="Summary" />
+                                                                                    </TextBlock.Text>
+                                                                                </TextBlock>
+                                                                            </Grid.Children>
+                                                                        </Grid>
+                                                                    </DataTemplate.Template>
+                                                                </DataTemplate>
+                                                            </ListView.ItemTemplate>
+                                                        </ListView>
+                                                    </Border.Child>
+                                                </Border>
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                        <StackPanel x:Name="LogSection" Row="4" Column="0" Spacing="4">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="日志" FontWeight="SemiBold" />
+                                                <TextBox x:Name="LogView"
+                                                    IsReadOnly="True"
+                                                    AcceptsReturn="True"
+                                                    TextWrapping="NoWrap"
+                                                    Height="220"
+                                                    VerticalScrollBarVisibility="Auto"
+                                                    FontFamily="Cascadia Mono"
+                                                    FontSize="12" />
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Grid.Children>
+                                </Grid>
+                            </StackPanel.Children>
+                        </StackPanel>
+                    </ScrollViewer.Content>
+                </ScrollViewer>
+                <Grid x:Name="PortsOverlayHost" Visibility="Collapsed" />
+            </Grid.Children>
+        </Grid>
+    </Page.Content>
+</Page>

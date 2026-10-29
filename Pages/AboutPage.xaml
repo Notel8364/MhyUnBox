@@ -1,0 +1,155 @@
+﻿<Page
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    x:Class="MhyunBox.Pages.AboutPage">
+    <Page.Content>
+        <ScrollViewer>
+            <ScrollViewer.Content>
+                <StackPanel x:Name="AboutRoot" Padding="40" Spacing="12" MaxWidth="640" HorizontalAlignment="Left">
+                    <StackPanel.Children>
+                        <StackPanel Orientation="Horizontal" Spacing="16">
+                            <StackPanel.Children>
+                                <Border
+                                    Width="64"
+                                    Height="64"
+                                    CornerRadius="14"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    VerticalAlignment="Center">
+                                    <Border.Child>
+                                        <Image x:Name="AppIcon"
+                                            Width="48"
+                                            Height="48"
+                                            Stretch="UniformToFill"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center" />
+                                    </Border.Child>
+                                </Border>
+                                <StackPanel Spacing="4" VerticalAlignment="Center">
+                                    <StackPanel.Children>
+                                        <TextBlock Text="BakaBox" FontSize="28" FontWeight="SemiBold" FontFamily="{ThemeResource ContentControlThemeFontFamily}" />
+                                        <TextBlock Text="v3.1.0" FontSize="13" Opacity="0.6" FontFamily="Cascadia Mono" />
+                                    </StackPanel.Children>
+                                </StackPanel>
+                            </StackPanel.Children>
+                        </StackPanel>
+                        <Grid x:Name="AboutCardGrid" Margin="0,16,0,0" ColumnSpacing="16" RowSpacing="12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition />
+                                <RowDefinition />
+                            </Grid.RowDefinitions>
+                            <Grid.Children>
+                                <Border x:Name="UsageCard"
+                                    Row="0"
+                                    Column="0"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="20">
+                                    <Border.Child>
+                                        <StackPanel Spacing="6">
+                                            <StackPanel.Children>
+                                                <TextBlock Text="使用须知" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                
+                                                
+                                                
+                                                
+                                                
+                                                
+                                                
+                                                <TextBlock
+                                                    Text="反馈情况"
+                                                    FontSize="13"
+                                                    FontWeight="SemiBold"
+                                                    Margin="0,6,0,0"
+                                                    Opacity="0.9" />
+                                                <TextBlock Text="如遇任何问题或有建议，还请与以下和同QQ号邮箱发送邮箱标注问题/建议，也可在 QQ 群反馈。" FontSize="13" Opacity="0.75" TextWrapping="Wrap" />
+                                                <TextBlock
+                                                    Text="35292826211/2998155760"
+                                                    FontSize="13"
+                                                    FontWeight="SemiBold"
+                                                    Margin="0,6,0,0"
+                                                    Opacity="1" />
+                                            </StackPanel.Children>
+                                        </StackPanel>
+                                    </Border.Child>
+                                </Border>
+                                <StackPanel x:Name="RightCol" Row="1" Column="0" Spacing="12">
+                                    <StackPanel.Children>
+                                        <Border x:Name="CopyrightCard" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="20">
+                                            <Border.Child>
+                                                <StackPanel Spacing="6">
+                                                    <StackPanel.Children>
+                                                        <TextBlock Text="版权信息" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                        <TextBlock Text="改编自 Alane（原作 © 2025），经授权使用。" FontSize="13" Opacity="0.75" TextWrapping="Wrap" />
+                                                        <TextBlock Text="本修改版 © 2026 Notel，非商业用途。" FontSize="13" Opacity="0.75" TextWrapping="Wrap" />
+                                                        <TextBlock Text="Adapted from Alane (original © 2025), used with permission. This modified version © 2026 Notel, for non-commercial use." FontSize="13" Opacity="0.75" TextWrapping="Wrap" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                            </Border.Child>
+                                        </Border>
+                                        <Border x:Name="DonateCard" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="20">
+                                            <Border.Child>
+                                                <StackPanel Spacing="10">
+                                                    <StackPanel.Children>
+                                                        <TextBlock Text="充电支持" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                        <TextBlock Text="如果觉得好用，欢迎扫码支持一下。(微信同名Notel)" FontSize="13" Opacity="0.75" TextWrapping="Wrap" />
+                                                        <Border
+                                                            Width="220"
+                                                            Height="220"
+                                                            HorizontalAlignment="Center"
+                                                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="10">
+                                                            <Border.Child>
+                                                                <Grid>
+                                                                    <Grid.Children>
+                                                                        <TextBlock x:Name="DonateQrPlaceholder"
+                                                                            Text="[收款码图片]"
+                                                                            FontSize="14"
+                                                                            Opacity="0.55"
+                                                                            HorizontalAlignment="Center"
+                                                                            VerticalAlignment="Center"
+                                                                            TextWrapping="Wrap" />
+                                                                        <Image x:Name="DonateQr" Stretch="Uniform" Margin="8" Visibility="Collapsed" />
+                                                                    </Grid.Children>
+                                                                </Grid>
+                                                            </Border.Child>
+                                                        </Border>
+                                                        <TextBlock
+                                                            Text="给Notel买瓶牢大冰红茶"
+                                                            FontSize="13"
+                                                            Opacity="0.85"
+                                                            HorizontalAlignment="Center"
+                                                            TextWrapping="Wrap" />
+                                                        <TextBlock
+                                                            Text="给莎莎买点蘑菇"
+                                                            FontSize="13"
+                                                            Opacity="0.85"
+                                                            HorizontalAlignment="Center"
+                                                            TextWrapping="Wrap" />
+                                                    </StackPanel.Children>
+                                                </StackPanel>
+                                            </Border.Child>
+                                        </Border>
+                                    </StackPanel.Children>
+                                </StackPanel>
+                            </Grid.Children>
+                        </Grid>
+                        <TextBlock
+                            Text="Powered By OpenCode &amp; TRAE · AI IDE"
+                            FontSize="13"
+                            Opacity="0.55"
+                            HorizontalAlignment="Center"
+                            Margin="0,4,0,0"
+                            FontFamily="Cascadia Mono" />
+                    </StackPanel.Children>
+                </StackPanel>
+            </ScrollViewer.Content>
+        </ScrollViewer>
+    </Page.Content>
+</Page>

@@ -1,0 +1,164 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>MhyunBox</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <OutputType>WinExe</OutputType>
+    <!-- 程序/exe 图标：资源管理器与任务栏均使用此 ico -->
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <!--
+      构建方式说明（与作者原始工程一致）：
+      不使用 UseWinUI / WASDK NuGet 包（那会触发本机不可用的 XAML 编译器链），
+      改为直接引用 lib 下的 WinRT/WinUI/SDK 程序集；XAML 不参与编译，
+      运行时加载随工程自带的预编译 .xbf（App.xbf / MainWindow.xbf / Pages\*.xbf）。
+      事件与字段连接由 XamlGenerated\*.g.cs（还原的原始生成代码）提供。
+    -->
+    <!--
+      CS0649：XAML 不参与编译（运行时加载预编译 .xbf），页面字段由 XamlGenerated\*.g.cs 连接，
+      「从未赋值」是这套构建方式的固有噪声，统一忽略以免淹没真正的问题。
+    -->
+    <NoWarn>$(NoWarn);CS1591;CA1416;CS8632;CS0649</NoWarn>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <CheckForOverflowUnderflow>False</CheckForOverflowUnderflow>
+  </PropertyGroup>
+  <PropertyGroup>
+    
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="obj\**\*.cs" />
+    <Compile Remove="bin\**\*.cs" />
+    <Compile Remove="deps\**\*.cs" />
+    <!-- 独立测试 harness（有自己的 csproj/obj，勿并入主程序） -->
+    <Compile Remove="tools\**\*.cs" />
+    <!-- WinRT AOT 源生成器（随 Windows SDK 引用自动引入）会自行生成 GlobalVtableLookup，排除旧副本 -->
+    <Compile Remove="WinRT\MhyunBoxGenericHelpers\**\*.cs" />
+    <!-- 源生成器会为 App/MainWindow/各 Page 自动生成 vtable 类，排除反编译遗留的旧副本避免重复定义；
+         XamlTypeInfo 相关的 3 个 vtable（XamlMember/XamlMetaDataProvider/XamlUserType）对应 internal 类型，
+         生成器不处理，保留编译 -->
+    <Compile Remove="WinRT\MhyunBoxVtableClasses\MhyunBox_AppWinRTTypeDetails.cs" />
+    <Compile Remove="WinRT\MhyunBoxVtableClasses\MhyunBox_MainWindowWinRTTypeDetails.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="WinRT.Runtime">
+      <HintPath>lib\WinRT.Runtime.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.WinUI">
+      <HintPath>lib\Microsoft.WinUI.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Windows.SDK.NET">
+      <HintPath>lib\Microsoft.Windows.SDK.NET.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.InteractiveExperiences.Projection">
+      <HintPath>lib\Microsoft.InteractiveExperiences.Projection.dll</HintPath>
+    </Reference>
+    <Reference Include="BouncyCastle.Crypto">
+      <HintPath>lib\BouncyCastle.Crypto.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Drawing.Common">
+      <HintPath>lib\System.Drawing.Common.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <!--
+    WASDK 1.8 自包含原生运行时：本工程不用 UseWinUI/NuGet 的程序集资产，
+    但未打包（unpackaged）WinUI 应用启动时需要在输出目录旁放 WASDK 原生 DLL
+    （Microsoft.WindowsAppRuntime.dll / Microsoft.UI.Xaml.dll 等），否则
+    UndockedRegFreeWinRTCS 的 ModuleInitializer 会抛 DllNotFoundException。
+    注意：这三个包需先经过一次 restore（见 NuGet.config 的源），
+    文件位于全局包目录（$(NuGetPackageRoot)），版本号用 * 通配。
+  -->
+  <!-- 运行时资源：预编译 XBF 按 ms-appx:/// 相对路径随输出分发 -->
+  <ItemGroup>
+    <Content Include="App.xbf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="MainWindow.xbf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Pages\*.xbf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="KillTools\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- 超级工具箱：随程序分发的压缩版开源小工具（含各自 LICENSE），运行时按需解压到本地缓存再启动 -->
+    <Content Include="BundledTools\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- 7-Zip 官方独立版（7z 格式专用，免安装）：更新客户端解压 item 包用 -->
+    <Content Include="7zr.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- 内置模组源（PCL 注入用）：MhyCPTD / 更多显示主模组+附属 -->
+    <Content Include="Mods\*.jar">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <!--
+    原生运行时复制策略（关键修复）：
+    本工程编译所依赖的 WinAppSDK 引导程序为 2509 系（foundation 1.8.250906002），
+    而本机已注册的 Microsoft.WindowsAppRuntime.1.8 框架为 2504 系（8000.994/8000.946）。
+    若调用 MddBootstrapInitialize 激活已注册的 8000.994 框架，引导程序（2509）与框架
+    （2504）版本错配会在 WinRT 版本校验阶段触发 FailFast（0xC0000602），且
+    ms-appx:///Microsoft.UI.Xaml/Themes/themeresources.xaml 无法解析。
+    故改为纯 reg-free 加载：从 winappruntime-framework（= 与引导程序同系的 2509 完整
+    框架，含 Microsoft.UI.pri / resources.pri / Microsoft.UI.Xaml\ 主题资源）整体复制到
+    输出目录，由 WindowsAppRuntime_EnsureIsLoaded 在 BASE_DIRECTORY 下自包含加载，
+    本地原生 <=> 引导程序 版本一致，XAML 主题资源即可解析。
+  -->
+  <Target Name="CopyWindowsAppRuntimeNative" AfterTargets="Build">
+    <PropertyGroup>
+      <WasdkFrameworkCache>$(MSBuildProjectDirectory)\winappruntime-framework</WasdkFrameworkCache>
+      <WasmFoundationPkg>$([System.IO.Directory]::GetDirectories('$(NuGetPackageRoot)microsoft.windowsappsdk.foundation'))</WasmFoundationPkg>
+    </PropertyGroup>
+    <ItemGroup>
+      <!-- 与已注册框架同版本的完整原生运行时（foundation+winui+interactiveexperiences 一体） -->
+      <WasmNativeFiles Include="$(WasdkFrameworkCache)\**\*" />
+      <!-- 瘦身：发布包体积限制（zip 后需 <38MB），剔除本应用确定不会用到的组件。
+           以下 DLL 均为按需 COM 激活加载（已核实无任何静态导入依赖），移除不影响启动与 XAML：
+           - Widgets / AI(Text/Imaging/ContentSafety) / Workloads / Designer：通知小组件、AI 推理、Copilot 工作负载、设计器，本应用不使用
+           - AppxDeploymentExtensions.Desktop / DeploymentAgent.exe：MSIX 打包部署相关，本应用为 reg-free 免部署运行
+           - workloads*.json：随 Workloads 组件一并移除 -->
+      <WasmNativeFiles Remove="$(WasdkFrameworkCache)\Microsoft.Windows.Widgets.dll;
+                               $(WasdkFrameworkCache)\Microsoft.Windows.AI.Text.dll;
+                               $(WasdkFrameworkCache)\Microsoft.Windows.AI.Imaging.dll;
+                               $(WasdkFrameworkCache)\Microsoft.Windows.AI.ContentSafety.dll;
+                               $(WasdkFrameworkCache)\Microsoft.Windows.Workloads.dll;
+                               $(WasdkFrameworkCache)\Microsoft.UI.Designer.dll;
+                               $(WasdkFrameworkCache)\WindowsAppSdk.AppxDeploymentExtensions.Desktop.dll;
+                               $(WasdkFrameworkCache)\DeploymentAgent.exe;
+                               $(WasdkFrameworkCache)\EventLog-Instrumentation.man;
+                               $(WasdkFrameworkCache)\workloads*.json" />
+      <!-- 瘦身：MUI 多语言卫星资源仅保留 中文简/繁 + 英文，剔除其余 80+ 语言目录 -->
+      <WasmNativeFiles Remove="$(WasdkFrameworkCache)\*\**\*" />
+      <!-- 保留语言目录单独收集（DestSubdir 指定输出子目录，因 RecursionDir 对无 ** 的模式为空） -->
+      <WasmSatelliteKeep Include="$(WasdkFrameworkCache)\zh-CN\*">
+        <DestSubdir>zh-CN\</DestSubdir>
+      </WasmSatelliteKeep>
+      <WasmSatelliteKeep Include="$(WasdkFrameworkCache)\zh-TW\*">
+        <DestSubdir>zh-TW\</DestSubdir>
+      </WasmSatelliteKeep>
+      <WasmSatelliteKeep Include="$(WasdkFrameworkCache)\en-us\*">
+        <DestSubdir>en-us\</DestSubdir>
+      </WasmSatelliteKeep>
+    </ItemGroup>
+    <Copy SourceFiles="@(WasmNativeFiles)"
+          DestinationFiles="@(WasmNativeFiles->'$(OutDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(WasmSatelliteKeep)"
+          DestinationFiles="@(WasmSatelliteKeep->'$(OutDir)%(DestSubdir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <!-- Bootstrap 引导 DLL（导出 MddBootstrapInitialize）：来自 foundation NuGet 的 runtimes（非 runtimes-framework） -->
+    <Copy SourceFiles="$(WasmFoundationPkg)\runtimes\win-x64\native\Microsoft.WindowsAppRuntime.Bootstrap.dll"
+          DestinationFolder="$(OutDir)" SkipUnchangedFiles="true"
+          Condition="'$(WasmFoundationPkg)' != ''" />
+  </Target>
+</Project>

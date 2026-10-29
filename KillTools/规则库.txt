@@ -1,0 +1,44 @@
+# MhyunBox 威胁清理 - 自定义规则库（YARA-lite）
+# 由「威胁清理.ps1」读取，做命令行正则 / 路径正则匹配。
+# 每行一条正则（不区分大小写），以 # 开头为注释，[节名] 切换分类。
+# 可自行增删规则后保存，无需重启程序（下次扫描生效）。
+
+[命令行正则]
+# —— 脚本宿主 / 无文件载荷 ——
+mshta(\.exe)?\s+(https?://|javascript:|vbscript:)
+regsvr32(\.exe)?\s+.*(scrobj|\.sct|/i:http)
+rundll32(\.exe)?\s+\S*(temp|appdata|public|programdata|downloads|desktop)\S*\.dll
+certutil(\.exe)?\s+.*(-urlcache|-decode|-decodehex|-f\s+http)
+bitsadmin(\.exe)?\s+.*(/transfer|/addfile)
+wmic(\.exe)?\s+.*process\s+call\s+create
+wmic(\.exe)?\s+.*/node:
+powershell(\.exe)?\s+.*(-en\b|-enc\b|-encodedcommand|frombase64string|\biex\b|invoke-expression|downloadstring|downloadfile)
+-ExecutionPolicy\s+Bypass.*-WindowStyle\s+Hidden
+
+# —— 远程下载 / 落地 ——
+(Invoke-WebRequest|iwr|curl|wget)\s+.*https?://
+Start-Process\s+.*-WindowStyle\s+Hidden
+
+# —— 注册表/持久化类命令 ——
+reg\s+add\s+.*\\Run\b.*/v\s+
+schtasks\s+/create\s+.*(/ru\s+system|/sc\s+onlogon|/sc\s+onstart)
+sc(\.exe)?\s+create\s+
+netsh\s+.*(portproxy|firewall\s+add\s+rule).*dir=in
+
+# —— 挖矿 / C2 ——
+(stratum\+tcp|stratum\+ssl)://
+(xmrig|minerd|xmr-stak|cryptonight|randomx|moneroocean)
+
+# —— 反杀软 / 关闭防护 ——
+(taskkill|Stop-Process).*\b(360|huorong|MsMpEng|QQPCTray|wsctrl|HipsTray|ZhuDongFangYu)\b
+Set-MpPreference\s+.*-Disable(RealtimeMonitoring|BehaviorMonitoring|ScriptScanning)\s+\$?true
+net\s+stop\s+(WinDefend|WdNisSvc|SecurityHealthService|wscsvc|WdNisDrv)
+
+[路径正则]
+# —— 常见载荷落地目录（随机名：含数字的杂串文件夹）——
+\\Users\\Public\\[A-Za-z0-9]*[0-9][A-Za-z0-9]*\\
+\\ProgramData\\[A-Fa-f0-9]{8}\\
+# —— ProgramData 下 hex 名可执行文件（如 c2a21762.exe）——
+\\ProgramData\\[A-Fa-f0-9]{6,12}\.exe$
+# —— 可自行追加规则，例如某家族固定落地路径 ——
+# \\Users\\Public\\Downloads\\[A-Za-z0-9]{6}\.exe$
