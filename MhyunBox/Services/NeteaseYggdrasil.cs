@@ -122,7 +122,7 @@ public static class NeteaseYggdrasil
 			{
 				try
 				{
-					using HttpClient http = new HttpClient
+					using HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false })
 					{
 						Timeout = TimeSpan.FromSeconds(10.0)
 					};
@@ -385,7 +385,7 @@ public static class NeteaseYggdrasil
 	{
 		try
 		{
-			using HttpClient http = new HttpClient
+			using HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false })
 			{
 				Timeout = TimeSpan.FromSeconds(10.0)
 			};
@@ -434,7 +434,7 @@ public static class NeteaseYggdrasil
 		string? apiSalt = null;
 		try
 		{
-			using HttpClient http = new HttpClient
+			using HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false })
 			{
 				Timeout = TimeSpan.FromSeconds(12.0)
 			};
@@ -785,7 +785,7 @@ public static class NeteaseYggdrasil
 		_ = 3;
 		try
 		{
-			using HttpClient http = new HttpClient
+			using HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false })
 			{
 				BaseAddress = new Uri("https://x19obtcore.nie.netease.com:8443"),
 				Timeout = TimeSpan.FromSeconds(15.0)
@@ -932,7 +932,7 @@ public static class NeteaseYggdrasil
 		_ = 3;
 		try
 		{
-			using HttpClient http = new HttpClient
+			using HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false })
 			{
 				BaseAddress = new Uri("https://x19apigatewayobt.nie.netease.com"),
 				Timeout = TimeSpan.FromSeconds(15.0)
@@ -1062,7 +1062,7 @@ public static class NeteaseYggdrasil
 		{
 			return (address, port.Value);
 		}
-		using HttpClient http = new HttpClient
+		using HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false })
 		{
 			Timeout = TimeSpan.FromSeconds(10.0)
 		};

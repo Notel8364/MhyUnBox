@@ -46,7 +46,7 @@ public static class NeteaseServerListService
 
 	// ---------- 封面图下载（BitmapImage 直接加载 CDN URL 常因 UA/防盗链失败，改为手动下载） ----------
 
-	private static readonly HttpClient ImageHttp = new HttpClient
+	private static readonly HttpClient ImageHttp = new HttpClient(new HttpClientHandler { UseProxy = false })
 	{
 		Timeout = TimeSpan.FromSeconds(15.0)
 	};
@@ -299,7 +299,8 @@ public static class NeteaseServerListService
 
 	private static async Task<(int Status, string Body)> PostAsync(string path, string body, string userId, string userToken, CancellationToken ct)
 	{
-		using HttpClient http = new HttpClient();
+		// 服务器列表是登录后立即拉取的，直连不受用户加速器/系统代理影响
+		using HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false });
 		http.Timeout = TimeSpan.FromSeconds(20.0);
 		using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, ApiBase + path);
 		request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);

@@ -192,7 +192,8 @@ public sealed class Login4399Service : IDisposable
 		{
 			CookieContainer = _cookies,
 			UseCookies = true,
-			AllowAutoRedirect = true
+			AllowAutoRedirect = true,
+			UseProxy = false
 		});
 		_http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
 		_http.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9");

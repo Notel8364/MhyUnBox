@@ -314,7 +314,12 @@ public sealed class NeteaseLogin : IDisposable
 
 	private const int MinSessionIntervalMs = 1200;
 
-	private readonly HttpClient _http = new HttpClient
+	// 关键：UseProxy=false 绕过系统代理/加速器。玩家常挂加速器（只为游戏端口），若跟随系统代理，
+	// 网易账号 API 会被代理劫持导致登录失败（开发者无代理一直正常，用户挂加速器全挂）。
+	private readonly HttpClient _http = new HttpClient(new HttpClientHandler
+	{
+		UseProxy = false
+	})
 	{
 		Timeout = TimeSpan.FromSeconds(45.0)
 	};
@@ -415,9 +420,24 @@ public sealed class NeteaseLogin : IDisposable
 			return new NeteaseLoginResult
 			{
 				Success = false,
-				Message = "登录异常：" + ex.Message
+				Message = "登录异常：" + FriendlyNetError(ex)
 			};
 		}
+	}
+
+	/// <summary>网络类异常时附带直连诊断提示（登录请求已绕过系统代理，直连网易失败多为本地网络/加速器干扰）。</summary>
+	private static string FriendlyNetError(Exception ex)
+	{
+		string msg = ex.Message ?? "";
+		bool isNet = ex is HttpRequestException
+			|| ex is TimeoutException
+			|| ex is System.Net.Sockets.SocketException
+			|| msg.Contains("连接", StringComparison.Ordinal)
+			|| msg.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+			|| msg.Contains("response", StringComparison.OrdinalIgnoreCase);
+		return isNet
+			? msg + "（登录为直连网易，不经过加速器；若开启了加速器/VPN/系统代理，请关闭后重试）"
+			: msg;
 	}
 
 	public string GetDeviceUnique()

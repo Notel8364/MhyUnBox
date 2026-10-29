@@ -269,7 +269,8 @@ public static class NeteaseRoleService
 
 	private static async Task<(int Status, string Body)> PostAsync(string path, string body, string userId, string userToken, CancellationToken ct)
 	{
-		using HttpClient http = new HttpClient();
+		// 角色拉取是登录成功后的第一步，必须直连（用户挂加速器时系统代理会劫持网易 API）
+		using HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false });
 		using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://x19apigatewayobt.nie.netease.com" + path);
 		request.Content = new StringContent(body, Encoding.UTF8, "application/json");
 		foreach (KeyValuePair<string, string> item2 in NeteaseCipher.ComputeHttpRequestToken(path, body, userId, userToken))
