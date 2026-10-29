@@ -1469,39 +1469,30 @@ public static class ProxyCaptureService
 		Exception ex2 = null;
 		if (allowed.Count > 0)
 		{
-			bool primaryHealthy = true;
-			ProxyUpstreamHealth health;
-			if (UpstreamHealth.TryGetValue(targetHost + ":" + targetPort, out health))
+			// 既定原则：程序不替线路做主。健康检查与节点轮换仅记录日志、供 IP 池排序，
+			// 不再强制跳过直连——直连失败自然回落 IP 池（下方 catch），避免本地误判把用户全赶到备用线路。
+			if (UpstreamHealth.TryGetValue(targetHost + ":" + targetPort, out ProxyUpstreamHealth health) && !health.Reachable)
 			{
-				primaryHealthy = health.Reachable;
+				LogHelper.Log($"[防DDoS] {label} 健康表暂标记 {targetHost}:{targetPort} 不可用，仍先照常直连（失败自动回落 IP 池）");
 			}
-			// 节点自愈：直连节点处于认证失败冷却期时跳过直连，自动改用预设 IP 池（更换节点）
-			if (primaryHealthy && IsLinePenalized(targetHost, targetPort, null))
+			if (IsLinePenalized(targetHost, targetPort, null))
 			{
-				primaryHealthy = false;
-				LogHelper.Log($"[节点轮换] {label} 直连节点 {targetHost}:{targetPort} 处于认证失败冷却期，自动改用其它节点");
+				LogHelper.Log($"[节点轮换] {label} 直连节点 {targetHost}:{targetPort} 处于认证失败冷却期，仍照常直连（IP 池节点排序中已降权）");
 			}
-			if (primaryHealthy)
+			try
 			{
-				try
+				TcpClient tcpClient = await TryConnectAnyAsync(allowed, targetPort, 8000, ct).ConfigureAwait(continueOnCapturedContext: false);
+				if (session != null)
 				{
-					TcpClient tcpClient = await TryConnectAnyAsync(allowed, targetPort, 8000, ct).ConfigureAwait(continueOnCapturedContext: false);
-					if (session != null)
-					{
-						session.UpstreamRoute = "直连 " + targetHost + ":" + targetPort;
-					}
-					LogHelper.Log($"[代理抓取] {label} 已连接上游 {targetHost}:{targetPort}");
-					return tcpClient;
+					session.UpstreamRoute = "直连 " + targetHost + ":" + targetPort;
 				}
-				catch (Exception ex3)
-				{
-					ex2 = ex3;
-					LogHelper.Log($"[防DDoS] {label} 主目标 {targetHost}:{targetPort} 连接失败: {ex3.Message}");
-				}
+				LogHelper.Log($"[代理抓取] {label} 已连接上游 {targetHost}:{targetPort}");
+				return tcpClient;
 			}
-			else
+			catch (Exception ex3)
 			{
-				LogHelper.Log($"[防DDoS] {label} 主目标 {targetHost}:{targetPort} 被健康检查标记为不可用，跳过直连，改用预设 IP 池");
+				ex2 = ex3;
+				LogHelper.Log($"[防DDoS] {label} 主目标 {targetHost}:{targetPort} 连接失败: {ex3.Message}");
 			}
 		}
 		else
@@ -1728,7 +1719,7 @@ public static class ProxyCaptureService
 				DateTime until = now + LinePenalty;
 				LineFailures[key] = new LineFailureState(cur.Count, cur.WindowStartUtc, until);
 				string nodeText = string.IsNullOrWhiteSpace(node) ? ("直连 " + host + ":" + port) : (node.Trim() + ":" + port);
-				LogHelper.Force($"[节点轮换] 节点 {nodeText} 在 {(int)LineFailureWindow.TotalMinutes} 分钟内累计 {cur.Count} 次认证失败（{reason}），已临时停用 {(int)LinePenalty.TotalMinutes} 分钟，新会话自动更换节点");
+				LogHelper.Force($"[节点轮换] 节点 {nodeText} 在 {(int)LineFailureWindow.TotalMinutes} 分钟内累计 {cur.Count} 次认证失败（{reason}），已降权 {(int)LinePenalty.TotalMinutes} 分钟（IP 池排序后置，直连不再强制跳过，照常请求）");
 			}
 		}
 		catch
