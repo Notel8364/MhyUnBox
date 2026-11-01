@@ -504,11 +504,7 @@ public sealed partial class MainWindow : Window
 			AccountAutoLoginService.Start();
 			// 服务器列表自动发现：后台用已登录网易账号拉取服务器并自动注册预设（默认两个保留）
 			ServerAutoDiscovery.Start(8);
-			// 本机锁：开启「默认启动自动登录」时静默解锁；否则首次创建账号 / 每次要求登录程序账号
-			if (!AppLock.TryAutoUnlock())
-			{
-				_ = AppLockDialogs.ShowStartupFlowAsync();
-			}
+			// 用户定版（2026-11-01）：本机锁（程序账号/解锁弹窗）机制整体移除，启动不再要求解锁
 		});
 	}
 
@@ -1221,24 +1217,7 @@ public sealed partial class MainWindow : Window
 			navigationViewItem.FontWeight = FontWeights.SemiBold;
 			navigationViewItem.MinHeight = 48.0;
 		}
-		// 导航栏最底部：退出程序（锁定程序账号并关闭）
-		NavigationViewItem exitItem = new NavigationViewItem
-		{
-			Icon = new FontIcon
-			{
-				Glyph = "\uE7E8"
-			},
-			Content = "退出程序",
-			Tag = "ExitProgram",
-			MinHeight = 48.0,
-			FontWeight = FontWeights.SemiBold
-		};
-		exitItem.Tapped += async delegate
-		{
-			NavView.SelectedItem = _lastNavSelection;
-			await AppLockDialogs.ShowExitProgramDialogAsync();
-		};
-		NavView.FooterMenuItems.Add(exitItem);
+		// 用户定版（2026-11-01）：导航栏底部「退出程序」项移除（程序退出走窗口关闭/托盘）
 		foreach (object menuItem in NavView.MenuItems)
 		{
 			if (menuItem is NavigationViewItem { Tag: string tag } navigationViewItem2 && tag == "HomePage")

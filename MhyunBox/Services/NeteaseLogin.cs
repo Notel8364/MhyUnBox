@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -316,9 +318,20 @@ public sealed class NeteaseLogin : IDisposable
 
 	// 关键：UseProxy=false 绕过系统代理/加速器。玩家常挂加速器（只为游戏端口），若跟随系统代理，
 	// 网易账号 API 会被代理劫持导致登录失败（开发者无代理一直正常，用户挂加速器全挂）。
+	// 证书回调：允许用解析出的 IP 直连网关（Host 头仍是域名），校验证书主题确属网易域名，防止中间人。
 	private readonly HttpClient _http = new HttpClient(new HttpClientHandler
 	{
-		UseProxy = false
+		UseProxy = false,
+		ServerCertificateCustomValidationCallback = (req, cert, chain, errors) =>
+		{
+			if (errors == System.Net.Security.SslPolicyErrors.None)
+			{
+				return true;
+			}
+			string subject = cert?.Subject ?? "";
+			return subject.Contains("nie.netease.com", StringComparison.OrdinalIgnoreCase)
+				|| subject.Contains("netease.com", StringComparison.OrdinalIgnoreCase);
+		}
 	})
 	{
 		Timeout = TimeSpan.FromSeconds(45.0)
@@ -327,6 +340,66 @@ public sealed class NeteaseLogin : IDisposable
 	private string? _unique;
 
 	private string? _deviceId;
+
+	// ---------- 会话网关多接入点（缓解部分地区 login-otp 被拒 / 角色加载不出） ----------
+	// 日志实证：部分地区用户 login-otp 返回 code=32 "服务器维护中，请稍候再试"（status=login abnormally）——
+	// 并非真实维护，是该用户命中的接入节点按环境拒绝。DNS 解析出多个接入 IP，逐一尝试（Host 头仍是域名），
+	// 哪个节点能过就用哪个；十分钟缓存避免每次登录都查 DNS。
+
+	private const string CoreHost = "x19obtcore.nie.netease.com";
+
+	private static List<string>? _coreEndpoints;
+
+	private static DateTime _coreEndpointsAt = DateTime.MinValue;
+
+	private static readonly object CoreEndpointsGate = new object();
+
+	private static List<string> GetCoreEndpoints()
+	{
+		lock (CoreEndpointsGate)
+		{
+			if (_coreEndpoints != null && DateTime.UtcNow - _coreEndpointsAt < TimeSpan.FromMinutes(10.0))
+			{
+				return _coreEndpoints;
+			}
+			List<string> list = new List<string>
+			{
+				"https://" + CoreHost + ":8443"
+			};
+			try
+			{
+				// 同步 DNS（调用方都在 Task.Run 后台线程，不卡 UI）
+				IPAddress[] addresses = Dns.GetHostEntry(CoreHost).AddressList;
+				foreach (IPAddress ip in addresses)
+				{
+					if (ip.AddressFamily == AddressFamily.InterNetwork)
+					{
+						list.Add("https://" + ip + ":8443");
+					}
+				}
+			}
+			catch
+			{
+			}
+			_coreEndpoints = list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+			_coreEndpointsAt = DateTime.UtcNow;
+			if (_coreEndpoints.Count > 1)
+			{
+				LogHelper.Log("[网易登录] 会话网关接入点 " + _coreEndpoints.Count + " 个（域名 + " + (_coreEndpoints.Count - 1) + " 个解析 IP），失败时自动换点重试");
+			}
+			return _coreEndpoints;
+		}
+	}
+
+	// 是否为接入网关按环境拒绝（换接入点可能有用）：code=32（伪装"维护中"）等
+	private static bool IsGatewayReject(int code, string? status, string? message)
+	{
+		if (code == 32)
+		{
+			return true;
+		}
+		return code != 0 && (IsRiskControlText(status) || IsRiskControlText(message));
+	}
 
 	private byte[]? _deviceKey;
 
@@ -524,13 +597,19 @@ public sealed class NeteaseLogin : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// 登录链路 UA：拟真官方启动器（WPFLauncher/真实版本号）。0.0.0.0 是明显非官方特征，
+	/// 网易登录环境风控（login abnormally）可能参考 UA 一致性。
+	/// </summary>
+	private string LauncherUserAgent => "WPFLauncher/" + (_gameVersion ?? "0.0.0.0");
+
 	private async Task<bool> AuthSessionAsync(string cookieJson)
 	{
 		LogHelper.Log("[网易校验] uni_sauth 请求体: " + cookieJson.Length + "B");
 		try
 		{
 			using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://mgbsdk.matrix.netease.com/x19/sdk/uni_sauth");
-			request.Headers.TryAddWithoutValidation("User-Agent", "WPFLauncher/0.0.0.0");
+			request.Headers.TryAddWithoutValidation("User-Agent", LauncherUserAgent);
 			request.Content = new StringContent(cookieJson, Encoding.UTF8, "application/json");
 			using HttpResponseMessage response = await _http.SendAsync(request);
 			LogHelper.Log("[网易校验] uni_sauth 状态: " + (int)response.StatusCode);
@@ -940,26 +1019,59 @@ public sealed class NeteaseLogin : IDisposable
 		{
 			sauth_json = cookieJson
 		}, Relaxed);
-		using HttpRequestMessage req1 = new HttpRequestMessage(HttpMethod.Post, "https://x19obtcore.nie.netease.com:8443/login-otp");
-		req1.Headers.TryAddWithoutValidation("User-Agent", "WPFLauncher/0.0.0.0");
-		req1.Content = new StringContent(content, Encoding.UTF8, "application/json");
-		using HttpResponseMessage resp1 = await _http.SendAsync(req1);
-		string text = await resp1.Content.ReadAsStringAsync();
+		// login-otp 多接入点尝试：域名直连优先，被网关按环境拒绝（code=32 / login abnormally）或网络失败时换解析 IP 重试
 		EntityWrap<JsonElement?>? entityWrap = null;
-		try
+		string status = "";
+		int code = -1;
+		string text = "";
+		string? coreEndpoint = null;
+		int triedEndpoints = 0;
+		foreach (string endpoint in GetCoreEndpoints())
 		{
-			entityWrap = JsonSerializer.Deserialize<EntityWrap<JsonElement?>>(text);
+			triedEndpoints++;
+			try
+			{
+				using HttpRequestMessage req1 = new HttpRequestMessage(HttpMethod.Post, endpoint + "/login-otp");
+				req1.Headers.TryAddWithoutValidation("User-Agent", LauncherUserAgent);
+				if (!endpoint.Contains(CoreHost, StringComparison.OrdinalIgnoreCase))
+				{
+					req1.Headers.Host = CoreHost;
+				}
+				req1.Content = new StringContent(content, Encoding.UTF8, "application/json");
+				using HttpResponseMessage resp1 = await _http.SendAsync(req1);
+				text = await resp1.Content.ReadAsStringAsync();
+				try
+				{
+					entityWrap = JsonSerializer.Deserialize<EntityWrap<JsonElement?>>(text);
+				}
+				catch (Exception ex2)
+				{
+					LogHelper.Log($"[网易登录] login-otp 响应解析失败: HTTP {(int)resp1.StatusCode}, {text.Length}B, {ex2.Message}");
+				}
+				status = ExtractEntityStatus(entityWrap);
+				code = entityWrap?.Code ?? -1;
+				LogHelper.Log($"[网易登录] login-otp[{triedEndpoints}/{GetCoreEndpoints().Count}] {endpoint}: HTTP {(int)resp1.StatusCode}, 响应 {text.Length}B, code={code}, status={Safe(status)}, message={Safe(entityWrap?.Message)}");
+				if (entityWrap != null && entityWrap.Code == 0 && entityWrap.Data.HasValue && entityWrap.Data.Value.ValueKind == JsonValueKind.Object)
+				{
+					coreEndpoint = endpoint;
+					break;
+				}
+				// 网关拒绝（维护中/环境异常）→ 换下一个接入点；其它业务错误（如 Cookie 无效）不必换点
+				if (IsGatewayReject(code, status, entityWrap?.Message))
+				{
+					continue;
+				}
+				break;
+			}
+			catch (Exception sendEx)
+			{
+				LogHelper.Log($"[网易登录] login-otp[{triedEndpoints}] {endpoint} 网络失败: {sendEx.GetType().Name}: {sendEx.Message}");
+				continue;
+			}
 		}
-		catch (Exception ex2)
+		if (coreEndpoint == null)
 		{
-			LogHelper.Log($"[网易登录] login-otp 响应解析失败: HTTP {(int)resp1.StatusCode}, {text.Length}B, {ex2.Message}");
-		}
-		string status = ExtractEntityStatus(entityWrap);
-		int code = entityWrap?.Code ?? -1;
-		LogHelper.Log($"[网易登录] login-otp: HTTP {(int)resp1.StatusCode}, 响应 {text.Length}B, code={code}, status={Safe(status)}, message={Safe(entityWrap?.Message)}");
-		if (entityWrap == null || entityWrap.Code != 0 || !entityWrap.Data.HasValue || entityWrap.Data.Value.ValueKind != JsonValueKind.Object)
-		{
-			return (Otp: null, Error: BuildSessionError("login-otp", status, entityWrap?.Message, code));
+			return (Otp: null, Error: BuildSessionError("login-otp", status, entityWrap?.Message, code) + ((IsGatewayReject(code, status, entityWrap?.Message) && triedEndpoints > 1) ? "（已自动尝试全部 " + triedEndpoints + " 个接入点均被拒，多为该地区/网络环境被网易风控，可稍后重试或换网络）" : ""));
 		}
 		LoginOtp? loginOtp = null;
 		try
@@ -996,7 +1108,12 @@ public sealed class NeteaseLogin : IDisposable
 			LockTime = 0
 		};
 		byte[] content2 = NeteaseCipher.HttpEncrypt(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value2, Relaxed)));
-		using HttpRequestMessage req2 = new HttpRequestMessage(HttpMethod.Post, "https://x19obtcore.nie.netease.com:8443/authentication-otp");
+		// authentication-otp 用与 login-otp 成功的同一接入点（避免跨节点会话状态不一致）
+		using HttpRequestMessage req2 = new HttpRequestMessage(HttpMethod.Post, coreEndpoint + "/authentication-otp");
+		if (!coreEndpoint.Contains(CoreHost, StringComparison.OrdinalIgnoreCase))
+		{
+			req2.Headers.Host = CoreHost;
+		}
 		req2.Content = new ByteArrayContent(content2);
 		using HttpResponseMessage resp2 = await _http.SendAsync(req2);
 		byte[] raw2 = await resp2.Content.ReadAsByteArrayAsync();

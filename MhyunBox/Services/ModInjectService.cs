@@ -287,7 +287,18 @@ public static class ModInjectService
 			string mainMsg;
 			if (clientMains.Count > 0)
 			{
+				// 同族多版本并存时只保留最新一个，删除其余重复（Forge 同 modid 重复加载会冲突）
+				clientMains = clientMains
+					.OrderByDescending((string f) => VersionTokens(ExtractVersion(Path.GetFileName(f))), VersionKeyComparer.Instance)
+					.ToList();
 				string existing = clientMains[0];
+				foreach (string dup in clientMains.Skip(1))
+				{
+					if (SafeDelete(dup))
+					{
+						removedOld++;
+					}
+				}
 				if (mainSrc != null && string.Equals(Path.GetFileName(existing), Path.GetFileName(mainSrc), StringComparison.OrdinalIgnoreCase)
 					&& new FileInfo(existing).Length != new FileInfo(mainSrc).Length)
 				{
@@ -424,6 +435,22 @@ public static class ModInjectService
 				removedOld++;
 			}
 		}
+		// 客户端里有多个更新版 CPTD 并存时只保留最新一个，删除其余重复（同 modid 冲突）
+		if (keepNewer.Count > 1)
+		{
+			keepNewer = keepNewer
+				.OrderByDescending((string n) => VersionTokens(ExtractVersion(n)), VersionKeyComparer.Instance)
+				.ToList();
+			foreach (string dupName in keepNewer.Skip(1))
+			{
+				string dupPath = SafeFiles(modsDir).FirstOrDefault((string f) => string.Equals(Path.GetFileName(f), dupName, StringComparison.OrdinalIgnoreCase));
+				if (dupPath != null && SafeDelete(dupPath))
+				{
+					removedOld++;
+				}
+			}
+			keepNewer = keepNewer.Take(1).ToList();
+		}
 		string dst2 = Path.Combine(modsDir, srcName);
 		bool copied = false;
 		if (!clientNewer && (!File.Exists(dst2) || new FileInfo(dst2).Length != new FileInfo(src).Length))
@@ -443,18 +470,30 @@ public static class ModInjectService
 		try
 		{
 			string text = Http.GetStringAsync(MoreShowDownloadPage).GetAwaiter().GetResult();
-			List<string> list = new List<string>();
+			// (文件名, 完整下载地址)：href 可能是相对路径也可能是绝对链接，统一转绝对 URL 后用原 href 下载，
+			// 不再用「页面地址 + 文件名」拼接（官网目录结构与页面地址不同时会 404）
+			List<(string Name, string Url)> list = new List<(string, string)>();
 			foreach (Match item in Regex.Matches(text, "href=\"([^\"]+\\.jar)\"", RegexOptions.IgnoreCase))
 			{
-				string text2 = Uri.UnescapeDataString(item.Groups[1].Value);
-				int num = text2.LastIndexOf('/');
+				string raw = Uri.UnescapeDataString(item.Groups[1].Value);
+				string abs;
+				try
+				{
+					abs = new Uri(new Uri(MoreShowDownloadPage), raw).ToString();
+				}
+				catch
+				{
+					continue;
+				}
+				string name = raw;
+				int num = name.LastIndexOf('/');
 				if (num >= 0)
 				{
-					text2 = text2.Substring(num + 1);
+					name = name.Substring(num + 1);
 				}
-				if (text2.StartsWith("MoreShow_Extra", StringComparison.OrdinalIgnoreCase) && text2.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
+				if (name.StartsWith("MoreShow_Extra", StringComparison.OrdinalIgnoreCase) && name.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
 				{
-					list.Add(text2);
+					list.Add((name, abs));
 				}
 			}
 			if (list.Count == 0)
@@ -462,19 +501,27 @@ public static class ModInjectService
 				LogHelper.Log("[模组注入] 官网未解析到 MoreShow_Extra jar");
 				return null;
 			}
-			string text3 = list.OrderByDescending((string n) => VersionTokens(ExtractVersion(n)), VersionKeyComparer.Instance).ThenBy((string n) => n.Length).First();
+			(string text3, string downloadUrl) = list
+				.OrderByDescending((ValueTuple<string, string> n) => VersionTokens(ExtractVersion(n.Item1)), VersionKeyComparer.Instance)
+				.ThenBy((ValueTuple<string, string> n) => n.Item1.Length)
+				.First();
 			string text4 = Path.Combine(ModsDirectory(), text3);
 			if (!File.Exists(text4) || new FileInfo(text4).Length == 0)
 			{
 				Directory.CreateDirectory(ModsDirectory());
 				string text5 = text4 + ".tmp";
-				using (var response = Http.GetAsync(MoreShowDownloadPage + Uri.EscapeDataString(text3)).GetAwaiter().GetResult())
-				using (FileStream destination = new FileStream(text5, FileMode.Create))
+				using (var response = Http.GetAsync(downloadUrl).GetAwaiter().GetResult())
 				{
+					if (!response.IsSuccessStatusCode)
+					{
+						LogHelper.Log("[模组注入] 官网下载失败 HTTP " + (int)response.StatusCode + ": " + downloadUrl);
+						return null;
+					}
+					using FileStream destination = new FileStream(text5, FileMode.Create);
 					response.Content.CopyToAsync(destination).GetAwaiter().GetResult();
 				}
 				File.Move(text5, text4, overwrite: true);
-				LogHelper.Log("[模组注入] 已从官网下载最新: " + text3);
+				LogHelper.Log("[模组注入] 已从官网下载最新: " + text3 + "（" + downloadUrl + "）");
 				string[] array = SafeFiles(ModsDirectory());
 				foreach (string text6 in array)
 				{

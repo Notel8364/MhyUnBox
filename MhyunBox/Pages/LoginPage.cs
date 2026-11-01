@@ -670,6 +670,7 @@ public sealed partial class LoginPage : Page
 		bool flag = selectedChannel == "4399";
 		if (IsPhone(AccountBox.Text))
 		{
+			// 用户定版（2026-11-01）：手机号只走短信验证码登录（密码登录仅用于邮箱/用户名）
 			AccountLabel.Text = (flag ? "4399 手机号" : "网易手机号");
 			AccountBox.PlaceholderText = "11 位手机号";
 			SendCodeButton.Visibility = Visibility.Visible;
@@ -680,8 +681,8 @@ public sealed partial class LoginPage : Page
 			}
 			else
 			{
-				PasswordLabel.Text = "登录密码";
-				PasswordBox.PlaceholderText = "登录密码（也可点「发送验证码」改用验证码登录）";
+				PasswordLabel.Text = "短信验证码";
+				PasswordBox.PlaceholderText = "点「发送验证码」后输入短信验证码（手机号不支持密码登录）";
 			}
 			EmailDomainSelect.Visibility = Visibility.Collapsed;
 		}
@@ -858,6 +859,12 @@ public sealed partial class LoginPage : Page
 		string account = AccountBox.Text.Trim();
 		string password = PasswordBox.Password;
 		bool flag = selectedChannel == "cookie";
+		// 用户定版（2026-11-01）：手机号只走短信验证码登录——未发送验证码时不接受密码提交
+		if (!flag && IsPhone(account) && !_smsCodeSent)
+		{
+			ShowInfo("手机号登录请点「发送验证码」后输入短信验证码；密码登录请使用邮箱账号" + ((selectedChannel == "4399") ? "或 4399 用户名" : ""), ok: false);
+			return;
+		}
 		if (string.IsNullOrWhiteSpace(account) || (!flag && string.IsNullOrWhiteSpace(password)))
 		{
 			if (flag)
@@ -902,7 +909,8 @@ public sealed partial class LoginPage : Page
 				}
 				else
 				{
-					string merged = (flag2 ? account : MergeEmailDomain(account));
+					// 网易密码登录只可能是邮箱（手机号已在入口处拦截，只走验证码）
+					string merged = MergeEmailDomain(account);
 					NeteaseLogin login = new NeteaseLogin();
 					try
 					{
@@ -1298,15 +1306,7 @@ public sealed partial class LoginPage : Page
 			VerticalAlignment = VerticalAlignment.Center
 		};
 		labelPanel.Children.Add(textBlock);
-		if (AppLock.IsPreferredNetAccount(acc.Account))
-		{
-			labelPanel.Children.Add(new TextBlock
-			{
-				Text = "✓ 验证账号（网易/4399 均可）",
-				FontSize = 11.0,
-				Foreground = new SolidColorBrush(Colors.LightGreen)
-			});
-		}
+		// 「✓ 验证账号」标记已随验证账号 UI 入口一并移除（用户定版 2026-11-01）
 		ElsewhereLoginNotice.Notice elsewhere = ElsewhereLoginNotice.Get(acc.Channel, acc.Account);
 		if (elsewhere != null)
 		{
@@ -1412,57 +1412,13 @@ public sealed partial class LoginPage : Page
 		{
 			AccountStore.Remove(acc.Channel, acc.Account);
 			ProxyCaptureService.RestartIfRunningForPreset();
-			ShowInfo("已删除该账号及其保存的会话，验证账号记录已同步移除。分组角色与端口记忆已保留，重新绑定同账号可继续使用；手动启动代理时会自动跳过已删账号。", ok: true, "删除账号");
+			ShowInfo("已删除该账号及其保存的会话。分组角色与端口记忆已保留，重新绑定同账号可继续使用；手动启动代理时会自动跳过已删账号。", ok: true, "删除账号");
 			RefreshAccountList();
 		};
 		Grid.SetColumn(button2, 3);
 		grid.Children.Add(button2);
-		// 设为/取消 网易验证账号（本机锁解锁与改密验证使用该账号账密）
-		// 不可用情形直接禁用+淡色（而不是可点但点了只弹提示）：
-		// 1) 「设为验证」在程序锁定中禁用（取消验证锁定态允许）；2) 已满 3 个再「设为验证」；
-		// 3) 只剩 1 个验证账号的「取消验证」（至少保留一个）
-		bool preferred = AppLock.IsPreferredNetAccount(acc.Account);
-		int verifyCount = AppLock.PreferredNetAccountCount;
-		string? verifyDisabledReason = null;
-		if (AppLock.IsUnlocked)
-		{
-			if (!preferred && verifyCount >= 3)
-			{
-				verifyDisabledReason = "验证账号已满 3 个，请先取消一个再设置";
-			}
-			else if (preferred && verifyCount <= 1)
-			{
-				verifyDisabledReason = "至少保留一个验证账号，不能取消";
-			}
-		}
-		else if (!preferred)
-		{
-			verifyDisabledReason = "程序锁定中，「设为验证」需先解锁（取消验证不受限）";
-		}
-		else if (verifyCount <= 1)
-		{
-			verifyDisabledReason = "至少保留一个验证账号，不能取消";
-		}
-		Button verifyBtn = new Button
-		{
-			Content = (preferred ? "取消验证" : "设为验证"),
-			MinWidth = 92.0,
-			VerticalAlignment = VerticalAlignment.Center,
-			IsEnabled = (verifyDisabledReason == null)
-		};
-		if (verifyDisabledReason != null)
-		{
-			ToolTipService.SetToolTip(verifyBtn, verifyDisabledReason);
-			verifyBtn.Opacity = 0.4;
-		}
-		verifyBtn.Click += delegate
-		{
-			(bool Ok, string Message) = AppLock.SetPreferredNetAccount(acc.Account, !preferred);
-			MainWindow.Instance?.ShowToast(Message, Ok);
-			RefreshAccountList();
-		};
-		Grid.SetColumn(verifyBtn, 4);
-		grid.Children.Add(verifyBtn);
+		// 用户定版（2026-11-01）：账号行不再放「设为验证/取消验证」按钮（程序锁验证账号 UI 入口移除；
+		// 本机锁机制现已整体移除，解锁/改密/验证通道不复存在）
 		return grid;
 	}
 
@@ -1507,7 +1463,7 @@ public sealed partial class LoginPage : Page
 			if (await DialogGate.ShowAsync(new ContentDialog
 			{
 				Title = "全部删除确认",
-				Content = "确定要删除全部 " + accounts.Count + " 个已保存的账号会话吗？将同时删除各账号的登录凭证与验证账号记录，且不可恢复。分组角色与端口记忆会保留（重新绑定后可继续使用，启动代理时自动跳过已删账号）。",
+				Content = "确定要删除全部 " + accounts.Count + " 个已保存的账号会话吗？将同时删除各账号的登录凭证，且不可恢复。分组角色与端口记忆会保留（重新绑定后可继续使用，启动代理时自动跳过已删账号）。",
 				PrimaryButtonText = "全部删除",
 				CloseButtonText = "取消",
 				DefaultButton = ContentDialogButton.Close,
@@ -1525,7 +1481,7 @@ public sealed partial class LoginPage : Page
 				}
 				ProxyCaptureService.RestartIfRunningForPreset();
 				LogHelper.Log("[账号] 全部删除账号会话: " + accounts.Count + " 个");
-				ShowInfo("已删除全部 " + accounts.Count + " 个账号会话及其登录凭证，验证账号记录已同步移除。分组角色与端口记忆保留。", ok: true, "全部删除");
+				ShowInfo("已删除全部 " + accounts.Count + " 个账号会话及其登录凭证。分组角色与端口记忆保留。", ok: true, "全部删除");
 				RefreshAccountList();
 			}
 			catch (Exception ex)

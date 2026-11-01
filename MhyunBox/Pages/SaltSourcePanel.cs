@@ -690,8 +690,11 @@ public sealed class SaltSourcePanel : StackPanel
 			FillDurations(_memSecondsBox, 1);
 			ApplyBlacklist();
 			RefreshBlacklistCount();
-			// 默认 = 最早第一次成功连接会话的盐值与版本号
-			string saltDefault = !string.IsNullOrWhiteSpace(cfg.LastGoodCrcSalt) ? cfg.LastGoodCrcSalt : (cfg.CrcSalt ?? "");
+			// 默认 = 当前生效盐值（手输/最近一次应用保存的），空时回退首次成功会话盐值。
+			// 修复：旧逻辑优先显示 LastGoodCrcSalt（首次成功的旧盐，写入后不再覆盖）——
+			// 网易更新后手动保存了新盐（写进 CrcSalt），界面重载却又显示回旧盐 387，
+			// 用户看着旧盐再点一次保存就真的把旧盐存回去了。
+			string saltDefault = !string.IsNullOrWhiteSpace(cfg.CrcSalt) ? cfg.CrcSalt : (cfg.LastGoodCrcSalt ?? "");
 			string versionDefault = !string.IsNullOrWhiteSpace(cfg.LastGoodLauncherVersion) ? cfg.LastGoodLauncherVersion : (NeteaseYggdrasil.LauncherVersion ?? "");
 			_saltBox.Text = saltDefault;
 			_versionBox.Text = versionDefault;
@@ -770,11 +773,9 @@ public sealed class SaltSourcePanel : StackPanel
 			}
 			SettingsManager.Save(cfg2);
 			NeteaseYggdrasil.CrcSalt = salt;
-			if (string.IsNullOrWhiteSpace(cfg2.LastGoodCrcSalt))
-			{
-				cfg2.LastGoodCrcSalt = salt;
-				SettingsManager.Save(cfg2);
-			}
+			// 手动保存 = 用户明确认可该盐值，同步更新「首次成功盐值」，界面默认值跟着走
+			cfg2.LastGoodCrcSalt = salt;
+			SettingsManager.Save(cfg2);
 			SetFeedback(_saltFeedback, "已启用手输盐值 " + CrcSaltSourceManager.Mask(salt) + (string.IsNullOrWhiteSpace(version) ? "" : ("，版本 " + version)), ok: true);
 			CrcSaltSourceManager.SetStatus("使用手输盐值 " + CrcSaltSourceManager.Mask(salt));
 		}
@@ -1752,10 +1753,8 @@ public sealed class SaltSourcePanel : StackPanel
 				{
 					cfg.LastGoodLauncherVersion = version;
 				}
-				if (string.IsNullOrWhiteSpace(cfg.LastGoodCrcSalt))
-				{
-					cfg.LastGoodCrcSalt = salt;
-				}
+				// 应用成功 = 认可该盐值，同步更新「首次成功盐值」
+				cfg.LastGoodCrcSalt = salt;
 				SettingsManager.Save(cfg);
 				CrcSaltSourceManager.MarkSuccess(hit!.Kind, salt, "面板应用");
 				SetFeedback(_saltFeedback, "已应用盐值（来源 " + hit!.Name + "）：" + CrcSaltSourceManager.Mask(salt) + ((version == null) ? "" : ("，版本 " + version)), ok: true);

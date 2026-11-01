@@ -73,6 +73,29 @@ public static class AccountAutoLoginService
 					List<AccountStore.LocalAccount> accounts = AccountStore.All.Where((AccountStore.LocalAccount a) => a.AutoLogin && !string.IsNullOrWhiteSpace(a.CookieJson)).ToList();
 					if (accounts.Count > 0)
 					{
+						// 官方网易启动器（WPFLauncher/MCLauncher）运行时整轮跳过保活：
+						// login-otp 换新会话会把同账号下官方启动器正在用的会话顶掉（表现为启动器掉线/要求重登）。
+						// 脱盒期间不动官方启动器的会话，是消除「脱盒导致启动器失效」的关键。
+						bool officialLauncherRunning = false;
+						try
+						{
+							foreach (GameProcessDetector.FoundGroup group in GameProcessDetector.FindRunning())
+							{
+								if (group.Label.Contains("我的世界", StringComparison.Ordinal) && group.Processes.Count > 0)
+								{
+									officialLauncherRunning = true;
+									break;
+								}
+							}
+						}
+						catch
+						{
+						}
+						if (officialLauncherRunning)
+						{
+							LogHelper.Log("[自动登录] 检测到官方网易启动器正在运行，本轮周期保活跳过（避免顶掉启动器登录会话）");
+							continue;
+						}
 						LogHelper.Log("[自动登录] 周期保活开始（每 15 分钟），共 " + accounts.Count + " 个账号");
 						foreach (AccountStore.LocalAccount acc in accounts)
 						{

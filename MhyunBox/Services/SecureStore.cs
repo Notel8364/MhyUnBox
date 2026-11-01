@@ -99,8 +99,10 @@ public static class SecureStore
 				{
 				}
 			}
+			// 用户定版（2026-11-01）：去掉 DPAPI 加密，账号/凭据明文落盘。
+			// Load 侧保留旧加密文件兼容迁移（识别 DPAPI blob 魔数先解密返回），下次保存即为明文。
 			string text2 = text + ".tmp";
-			File.WriteAllBytes(text2, CryptProtect(content));
+			File.WriteAllBytes(text2, content);
 			File.Move(text2, text, overwrite: true);
 		}
 		catch (Exception ex)
@@ -144,7 +146,20 @@ public static class SecureStore
 			{
 				return null;
 			}
-			return CryptUnprotect(File.ReadAllBytes(path));
+			byte[] raw = File.ReadAllBytes(path);
+			// 旧版本 DPAPI 加密文件：按魔数识别，解密后返回（读取方下次保存即迁移为明文）
+			if (LooksLikeDpapiBlob(raw))
+			{
+				try
+				{
+					return CryptUnprotect(raw);
+				}
+				catch
+				{
+					return null;
+				}
+			}
+			return raw;
 		}
 		catch
 		{
@@ -182,27 +197,22 @@ public static class SecureStore
 		}
 	}
 
-	private static byte[] CryptProtect(byte[] plain)
+	// DPAPI PROTECTED_DATA blob 固定前缀（provider GUID 0xDF9D8CD0-...）
+	private static bool LooksLikeDpapiBlob(byte[] data)
 	{
-		DATA_BLOB pDataIn = new DATA_BLOB(plain);
-		DATA_BLOB pOptionalEntropy = new DATA_BLOB(Entropy);
-		DATA_BLOB pDataOut = default(DATA_BLOB);
-		try
+		if (data == null || data.Length < 20)
 		{
-			if (!CryptProtectData(ref pDataIn, "MhyunBox", ref pOptionalEntropy, IntPtr.Zero, IntPtr.Zero, 1, ref pDataOut))
+			return false;
+		}
+		byte[] magic = new byte[20] { 1, 0, 0, 0, 208, 140, 157, 223, 1, 21, 209, 17, 140, 122, 0, 192, 79, 194, 151, 235 };
+		for (int i = 0; i < magic.Length; i++)
+		{
+			if (data[i] != magic[i])
 			{
-				throw new InvalidOperationException("CryptProtectData failed: " + Marshal.GetLastWin32Error());
+				return false;
 			}
-			byte[] array = new byte[pDataOut.cbData];
-			Marshal.Copy(pDataOut.pbData, array, 0, pDataOut.cbData);
-			return array;
 		}
-		finally
-		{
-			LocalFree(pDataOut.pbData);
-			LocalFree(pDataIn.pbData);
-			LocalFree(pOptionalEntropy.pbData);
-		}
+		return true;
 	}
 
 	private static byte[] CryptUnprotect(byte[] encrypted)
@@ -227,9 +237,6 @@ public static class SecureStore
 			LocalFree(pOptionalEntropy.pbData);
 		}
 	}
-
-	[DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-	private static extern bool CryptProtectData(ref DATA_BLOB pDataIn, string szDataDescr, ref DATA_BLOB pOptionalEntropy, nint pvReserved, nint pPromptStruct, int dwFlags, ref DATA_BLOB pDataOut);
 
 	[DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
 	private static extern bool CryptUnprotectData(ref DATA_BLOB pDataIn, nint ppszDataDescr, ref DATA_BLOB pOptionalEntropy, nint pvReserved, nint pPromptStruct, int dwFlags, ref DATA_BLOB pDataOut);

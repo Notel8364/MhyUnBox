@@ -1042,7 +1042,7 @@ public static class LauncherScanner
 			{
 				Timeout = PatchlistTimeout
 			};
-			http.DefaultRequestHeaders.UserAgent.ParseAdd("WPFLauncher/0.0.0.0");
+			http.DefaultRequestHeaders.UserAgent.ParseAdd("WPFLauncher/" + (NeteaseYggdrasil.LauncherVersion ?? "0.0.0.0"));
 			string body = await http.GetStringAsync("https://x19.update.netease.com/pl/x19_java_patchlist", ct).ConfigureAwait(false);
 			string? best = null;
 			foreach (Match item in Regex.Matches(body, "\"(\\d+\\.\\d+\\.\\d+\\.\\d+)\""))

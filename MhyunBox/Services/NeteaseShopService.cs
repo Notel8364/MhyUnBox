@@ -90,7 +90,8 @@ public static class NeteaseShopService
 {
 	private const string ApiBase = "https://x19apigatewayobt.nie.netease.com";
 
-	private const string UserAgent = "WPFLauncher/0.0.0.0";
+	// UA 拟真官方启动器（真实启动器版本号），0.0.0.0 属非官方特征
+	private static string UserAgent => "WPFLauncher/" + (NeteaseYggdrasil.LauncherVersion ?? "0.0.0.0");
 
 	private const string CategoryPath = "/shop-item-type/query/search-by-gc-item";
 

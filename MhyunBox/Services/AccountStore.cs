@@ -101,10 +101,10 @@ public static class AccountStore
 
 		public string LoginPass { get; set; } = "";
 
-		// 程序未解锁时一律返回空：账密保活/重登链路拿不到明文
-		public string LoginUserPlain => (AppLock.IsUnlocked ? CredentialProtector.Decrypt(LoginUser) : "");
+		// 程序锁定态已随本机锁移除（用户定版 2026-11-01），账密明文按需解密
+		public string LoginUserPlain => CredentialProtector.Decrypt(LoginUser);
 
-		public string LoginPassPlain => (AppLock.IsUnlocked ? CredentialProtector.Decrypt(LoginPass) : "");
+		public string LoginPassPlain => CredentialProtector.Decrypt(LoginPass);
 
 		public void SetCredentials(string user, string pass)
 		{
@@ -130,7 +130,7 @@ public static class AccountStore
 
 		public bool IsLoggedIn => LoggedIn ?? true;
 
-		public bool HasCookie => AppLock.IsUnlocked && !string.IsNullOrWhiteSpace(CookieJson);
+		public bool HasCookie => !string.IsNullOrWhiteSpace(CookieJson);
 
 		public bool IsProxyUsable => HasCookie;
 	}
@@ -143,19 +143,13 @@ public static class AccountStore
 	// 且序列化落盘时会「原地加密→序列化→还原」敏感字段，必须与其它读写互斥
 	private static readonly object IoLock = new object();
 
-	// 未解锁（程序账号未登录）时账密数据整体不可用：内存不加载、接口返回空。
-	private static IReadOnlyList<LocalAccount> Empty => Array.Empty<LocalAccount>();
-
-	public static IReadOnlyList<LocalAccount> All => (!AppLock.IsUnlocked) ? Empty : (_list ?? (_list = LoadList())).AsReadOnly();
+	// 未解锁门控已随本机锁移除（用户定版 2026-11-01）：账号数据始终可用
+	public static IReadOnlyList<LocalAccount> All => (_list ?? (_list = LoadList())).AsReadOnly();
 
 	public static LocalAccount? Current
 	{
 		get
 		{
-			if (!AppLock.IsUnlocked)
-			{
-				return null;
-			}
 			List<LocalAccount> list = _list ?? (_list = LoadList());
 			if (list.Count <= 0)
 			{
@@ -165,26 +159,19 @@ public static class AccountStore
 		}
 	}
 
-	public static bool AnyAutoLogin => AppLock.IsUnlocked && All.Any((LocalAccount a) => a.AutoLogin);
+	public static bool AnyAutoLogin => All.Any((LocalAccount a) => a.AutoLogin);
 
 	public static event Action? Changed;
 
-	/// <summary>解锁后由 AppLock 事件触发：丢弃旧缓存并通知 UI 重新读取。</summary>
+	/// <summary>账号数据变化时通知 UI 重新读取（原解锁后重载入口，现保留兼容）。</summary>
 	public static void ReloadFromStore()
 	{
 		_list = null;
 		Changed?.Invoke();
 	}
 
-	/// <summary>上锁后调用：立刻丢弃内存中的明文账密。</summary>
-	public static void DropInMemory()
-	{
-		_list = null;
-	}
-
 	// 敏感字段（Cookie/Token/EntityId）落盘前用数据密钥二次加密（"ENC2:"），读回时解密。
-	// 网易账密（LoginUser/LoginPass）只保留机器密钥层（ENC1）——它要在程序锁定态参与
-	// 「网易账号验证解锁」的通道建立，不能再叠一层登录后才能解的密。
+	// 网易账密（LoginUser/LoginPass）只保留机器密钥层（ENC1）。
 	// 采用"原地加密→序列化→finally 还原"，避免改动 LocalAccount 结构与各处读写逻辑。
 	private static void EncryptSensitive(LocalAccount a)
 	{
@@ -240,10 +227,6 @@ public static class AccountStore
 
 	private static List<LocalAccount> LoadList()
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return new List<LocalAccount>();
-		}
 		lock (IoLock)
 		{
 		string text = SecureStore.Load("local_accounts");
@@ -311,10 +294,6 @@ public static class AccountStore
 
 	public static void Save(LocalAccount account)
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return;
-		}
 		List<LocalAccount> list = _list ?? (_list = LoadList());
 		account.SavedAtUtc = DateTime.UtcNow;
 		int num = list.FindIndex((LocalAccount a) => string.Equals(a.Channel, account.Channel, StringComparison.Ordinal) && string.Equals(a.Account, account.Account, StringComparison.OrdinalIgnoreCase));
@@ -360,10 +339,6 @@ public static class AccountStore
 
 	public static void Remove(string channel, string account)
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return;
-		}
 		List<LocalAccount> list = _list ?? (_list = LoadList());
 		int num = list.RemoveAll((LocalAccount a) => string.Equals(a.Channel, channel, StringComparison.Ordinal) && string.Equals(a.Account, account, StringComparison.OrdinalIgnoreCase));
 		if (num > 0)
@@ -374,8 +349,7 @@ public static class AccountStore
 		// 角色记录留着（重新绑定同账号可继续用，无非是删号期间角色进不去服务器）；
 		// 手动启动代理（BuildSavedBindings/BuildGroupBindings）构建绑定时按现存账号精确匹配，
 		// 已删账号的端口会自动跳过，无需在这里删数据。
-		// 同步移除程序锁里残留的验证账号标记/验证包裹（不清理的话已删账号仍占验证名额且可解锁）
-		AppLock.RemoveAccountFromVerification(account);
+		// 用户定版（2026-11-01）：程序锁（验证账号记录）机制已整体移除
 		if (num > 0)
 		{
 			Changed?.Invoke();
@@ -384,13 +358,7 @@ public static class AccountStore
 
 	public static void Clear()
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return;
-		}
 		_list = new List<LocalAccount>();
-		// 同步清掉程序锁里的验证账号记录与验证包裹（全部账号已删，验证标记不该残留）
-		AppLock.ClearNetVerification();
 		SecureStore.Delete("local_accounts");
 		SecureStore.Delete("local_account");
 		try
@@ -429,10 +397,6 @@ public static class AccountStore
 
 	public static (bool Ok, string Message) BindVerified(string channel, string account, NeteaseLoginResult result)
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return (Ok: false, Message: "程序账号未解锁，请先在「本机锁」页登录程序账号");
-		}
 		if (string.IsNullOrWhiteSpace(account))
 		{
 			return (Ok: false, Message: "账号不能为空");
@@ -463,7 +427,7 @@ public static class AccountStore
 
 	public static bool RefreshRolesVerified(string channel, string account, NeteaseLoginResult result, IReadOnlyDictionary<string, List<string>> serverRoles)
 	{
-		if (!AppLock.IsUnlocked || string.IsNullOrWhiteSpace(account))
+		if (string.IsNullOrWhiteSpace(account))
 		{
 			return false;
 		}
@@ -520,10 +484,6 @@ public static class AccountStore
 
 	public static void SetLoginState(string channel, string account, bool loggedIn)
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return;
-		}
 		List<LocalAccount> list = _list ?? (_list = LoadList());
 		int num = list.FindIndex((LocalAccount a) => string.Equals(a.Channel, channel, StringComparison.Ordinal) && string.Equals(a.Account, account, StringComparison.OrdinalIgnoreCase));
 		if (num >= 0)
@@ -536,10 +496,6 @@ public static class AccountStore
 
 	public static void SetAutoLoginAll(bool autoLogin)
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return;
-		}
 		List<LocalAccount> list = _list ?? (_list = LoadList());
 		bool flag = false;
 		foreach (LocalAccount item in list)
@@ -559,10 +515,6 @@ public static class AccountStore
 
 	public static void LogoutAll()
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return;
-		}
 		List<LocalAccount> list = _list ?? (_list = LoadList());
 		bool flag = false;
 		foreach (LocalAccount item in list)
@@ -582,10 +534,6 @@ public static class AccountStore
 
 	public static void UpdateRoles<T>(string channel, string account, IReadOnlyDictionary<string, T> serverRoles) where T : IReadOnlyList<string>
 	{
-		if (!AppLock.IsUnlocked)
-		{
-			return;
-		}
 		List<LocalAccount> list = _list ?? (_list = LoadList());
 		LocalAccount localAccount = list.FirstOrDefault((LocalAccount a) => string.Equals(a.Channel, channel, StringComparison.Ordinal) && string.Equals(a.Account, account, StringComparison.OrdinalIgnoreCase));
 		if (localAccount == null && !string.IsNullOrWhiteSpace(account))

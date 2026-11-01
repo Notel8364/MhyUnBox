@@ -80,7 +80,7 @@ public static class NeteaseYggdrasil
 
 	private static readonly TimeSpan SaltRefreshInterval = TimeSpan.FromHours(6.0);
 
-	public static string? LauncherVersion { get; set; } = "1.15.29.18667";
+	public static string? LauncherVersion { get; set; } = "1.15.30.18895";
 
 	// patchlist 最新版（仅作 init 失败时的候选，不直接用于签名：服务器校验 (盐↔版本) 配对）
 	public static string? PatchlistMaxVersion { get; set; }
@@ -126,7 +126,7 @@ public static class NeteaseYggdrasil
 					{
 						Timeout = TimeSpan.FromSeconds(10.0)
 					};
-					http.DefaultRequestHeaders.UserAgent.ParseAdd("WPFLauncher/0.0.0.0");
+					http.DefaultRequestHeaders.UserAgent.ParseAdd("WPFLauncher/" + (LauncherVersion ?? "0.0.0.0"));
 					foreach (Match item in Regex.Matches(await http.GetStringAsync("https://x19.update.netease.com/pl/x19_java_patchlist", ct), "\"(\\d+\\.\\d+\\.\\d+\\.\\d+)\""))
 					{
 						string value = item.Groups[1].Value;
@@ -389,7 +389,7 @@ public static class NeteaseYggdrasil
 			{
 				Timeout = TimeSpan.FromSeconds(10.0)
 			};
-			http.DefaultRequestHeaders.UserAgent.ParseAdd("WPFLauncher/0.0.0.0");
+			http.DefaultRequestHeaders.UserAgent.ParseAdd("WPFLauncher/" + (LauncherVersion ?? "0.0.0.0"));
 			string? best = null;
 			foreach (Match item in Regex.Matches(await http.GetStringAsync("https://x19.update.netease.com/pl/x19_java_patchlist", ct), "\"(\\d+\\.\\d+\\.\\d+\\.\\d+)\""))
 			{

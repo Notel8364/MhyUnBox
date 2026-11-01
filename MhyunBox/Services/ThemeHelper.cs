@@ -180,7 +180,11 @@ internal static class ThemeHelper
 		}
 	}
 
-	/// <summary>元素级兜底：给单个 ComboBox 的下拉弹层强制不透明背景（应用级覆盖未生效时仍可靠）。</summary>
+	/// <summary>
+	/// 元素级兜底：给单个 ComboBox 的下拉弹层强制不透明背景（应用级覆盖未生效时仍可靠）。
+	/// 完整覆盖：弹层背景/边框/前景、In-App Acrylic 本体、选项悬停/选中底色 ——
+	/// 半透明层叠在背景图片上就是用户看到的「弹层背景模糊」（DPI 缩放下雾感更明显）。
+	/// </summary>
 	public static void SolidComboPopup(ComboBox? box)
 	{
 		try
@@ -190,8 +194,21 @@ internal static class ThemeHelper
 				return;
 			}
 			bool dark = IsDark;
-			box.Resources["ComboBoxDropDownBackground"] = new SolidColorBrush(dark ? Color.FromArgb(255, 43, 43, 43) : Color.FromArgb(255, 250, 250, 250));
-			box.Resources["ComboBoxDropDownBorderBrush"] = new SolidColorBrush(dark ? Color.FromArgb(51, 255, 255, 255) : Color.FromArgb(51, 0, 0, 0));
+			Color surface = (dark && IsBlack) ? Color.FromArgb(255, 12, 12, 12) : (dark ? Color.FromArgb(255, 43, 43, 43) : Color.FromArgb(255, 250, 250, 250));
+			Color surfaceBase = (dark && IsBlack) ? Color.FromArgb(255, 8, 8, 8) : (dark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243));
+			Color stroke = dark ? Color.FromArgb(51, 255, 255, 255) : Color.FromArgb(51, 0, 0, 0);
+			Color text = dark ? Color.FromArgb(255, 255, 255, 255) : Color.FromArgb(228, 0, 0, 0);
+			Color subtle = dark ? Color.FromArgb(15, 255, 255, 255) : Color.FromArgb(9, 0, 0, 0);
+			box.Resources["ComboBoxDropDownBackground"] = new SolidColorBrush(surface);
+			box.Resources["ComboBoxDropDownBorderBrush"] = new SolidColorBrush(stroke);
+			box.Resources["AcrylicInAppFillColorDefaultBrush"] = new SolidColorBrush(surface);
+			box.Resources["AcrylicInAppFillColorBaseBrush"] = new SolidColorBrush(surfaceBase);
+			box.Resources["ComboBoxDropDownForeground"] = new SolidColorBrush(text);
+			box.Resources["ComboBoxItemBackgroundPointerOver"] = new SolidColorBrush(subtle);
+			box.Resources["ComboBoxItemBackgroundPressed"] = new SolidColorBrush(subtle);
+			box.Resources["ComboBoxItemBackgroundSelected"] = new SolidColorBrush(subtle);
+			box.Resources["ComboBoxItemBackgroundSelectedPointerOver"] = new SolidColorBrush(subtle);
+			box.Resources["ComboBoxItemBackgroundSelectedPressed"] = new SolidColorBrush(subtle);
 		}
 		catch
 		{

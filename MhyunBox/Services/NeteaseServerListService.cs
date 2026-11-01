@@ -34,7 +34,8 @@ public static class NeteaseServerListService
 
 	private const string DetailPath = "/item-details/get_v2";
 
-	private const string UserAgent = "WPFLauncher/0.0.0.0";
+	// UA 拟真官方启动器（真实启动器版本号），0.0.0.0 属非官方特征
+	private static string UserAgent => "WPFLauncher/" + (NeteaseYggdrasil.LauncherVersion ?? "0.0.0.0");
 
 	private static readonly string[] MasterTypeCandidates = new string[2] { "2", "11" };
 

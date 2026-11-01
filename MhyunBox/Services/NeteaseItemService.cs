@@ -30,7 +30,8 @@ public static class NeteaseItemService
 
 	private const string QueryPath = "/item/query/available";
 
-	private const string UserAgent = "WPFLauncher/0.0.0.0";
+	// UA 拟真官方启动器（真实启动器版本号），0.0.0.0 属非官方特征
+	private static string UserAgent => "WPFLauncher/" + (NeteaseYggdrasil.LauncherVersion ?? "0.0.0.0");
 
 	/// <summary>
 	/// 获取指定服务器（gameId）当前最新的 item 资源包下载地址。
