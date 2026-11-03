@@ -723,11 +723,168 @@ public sealed class NeteaseLogin : IDisposable
 		}
 	}
 
-	public async Task<(bool Ok, string Message)> SendSmsCodeAsync(string phone)
+	/// <summary>
+	/// 短信上行验证（code=1373, need_code=false）通过后的免验证码直登：
+	/// get_sms 返回 ticket → finish 换用户 → 生成 Cookie → 建立游戏会话。
+	/// </summary>
+	public async Task<NeteaseLoginResult> LoginWithSmsTicketAsync(string phone, string ticket, bool createSession = true)
+	{
+		phone = (phone ?? "").Trim();
+		ticket = (ticket ?? "").Trim();
+		try
+		{
+			EnsureDevice();
+			await EnsureVersionAsync();
+			LogHelper.Log("[smsup] 上行验证直登: finish 请求（ticket 长度=" + ticket.Length + "）");
+			MpayUser user = await FinishSmsCodeAsync(phone, ticket);
+			if (user == null)
+			{
+				return new NeteaseLoginResult
+				{
+					Success = false,
+					Message = "短信上行验证登录失败（finish 未通过），请重试"
+				};
+			}
+			string cookie = GenerateCookie(user, _deviceId);
+			if (!createSession)
+			{
+				return new NeteaseLoginResult
+				{
+					Success = true,
+					Nickname = user.Nickname,
+					Channel = "netease-mobile",
+					CookieJson = cookie,
+					Message = "短信上行验证通过（未建立游戏会话）"
+				};
+			}
+			(AuthOtp, string) tuple = await LoginSessionAsync(cookie);
+			AuthOtp item = tuple.Item1;
+			string item2 = tuple.Item2;
+			NeteaseLoginResult neteaseLoginResult = new NeteaseLoginResult
+			{
+				Success = true,
+				Nickname = user.Nickname,
+				Channel = "netease-mobile",
+				CookieJson = cookie
+			};
+			if (item != null)
+			{
+				neteaseLoginResult.EntityId = item.EntityId;
+				neteaseLoginResult.Token = item.Token;
+				neteaseLoginResult.Message = "短信上行验证登录成功";
+			}
+			else
+			{
+				neteaseLoginResult.Message = "账号校验通过，但游戏会话获取失败：" + item2;
+				neteaseLoginResult.RiskControl = IsRiskControlText(item2);
+				neteaseLoginResult.SessionExpired = IsSessionExpiredText(item2);
+				neteaseLoginResult.FailureStatus = item2 ?? "";
+				neteaseLoginResult.FailureStage = "login-otp";
+			}
+			return neteaseLoginResult;
+		}
+		catch (Exception ex)
+		{
+			return new NeteaseLoginResult
+			{
+				Success = false,
+				Message = "短信上行验证登录异常：" + ex.Message
+			};
+		}
+	}
+
+	/// <summary>
+	/// 上行短信验证确认（WPFLauncher_Hook 协议还原）：verify_sms 免验证码调用，
+	/// 关键是 up_content 必须传 reply_sms.content（如"手机登录"）——网易按此匹配用户发出的上行短信。
+	/// 通过则返回 ticket。失败返回 null（响应原文入日志）。
+	/// </summary>
+	public async Task<(string? Ticket, string Raw)> TrySmsUpConfirmAsync(string phone, string upContent)
+	{
+		try
+		{
+			EnsureDevice();
+			Dictionary<string, string> dictionary = BuildBaseParams();
+			dictionary["device_id"] = _deviceId;
+			dictionary["mobile"] = phone.Trim();
+			dictionary["smscode"] = "";
+			dictionary["up_content"] = upContent ?? "";
+			using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://service.mkey.163.com/mpay/api/users/login/mobile/verify_sms");
+			request.Content = new StringContent(NetShared.FormUrlEncode(dictionary), Encoding.UTF8, "application/x-www-form-urlencoded");
+			using HttpResponseMessage response = await _http.SendAsync(request);
+			string body = await response.Content.ReadAsStringAsync();
+			LogHelper.Log("[smsup] verify_sms 上行确认: HTTP " + (int)response.StatusCode + " up_content=" + (upContent ?? "") + " 响应原文: " + body);
+			if (!response.IsSuccessStatusCode)
+			{
+				return (Ticket: null, Raw: body);
+			}
+			try
+			{
+				using JsonDocument doc = JsonDocument.Parse(body);
+				if (doc.RootElement.TryGetProperty("ticket", out JsonElement tk) && tk.ValueKind == JsonValueKind.String)
+				{
+					string? ticket = tk.GetString();
+					if (!string.IsNullOrWhiteSpace(ticket))
+					{
+						LogHelper.Log("[smsup] verify_sms 确认返回 ticket（上行验证通过，免验证码直登）");
+						return (Ticket: ticket, Raw: body);
+					}
+				}
+			}
+			catch
+			{
+			}
+			return (Ticket: null, Raw: body);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[smsup] verify_sms 确认异常: " + ex.Message);
+			return (Ticket: null, Raw: "");
+		}
+	}
+
+	/// <summary>短信上行验证信息（mkey code=1373）：网易要求用本机号向指定号码发送特定内容的短信来完成验证。</summary>
+	public sealed class SmsUpVerifyInfo
+	{
+		public int Code;
+
+		/// <summary>网易返回的完整 reason（目标号码通常写在这里，如"请向 10690xxx 发送短信 'xxx' 进行验证"）。</summary>
+		public string Reason = "";
+
+		public string Content = "";
+
+		public string Tips = "";
+
+		public string? VerifyUrl;
+
+		/// <summary>reply_sms 对象里的全部字段（不猜字段名，完整展示，保证目标号码/内容不遗漏）。</summary>
+		public Dictionary<string, string> ReplyFields = new Dictionary<string, string>();
+
+		/// <summary>给用户看的完整指引文本（全文含号码与内容，供复制）。</summary>
+		public string Guide
+		{
+			get
+			{
+				StringBuilder sb = new StringBuilder();
+				sb.Append("网易要求短信上行验证。");
+				if (!string.IsNullOrWhiteSpace(Reason))
+				{
+					sb.Append("\n网易说明：").Append(Reason);
+				}
+				foreach (KeyValuePair<string, string> kv in ReplyFields)
+				{
+					sb.Append("\n[").Append(kv.Key).Append("] ").Append(kv.Value);
+				}
+				sb.Append("\n\n操作：用本机手机号按上面给的号码/内容发送一条短信（普通短信，发给指定号码），发完回到程序点「我已发送，继续登录」。");
+				return sb.ToString();
+			}
+		}
+	}
+
+	public async Task<(bool Ok, string Message, string? VerifyUrl, SmsUpVerifyInfo? SmsUp, string? DirectTicket)> SendSmsCodeAsync(string phone)
 	{
 		if (string.IsNullOrWhiteSpace(phone))
 		{
-			return (Ok: false, Message: "手机号不能为空");
+			return (Ok: false, Message: "手机号不能为空", VerifyUrl: null, SmsUp: null, DirectTicket: null);
 		}
 		phone = phone.Trim();
 		try
@@ -737,18 +894,117 @@ public sealed class NeteaseLogin : IDisposable
 			Dictionary<string, string> dictionary = BuildBaseParams();
 			dictionary["device_id"] = _deviceId;
 			dictionary["mobile"] = phone;
+			LogHelper.Log("[smsup] get_sms 请求: phone=" + phone.Substring(0, 3) + "****" + phone.Substring(Math.Min(7, phone.Length)) + ", device_id=" + _deviceId);
 			using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://service.mkey.163.com/mpay/api/users/login/mobile/get_sms");
 			request.Content = new StringContent(NetShared.FormUrlEncode(dictionary), Encoding.UTF8, "application/x-www-form-urlencoded");
 			using HttpResponseMessage response = await _http.SendAsync(request);
+			string body = await response.Content.ReadAsStringAsync();
+			// 完整响应原文入日志（调试模式）：分析上行验证要求/字段全靠它
+			LogHelper.Log("[smsup] get_sms HTTP " + (int)response.StatusCode + " 响应原文: " + body);
 			if (response.IsSuccessStatusCode)
 			{
-				return (Ok: true, Message: "验证码已发送，请查收短信");
+				// 上行短信验证（code=1373, need_code=false）通过后：get_sms 直接返回 ticket（免验证码）。
+				// 解析 200 响应体，带 ticket 就交给调用方自动 finish 登录 —— 这是"发了短信没反应"的关键缺失环节。
+				string? directTicket = null;
+				try
+				{
+					using JsonDocument doc = JsonDocument.Parse(body);
+					if (doc.RootElement.TryGetProperty("ticket", out JsonElement tk) && tk.ValueKind == JsonValueKind.String)
+					{
+						directTicket = tk.GetString();
+					}
+				}
+				catch
+				{
+				}
+				if (!string.IsNullOrWhiteSpace(directTicket))
+				{
+					LogHelper.Log("[smsup] get_sms 返回 ticket（上行验证已通过，免验证码直登）: ticket 长度=" + directTicket.Length);
+					return (Ok: true, Message: "短信上行验证已通过，正在自动完成登录…", VerifyUrl: null, SmsUp: null, DirectTicket: directTicket);
+				}
+				return (Ok: true, Message: "验证码已发送，请查收短信", VerifyUrl: null, SmsUp: null, DirectTicket: null);
 			}
-			return (Ok: false, Message: "验证码发送失败：" + FriendlyError(await response.Content.ReadAsStringAsync()));
+			// 解析失败响应：code / reason / verify_url / reply_sms（短信上行验证，code=1373）
+			string? verifyUrl = null;
+			string reason = "";
+			int code = -1;
+			SmsUpVerifyInfo? smsUp = null;
+			try
+			{
+				using JsonDocument doc = JsonDocument.Parse(body);
+				JsonElement root = doc.RootElement;
+				if (root.TryGetProperty("verify_url", out JsonElement vu) && vu.ValueKind == JsonValueKind.String)
+				{
+					verifyUrl = vu.GetString();
+				}
+				if (root.TryGetProperty("code", out JsonElement cd))
+				{
+					code = (cd.ValueKind == JsonValueKind.Number) ? cd.GetInt32() : ((cd.ValueKind == JsonValueKind.String && int.TryParse(cd.GetString(), out int c)) ? c : -1);
+				}
+				if (root.TryGetProperty("reason", out JsonElement rs) && rs.ValueKind == JsonValueKind.String)
+				{
+					reason = rs.GetString() ?? "";
+				}
+				if (root.TryGetProperty("reply_sms", out JsonElement reply) && reply.ValueKind == JsonValueKind.Object)
+				{
+					smsUp = new SmsUpVerifyInfo
+					{
+						Code = code,
+						Reason = reason,
+						Content = ((reply.TryGetProperty("content", out JsonElement ct) && ct.ValueKind == JsonValueKind.String) ? ct.GetString() ?? "" : ""),
+						Tips = ((reply.TryGetProperty("tips", out JsonElement tp) && tp.ValueKind == JsonValueKind.String) ? tp.GetString() ?? "" : ""),
+						VerifyUrl = verifyUrl
+					};
+					if (reply.TryGetProperty("verify_url", out JsonElement ruv) && ruv.ValueKind == JsonValueKind.String)
+					{
+						smsUp.VerifyUrl = ruv.GetString();
+					}
+					// reply_sms 全部字段都收进来（号码/内容/开关等，不漏）
+					foreach (JsonProperty prop in reply.EnumerateObject())
+					{
+						string val = prop.Value.ValueKind switch
+						{
+							JsonValueKind.String => prop.Value.GetString() ?? "",
+							JsonValueKind.Number => prop.Value.GetRawText(),
+							JsonValueKind.True => "true",
+							JsonValueKind.False => "false",
+							_ => ""
+						};
+						if (!string.IsNullOrWhiteSpace(val))
+						{
+							smsUp.ReplyFields[prop.Name] = val;
+						}
+					}
+					// reason 里通常写了目标号码与要发的原文，原样保留
+					if (!string.IsNullOrWhiteSpace(reason))
+					{
+						smsUp.ReplyFields["reason"] = reason;
+					}
+				}
+				LogHelper.Log("[smsup] 解析结果: code=" + code + ", reason=" + reason + ", verifyUrl=" + (verifyUrl ?? "(无)") + ", reply_sms=" + ((smsUp == null) ? "(无)" : string.Join(";", smsUp.ReplyFields.Select((KeyValuePair<string, string> kv) => kv.Key + "=" + kv.Value))));
+			}
+			catch (Exception parseEx)
+			{
+				LogHelper.Log("[smsup] 响应 JSON 解析失败: " + parseEx.Message);
+			}
+			string message;
+			if (smsUp != null)
+			{
+				message = "需要短信上行验证：" + (string.IsNullOrWhiteSpace(reason) ? "请按指引用本机号向指定号码发送短信" : reason);
+			}
+			else if (!string.IsNullOrWhiteSpace(reason))
+			{
+				message = "验证码发送失败：" + reason + ((code > 0) ? ("（code=" + code + "）") : "");
+			}
+			else
+			{
+				message = "验证码发送失败：" + FriendlyError(body);
+			}
+			return (Ok: false, Message: message, VerifyUrl: verifyUrl, SmsUp: smsUp, DirectTicket: null);
 		}
 		catch (Exception ex)
 		{
-			return (Ok: false, Message: "发送验证码异常：" + ex.Message);
+			return (Ok: false, Message: "发送验证码异常：" + ex.Message, VerifyUrl: null, SmsUp: null, DirectTicket: null);
 		}
 	}
 

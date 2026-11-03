@@ -749,29 +749,57 @@ public sealed partial class LoginPage : Page
 		SendCodeButton.IsEnabled = false;
 		StatusBar.IsOpen = false;
 		string channel = SelectedChannel;
+		string? verifyUrl = null;
+		NeteaseLogin.SmsUpVerifyInfo? smsUp = null;
+		string? directTicket = null;
 		try
 		{
-			var (flag, message) = await Task.Run(async delegate
+			string message;
+			bool flag;
+			if (channel == "4399")
 			{
-				if (channel == "4399")
+				var (ok4, msg4) = await Task.Run(async delegate
 				{
-					using (Login4399Service svc = new Login4399Service())
-					{
-						return ((bool Ok, string Message))(await svc.SendSmsCodeAsync(phone));
-					}
-				}
-				using NeteaseLogin login = new NeteaseLogin();
-				return ((bool Ok, string Message))(await login.SendSmsCodeAsync(phone));
-			});
+					using Login4399Service svc = new Login4399Service();
+					return await svc.SendSmsCodeAsync(phone);
+				});
+				flag = ok4;
+				message = msg4;
+			}
+			else
+			{
+				var (okN, msgN, urlN, smsUpN, ticketN) = await Task.Run(async delegate
+				{
+					using NeteaseLogin login = new NeteaseLogin();
+					return await login.SendSmsCodeAsync(phone);
+				});
+				flag = okN;
+				message = msgN;
+				verifyUrl = urlN;
+				smsUp = smsUpN;
+				directTicket = ticketN;
+			}
 			if (flag)
 			{
 				_smsCodeSent = true;
 			}
 			ShowInfo(message, flag, flag ? "验证码已发送" : null);
-			// 验证码发送达到上限：引导改用网页验证（短信上行等），完成后可回来重试
-			if (!flag && !string.IsNullOrEmpty(message) && (message.Contains("上限") || message.Contains("频繁") || message.Contains("稍后再试") || message.Contains("too many") || message.Contains("Too Many") || message.Contains("frequency")))
+			// 上行验证通过：get_sms 直接返回 ticket → 自动完成登录绑定（免验证码）
+			if (flag && !string.IsNullOrWhiteSpace(directTicket))
 			{
-				ShowSmsLimitDialog(phone, channel);
+				_ = CompleteMobileTicketLoginAsync(phone, directTicket);
+				UpdateChannelMarkers();
+				return;
+			}
+			// 短信上行验证（code=1373）：展示指引（向指定号码发送内容）+ 完成后自动重试
+			if (!flag && smsUp != null)
+			{
+				ShowSmsUpDialog(phone, channel, smsUp);
+			}
+			// 验证码发送达到上限 / 触发风控：引导完成网易安全验证（页面可能要求向指定手机号发送短信），完成后自动重试
+			else if (!flag && !string.IsNullOrEmpty(message) && (message.Contains("上限") || message.Contains("频繁") || message.Contains("稍后再试") || message.Contains("too many") || message.Contains("Too Many") || message.Contains("frequency") || verifyUrl != null))
+			{
+				ShowRiskVerifyDialog(phone, channel, verifyUrl);
 			}
 			UpdateChannelMarkers();
 		}
@@ -1012,7 +1040,9 @@ public sealed partial class LoginPage : Page
 				ShowInfo(neteaseLoginResult.Message, ok: false);
 				if (!string.IsNullOrWhiteSpace(neteaseLoginResult.VerifyUrl))
 				{
+					// 网易要求安全验证（code=1351）：自动打开验证页，并给出「完成验证后一键自动重登」入口
 					OpenVerifyUrl(neteaseLoginResult.VerifyUrl);
+					ShowRiskVerifyDialog(account, selectedChannel, neteaseLoginResult.VerifyUrl);
 				}
 			}
 		}
@@ -1214,67 +1244,309 @@ public sealed partial class LoginPage : Page
 	}
 
 	/// <summary>
-	/// 验证码发送达到上限时的引导弹窗：改用网页验证（短信上行等），完成后回来重试发送。
+	/// 验证码达上限 / 网易风控时的安全验证引导（逆向参考 404Launcher 的 verify_url 模式）：
+	/// 1. 打开网易安全验证页面（响应里的 verify_url 优先；页面可能要求向指定手机号发送短信验证，用手机发一条即可）；
+	/// 2. 用户完成验证后点「我已完成验证」：
+	///    - 邮箱/用户名 + 密码账号：自动重新执行登录，直接拿正常有效 token 完成绑定；
+	///    - 手机号账号：自动重新发送验证码（完成验证后上限/风控通常已解除）。
 	/// </summary>
-	private async void ShowSmsLimitDialog(string phone, string channel)
+	private async void ShowRiskVerifyDialog(string account, string channel, string? verifyUrl)
 	{
 		try
 		{
+			bool hasPassword = !IsPhone(account) && !string.IsNullOrEmpty(PasswordBox.Password);
+			string finishText = hasPassword ? "我已完成验证，立即重新登录" : "我已完成验证，重新发送验证码";
 			ContentDialog contentDialog = new ContentDialog
 			{
-				Title = "验证码发送已达上限",
+				Title = "需要完成网易安全验证",
 				Content = new TextBlock
 				{
-					Text = "该手机号今日免费验证码发送数量已达上限，改用网页验证：\n\n1. 点「打开网易登录页」，在网页完成登录/安全验证（如页面要求向指定号码发送验证短信，请按页面提示用手机发送）\n2. 完成后回到这里点「我已完成」，再点「发送验证码」重试\n\n网页验证通过后本机网络环境的风险等级会降低，验证码通常即可恢复发送。",
+					Text = (IsPhone(account)
+						? "该手机号今日免费验证码发送数量已达上限（或触发了风控），需要先完成一次网易安全验证：\n\n"
+						: "网易检测到本次登录存在风险，需要先完成一次账号安全验证：\n\n")
+						+ "1. 点「打开网易安全验证页面」，在页面完成验证（可能要求向指定手机号发送验证短信，请按页面提示用手机发送）\n"
+						+ "2. 完成后回到这里点「" + finishText + "」，程序会自动继续登录\n\n"
+						+ "完成验证后本机网络环境的风险等级会降低，登录/验证码通常即可恢复正常。",
 					TextWrapping = TextWrapping.Wrap
 				},
-				PrimaryButtonText = "打开网易登录页",
-				SecondaryButtonText = "我已完成",
+				PrimaryButtonText = "打开网易安全验证页面",
+				SecondaryButtonText = finishText,
 				CloseButtonText = "取消",
 				DefaultButton = ContentDialogButton.Primary,
 				XamlRoot = XamlRoot
 			};
-			ContentDialogResult contentDialogResult = await contentDialog.ShowAsync();
-			if (contentDialogResult == ContentDialogResult.Primary)
+			ContentDialogResult result = await contentDialog.ShowAsync();
+			if (result == ContentDialogResult.Primary)
 			{
-				Process.Start(new ProcessStartInfo("https://pay.163.com/")
+				string url = (string.IsNullOrWhiteSpace(verifyUrl) ? "https://pay.163.com/" : verifyUrl);
+				Process.Start(new ProcessStartInfo(url)
 				{
 					UseShellExecute = true
 				});
+				ShowInfo("已打开网易安全验证页面，完成验证后回来点「" + finishText + "」继续", ok: true, "安全验证");
+				// 弹窗已被 Primary 消费关闭：再弹一次只留「我已完成」入口，方便用户验证完直接继续
+				await ShowRiskVerifyFinishDialog(account, channel, verifyUrl);
 			}
-			else if (contentDialogResult == ContentDialogResult.Secondary)
+			else if (result == ContentDialogResult.Secondary)
 			{
-				SendCodeButton.IsEnabled = false;
-				StatusBar.IsOpen = false;
-				try
-				{
-					var (flag2, message2) = await Task.Run(async delegate
-					{
-						if (channel == "4399")
-						{
-							using (Login4399Service login4399Service = new Login4399Service())
-							{
-								return ((bool Ok, string Message))(await login4399Service.SendSmsCodeAsync(phone));
-							}
-						}
-						using NeteaseLogin login = new NeteaseLogin();
-						return ((bool Ok, string Message))(await login.SendSmsCodeAsync(phone));
-					});
-					if (flag2)
-					{
-						_smsCodeSent = true;
-					}
-					ShowInfo(message2, flag2, flag2 ? "验证码已发送" : null);
-				}
-				finally
-				{
-					SendCodeButton.IsEnabled = true;
-				}
+				await FinishRiskVerifyAsync(account, channel);
 			}
 		}
 		catch
 		{
 		}
+	}
+
+	/// <summary>
+	/// 短信上行验证弹窗（mkey code=1373）：网易要求用本机号向指定号码发送特定内容的短信完成验证。
+	/// 用户定版（2026-11-03）：点「我已发送」弹窗不关闭，就地轮询 10 秒；
+	/// 轮询成功自动登录并关闭弹窗，10 秒未成功则恢复原界面，可再次点击。
+	/// </summary>
+	private async void ShowSmsUpDialog(string phone, string channel, NeteaseLogin.SmsUpVerifyInfo smsUp)
+	{
+		try
+		{
+			string url = smsUp.VerifyUrl;
+			LogHelper.Log("[smsup] 弹出短信上行验证指引: phone=" + AccountStore.Mask(phone) + ", reason=" + smsUp.Reason + ", content=" + smsUp.Content + ", 字段=" + string.Join(";", smsUp.ReplyFields.Select((KeyValuePair<string, string> kv) => kv.Key + "=" + kv.Value)) + ", verifyUrl=" + (url ?? "(无)"));
+			string tryButtonText = "我已发送，尝试登录";
+			string guideText = smsUp.Guide + "\n\n点「" + tryButtonText + "」检查验证状态；成功后自动完成登录。\n注意：必须用账号绑定的那个手机号（本机）发送，用别的号码发网易不会确认。";
+			TextBlock tblock = new TextBlock
+			{
+				Text = guideText,
+				TextWrapping = TextWrapping.Wrap,
+				IsTextSelectionEnabled = true
+			};
+			ContentDialog dialog = new ContentDialog
+			{
+				Title = "需要短信上行验证",
+				Content = tblock,
+				PrimaryButtonText = ((string.IsNullOrWhiteSpace(url)) ? tryButtonText : "打开网易验证页面"),
+				SecondaryButtonText = ((string.IsNullOrWhiteSpace(url)) ? "" : tryButtonText),
+				CloseButtonText = "取消",
+				DefaultButton = ContentDialogButton.Primary,
+				XamlRoot = XamlRoot
+			};
+			bool busy = false;
+			async void OnClick(ContentDialogButtonClickEventArgs args, bool isTryLogin)
+			{
+				args.Cancel = true; // 弹窗保持打开，轮询结束后再决定关闭或恢复
+				if (busy)
+				{
+					return;
+				}
+				if (!isTryLogin)
+				{
+					try
+					{
+						Process.Start(new ProcessStartInfo(url)
+						{
+							UseShellExecute = true
+						});
+					}
+					catch
+					{
+					}
+					return;
+				}
+				busy = true;
+				dialog.IsPrimaryButtonEnabled = false;
+				dialog.IsSecondaryButtonEnabled = false;
+				tblock.Text = "正在等待上行短信验证生效…（10 秒内自动确认，成功后自动登录）";
+				Progress<string> progress = new Progress<string>(delegate (string t)
+				{
+					tblock.Text = t;
+				});
+				bool done = await TrySmsUpCheckOnceAsync(phone, channel, smsUp, progress);
+				if (done)
+				{
+					LogHelper.Log("[smsup] 上行验证完成，关闭指引弹窗");
+					dialog.Hide();
+					return;
+				}
+				// 未通过：恢复原界面，可再次点击
+				tblock.Text = guideText + "\n\n刚刚 10 秒内未确认到上行短信，发送后稍等片刻可再点一次。";
+				dialog.IsPrimaryButtonEnabled = true;
+				dialog.IsSecondaryButtonEnabled = true;
+				busy = false;
+			}
+			dialog.PrimaryButtonClick += delegate (ContentDialog s, ContentDialogButtonClickEventArgs args)
+			{
+				OnClick(args, string.IsNullOrWhiteSpace(url));
+			};
+			dialog.SecondaryButtonClick += delegate (ContentDialog s, ContentDialogButtonClickEventArgs args)
+			{
+				OnClick(args, true);
+			};
+			await dialog.ShowAsync();
+		}
+		catch
+		{
+		}
+	}
+
+	/// <summary>
+	/// 单次触发的上行验证确认（点一次触发一轮轮询）：get_sms 初查 →
+	/// 仍要求上行验证时，按 WPFLauncher_Hook 还原的协议循环调 verify_sms（up_content=回复内容），
+	/// 每 5 秒一次、最长 10 秒；拿到 ticket 自动免验证码直登绑定。
+	/// dialogProgress：弹窗内进度文本回调（可选）。
+	/// </summary>
+	private async Task<bool> TrySmsUpCheckOnceAsync(string phone, string channel, NeteaseLogin.SmsUpVerifyInfo? smsUpHint, IProgress<string>? dialogProgress = null)
+	{
+		SendCodeButton.IsEnabled = false;
+		StatusBar.IsOpen = false;
+		try
+		{
+			if (channel == "4399")
+			{
+				var (ok4, msg4) = await Task.Run(async delegate
+				{
+					using Login4399Service svc = new Login4399Service();
+					return await svc.SendSmsCodeAsync(phone);
+				});
+				ShowInfo(msg4, ok4, ok4 ? "验证码已发送" : null);
+				if (ok4)
+				{
+					_smsCodeSent = true;
+					UpdateChannelMarkers();
+					return true;
+				}
+				return false;
+			}
+			using NeteaseLogin login = new NeteaseLogin();
+			var (ok, msg, _, smsUp, ticket) = await login.SendSmsCodeAsync(phone);
+			if (ok && !string.IsNullOrWhiteSpace(ticket))
+			{
+				LogHelper.Log("[smsup] 检查通过：get_sms 返回 ticket，自动免验证码直登");
+				await CompleteMobileTicketLoginAsync(phone, ticket);
+				return true;
+			}
+			if (ok)
+			{
+				LogHelper.Log("[smsup] 检查通过：验证码已正常下发，可输入验证码登录");
+				_smsCodeSent = true;
+				ShowInfo("短信验证已通过！" + msg, ok: true);
+				UpdateChannelMarkers();
+				return true;
+			}
+			if (smsUp == null && smsUpHint != null)
+			{
+				smsUp = smsUpHint;
+			}
+			if (smsUp != null)
+			{
+				// 轮询确认：verify_sms(up_content=回复内容) 每 5 秒一次，最长 10 秒
+				// （协议来源：WPFLauncher_Hook MpayLogin.VerifySms —— up_content 必须传 reply_sms.content）
+				LogHelper.Log("[smsup] 进入轮询确认（最长 10 秒，每 5 秒一次 verify_sms up_content=" + smsUp.Content + "）");
+				const int maxTries = 3; // 第 0/5/10 秒各确认一次，共约 10 秒
+				for (int i = 1; i <= maxTries; i++)
+				{
+					string progressText = "正在等待上行短信验证生效…（" + i + "/" + maxTries + "，共 10 秒）";
+					ShowInfo(progressText, ok: true, "短信验证");
+					dialogProgress?.Report(progressText);
+					var (t, _) = await login.TrySmsUpConfirmAsync(phone, smsUp.Content);
+					if (!string.IsNullOrWhiteSpace(t))
+					{
+						LogHelper.Log("[smsup] 第 " + i + " 次确认拿到 ticket，自动直登");
+						await CompleteMobileTicketLoginAsync(phone, t);
+						return true;
+					}
+					if (i < maxTries)
+					{
+						await Task.Delay(5000);
+					}
+				}
+				LogHelper.Log("[smsup] 10 秒内未确认收到上行短信");
+				ShowInfo("10 秒内未确认收到上行短信。请核对：①用的是账号绑定的本机号（不是别的手机）\n②短信内容一字不差「" + smsUp.Content + "」\n③手机发送记录里确有发往 " + smsUp.ReplyFields.GetValueOrDefault("number", "(见指引)") + " 的那条\n可在弹窗里再点一次重试。", ok: false, "短信验证");
+				return false;
+			}
+			ShowInfo(msg, ok: false);
+			return false;
+		}
+		catch (Exception ex)
+		{
+			ShowInfo("检查失败：" + ex.Message, ok: false);
+			return false;
+		}
+		finally
+		{
+			SendCodeButton.IsEnabled = true;
+		}
+	}
+
+	/// <summary>打开验证页后的收尾弹窗：用户完成验证后点「我已完成」继续登录/重发验证码。</summary>
+	private async Task ShowRiskVerifyFinishDialog(string account, string channel, string? verifyUrl)
+	{
+		try
+		{
+			bool hasPassword = !IsPhone(account) && !string.IsNullOrEmpty(PasswordBox.Password);
+			ContentDialog dialog = new ContentDialog
+			{
+				Title = "完成网易安全验证了吗？",
+				Content = "在打开的页面完成验证（如向指定手机号发送验证短信）后，点下方按钮继续登录。",
+				PrimaryButtonText = (hasPassword ? "我已完成验证，立即重新登录" : "我已完成验证，重新发送验证码"),
+				CloseButtonText = "稍后再说",
+				DefaultButton = ContentDialogButton.Primary,
+				XamlRoot = XamlRoot
+			};
+			if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+			{
+				await FinishRiskVerifyAsync(account, channel);
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	/// <summary>上行验证通过后的免验证码直登：ticket → finish → Cookie → 游戏会话 → 绑定落盘。</summary>
+	private async Task CompleteMobileTicketLoginAsync(string phone, string ticket)
+	{
+		SetBusy(busy: true);
+		try
+		{
+			NeteaseLoginResult result = await Task.Run(async delegate
+			{
+				using NeteaseLogin login = new NeteaseLogin();
+				return await login.LoginWithSmsTicketAsync(phone, ticket);
+			});
+			if (result.Success)
+			{
+				string bind = AccountStore.BindVerified("netease-mobile", phone, result).Message;
+				AccountAutoLoginService.ClearAutoLoginSuspension("netease-mobile", phone);
+				ShowInfo(bind, ok: true);
+				RefreshAccountList();
+				ElsewhereLoginNotice.Clear("netease-mobile", phone);
+				_ = ProbeElsewhereLoginAsync("netease-mobile", phone, result.EntityId, result.Token);
+				await CaptureRolesAsync(phone, result, "netease-mobile");
+			}
+			else
+			{
+				ShowInfo(result.Message, ok: false);
+			}
+		}
+		catch (Exception ex)
+		{
+			ShowInfo("上行验证直登失败：" + ex.Message, ok: false);
+		}
+		finally
+		{
+			SetBusy(busy: false);
+		}
+	}
+
+	/// <summary>安全验证完成后的继续动作：账密账号自动重新登录（直接拿有效 token），手机号账号单次检查上行验证状态（点一次查一次）。</summary>
+	private async Task FinishRiskVerifyAsync(string account, string channel)
+	{
+		bool hasPassword = !IsPhone(account) && !string.IsNullOrEmpty(PasswordBox.Password);
+		if (hasPassword)
+		{
+			// 输入框里账号+密码仍在：直接走「验证并绑定」完整流程（登录 → 换会话 token → 绑定落盘）
+			ShowInfo("正在自动重新登录…", ok: true, "安全验证");
+			Verify_Click(VerifyButton, new RoutedEventArgs());
+			return;
+		}
+		// 手机号账号：单次检查（用户定版：不做自动轮询，未通过可再次点击重试）
+		await TrySmsUpCheckOnceAsync(account, channel, null);
 	}
 
 	private UIElement BuildAccountRow(AccountStore.LocalAccount acc)
