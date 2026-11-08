@@ -27,7 +27,9 @@ internal class ItemUrl
 		{
 			return null;
 		}
-		Match match = Regex.Match(fileName, "^item_(\\d+)_(\\d+)_(v\\d+)_([0-9A-Za-z]+)\\.7z$", RegexOptions.IgnoreCase);
+		// 官方 item 包以 .7z 为主；部分服务器发 zip 或自解压 exe（7z SFX）。
+		// 旧实现只认 .7z，遇到后两种会直接判「URL 格式不符」，更新/裁剪整条链路走不下去。
+		Match match = Regex.Match(fileName, "^item_(\\d+)_(\\d+)_(v\\d+)_([0-9A-Za-z]+)\\.(7z|zip|exe)$", RegexOptions.IgnoreCase);
 		if (!match.Success)
 		{
 			return null;

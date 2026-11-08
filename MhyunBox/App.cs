@@ -5,6 +5,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using MhyunBox.Services;
@@ -18,7 +20,10 @@ namespace MhyunBox;
 
 public partial class App : Application
 {
-	public const string AppUserModelId = "MhyunBox.MhyunBox";
+	// 媒体卡按 AUMID 反查开始菜单快捷方式/注册表；带点的长 AUMID 会被系统误判成包身份
+	//（PackageFamilyName 形态）而反查失败，媒体卡左上角就回落成「未知应用」。
+	// 用短名（与开始菜单 lnk 文件名一致）最稳。
+	public const string AppUserModelId = "MhyUnBox";
 
 	private const uint SemFailCriticalErrors = 1u;
 
@@ -46,8 +51,8 @@ public partial class App : Application
 			Environment.Exit(0);
 			return;
 		}
-		int value = SetCurrentProcessExplicitAppUserModelID("MhyunBox.MhyunBox");
-		LogHelper.Log($"[SMTC诊断] SetCurrentProcessExplicitAppUserModelID({"MhyunBox.MhyunBox"}) => {value}");
+		int value = SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
+		LogHelper.Log($"[SMTC诊断] SetCurrentProcessExplicitAppUserModelID({AppUserModelId}) => {value}");
 		RegisterAppUserModelIdIcon();
 		InitializeComponent();
 		base.UnhandledException += App_UnhandledException;
@@ -132,27 +137,7 @@ public partial class App : Application
 
 	internal static void RegisterAppUserModelIdIcon()
 	{
-		try
-		{
-			string text = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
-			if (!File.Exists(text))
-			{
-				return;
-			}
-			using RegistryKey registryKey = Registry.CurrentUser.CreateSubKey("Software\\Classes\\AppUserModelId\\MhyunBox.MhyunBox");
-			registryKey.SetValue("DisplayName", "MhyUnbox", RegistryValueKind.ExpandString);
-			registryKey.SetValue("DisplayIcon", text, RegistryValueKind.ExpandString);
-			registryKey.SetValue("IconUri", text);
-			string processPath = Environment.ProcessPath;
-			if (!string.IsNullOrWhiteSpace(processPath))
-			{
-				registryKey.SetValue("AppPath", processPath, RegistryValueKind.ExpandString);
-			}
-		}
-		catch (Exception ex)
-		{
-			LogHelper.LogError(ex, "注册 AppUserModelId 图标失败");
-		}
+		AppIdentity.Apply();
 	}
 
 	protected override void OnLaunched(LaunchActivatedEventArgs args)
@@ -168,6 +153,7 @@ public partial class App : Application
 			TryAutoStartCapture();
 			TryAutoStartProxy();
 			TryAutoStartTools();
+			MarketTokenService.StartBackgroundSync();
 			MhyunBox.MainWindow.Instance?.ScheduleGameProcessDetection();
 			if (Environment.GetCommandLineArgs().Any((string a) => string.Equals(a, "--hidden", StringComparison.OrdinalIgnoreCase)))
 			{
@@ -446,6 +432,400 @@ public partial class App : Application
 		{
 		}
 		Environment.Exit(1);
+	}
+
+	/// <summary>
+	/// SMTC 媒体卡左上角「应用名 + 图标」的三层身份链（依据 SMTC 媒体卡精修文档）。
+	/// 非打包 Win32 程序默认没有显式 AUMID，媒体卡会显示「未知应用」。
+	/// 三层：进程 AUMID → HKCU 注册表 DisplayName/IconUri → 开始菜单 .lnk 的 PKEY_AppUserModel_ID。
+	/// </summary>
+	internal static class AppIdentity
+	{
+		public const string Aumid = "MhyUnBox";
+
+		public const string DisplayName = "MhyUnBox";
+
+		private static readonly object Sync = new object();
+
+		private static bool _applied;
+
+		/// <summary>快捷方式身份属性的版本：2 = 同时写了 Relaunch* 三件套（媒体卡非当前会话位置要用）。</summary>
+		private const int IdentityRev = 2;
+
+		/// <summary>版本号存在程序自己的键里，不往 shell 的 AppUserModelId 命名空间塞私有值。</summary>
+		private const string IdentityStoreKey = "Software\\MhyUnBox";
+
+		/// <summary>本次启动时注册表里记下的上次完成版本，用来决定要不要补写快捷方式属性。</summary>
+		private static int _identityRevAtStartup;
+
+		[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+		internal static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
+		internal static void Apply()
+		{
+			lock (Sync)
+			{
+				if (_applied)
+				{
+					return;
+				}
+				_applied = true;
+				try
+				{
+					SetCurrentProcessExplicitAppUserModelID(Aumid);
+				}
+				catch
+				{
+				}
+				RegisterRegistryIdentity();
+				EnsureStartMenuShortcut();
+			}
+		}
+
+		private static void RegisterRegistryIdentity()
+		{
+			try
+			{
+				string exe = Environment.ProcessPath ?? "";
+				string icon = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
+				// 清掉上一版带点的长 AUMID（MhyunBox.MhyunBox）：媒体卡会把它当包身份反查失败，
+				// 旧键留着只会让 shell 继续命中「未知应用」缓存。
+				try
+				{
+					Registry.CurrentUser.DeleteSubKeyTree("Software\\Classes\\AppUserModelId\\MhyunBox.MhyunBox", throwOnMissingSubKey: false);
+				}
+				catch
+				{
+				}
+				using RegistryKey key = Registry.CurrentUser.CreateSubKey("Software\\Classes\\AppUserModelId\\" + Aumid);
+				// 上一次启动是否已完成「快捷方式四件套」的写入：只有成功过才跳过，
+				// 否则升级上来的老快捷方式（只写了 AUMID）永远补不上显示名/图标的来源。
+				try
+				{
+					using RegistryKey state = Registry.CurrentUser.CreateSubKey(IdentityStoreKey);
+					object? rev = state.GetValue("IdentityRev");
+					_identityRevAtStartup = (rev is int i) ? i : 0;
+				}
+				catch
+				{
+					_identityRevAtStartup = 0;
+				}
+				// DisplayName 必须是 REG_SZ（纯字符串）：REG_EXPAND_SZ 在部分系统上会被
+				// SHLoadIndirectString 判为无效，媒体卡同样回落「未知应用」。
+				key.SetValue("DisplayName", DisplayName, RegistryValueKind.String);
+				// 关键：IconUri 必须指向 apphost exe（图标资源编译进 exe）；
+				// 指向 Assets\app.ico 或托管 DLL 时系统抽不到图标，媒体卡左上角图标会挂空。
+				if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
+				{
+					key.SetValue("IconUri", exe, RegistryValueKind.String);
+					key.SetValue("AppPath", exe, RegistryValueKind.String);
+				}
+				if (File.Exists(icon))
+				{
+					key.SetValue("DisplayIcon", icon, RegistryValueKind.String);
+				}
+				LogHelper.Log("[AUMID] 注册表身份已登记: " + Aumid + " / " + DisplayName + " / IconUri=" + exe);
+				// 通知 shell 立即刷新应用身份缓存，避免媒体卡继续显示「未知应用」。
+				try
+				{
+					SHChangeNotify(0x08000000u, 0u, IntPtr.Zero, IntPtr.Zero);
+				}
+				catch
+				{
+				}
+			}
+			catch (Exception ex)
+			{
+				LogHelper.LogError(ex, "[AUMID] 注册身份失败");
+			}
+		}
+
+		[DllImport("shell32.dll")]
+		private static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
+
+		private static void EnsureStartMenuShortcut()
+		{
+			try
+			{
+				string exe = Environment.ProcessPath ?? "";
+				if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+				{
+					return;
+				}
+				string programs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Microsoft", "Windows", "Start Menu", "Programs");
+				string lnk = Path.Combine(programs, DisplayName + ".lnk");
+				// 幂等：文件存在且目标指向当前 exe 就不重建，避免反复刷开始菜单索引。
+				bool exists = File.Exists(lnk);
+				string? target = exists ? ReadShortcutTarget(lnk) : null;
+				bool rebuilt = false;
+				if (!exists || !string.Equals(target, exe, StringComparison.OrdinalIgnoreCase))
+				{
+					Directory.CreateDirectory(programs);
+					Type? shellType = Type.GetTypeFromProgID("WScript.Shell");
+					object? shell = (shellType == null) ? null : Activator.CreateInstance(shellType);
+					if (shellType == null || shell == null)
+					{
+						return;
+					}
+					object sc = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
+					Type t = sc.GetType();
+					t.InvokeMember("TargetPath", BindingFlags.SetProperty, null, sc, new object[] { exe });
+					t.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, sc, new object[] { Path.GetDirectoryName(exe) ?? "" });
+					t.InvokeMember("IconLocation", BindingFlags.SetProperty, null, sc, new object[] { exe + ",0" });
+					t.InvokeMember("Description", BindingFlags.SetProperty, null, sc, new object[] { DisplayName });
+					t.InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
+					rebuilt = true;
+					LogHelper.Log("[AUMID] 开始菜单快捷方式已创建: " + lnk);
+				}
+				// 只在「刚重建」或「上次没写成功 / 版本旧」时补属性并通知 shell：
+				// 老版本只写过 PKEY_AppUserModel_ID，AppInfo 的显示名与图标来源是空的，
+				// 媒体卡切到非当前会话（排到第二张）时就回落「未知应用」，升级后必须补一次。
+				if (rebuilt || _identityRevAtStartup < IdentityRev)
+				{
+					if (WriteShortcutAumid(lnk))
+					{
+						NotifyShellShortcutUpdated(lnk);
+						MarkIdentityRev();
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				LogHelper.Log("[AUMID] 开始菜单快捷方式降级: " + ex.Message);
+			}
+		}
+
+		/// <summary>标记「快捷方式身份属性已写完」，避免每次启动都重写注册表与刷新 shell。</summary>
+		private static void MarkIdentityRev()
+		{
+			try
+			{
+				using RegistryKey key = Registry.CurrentUser.CreateSubKey(IdentityStoreKey);
+				key.SetValue("IdentityRev", IdentityRev, RegistryValueKind.DWord);
+			}
+			catch
+			{
+			}
+		}
+
+		private const uint SHCNE_CREATE = 0x00000002u;
+
+		private const uint SHCNE_UPDATEDIR = 0x00001000u;
+
+		private const uint SHCNE_UPDATEITEM = 0x00002000u;
+
+		private const uint SHCNF_PATHW = 0x0005u;
+
+		[DllImport("shell32.dll", CharSet = CharSet.Unicode, EntryPoint = "SHChangeNotify")]
+		private static extern void SHChangeNotifyPath(uint wEventId, uint uFlags, string dwItem1, string? dwItem2);
+
+		/// <summary>
+		/// 按路径通知 shell：新建/更新 .lnk 后必须发这几条，开始菜单应用列表（AppsFolder）才会收录。
+		/// 之前只发了 SHCNE_ASSOCCHANGED（文件关联变了），它不触发应用列表刷新，
+		/// 于是媒体卡的非当前会话卡片查不到应用项 → 显示「未知应用」。
+		/// </summary>
+		internal static void NotifyShellShortcutUpdated(string lnk)
+		{
+			try
+			{
+				SHChangeNotifyPath(SHCNE_CREATE, SHCNF_PATHW, lnk, null);
+				SHChangeNotifyPath(SHCNE_UPDATEITEM, SHCNF_PATHW, lnk, null);
+				string? dir = Path.GetDirectoryName(lnk);
+				if (!string.IsNullOrWhiteSpace(dir))
+				{
+					SHChangeNotifyPath(SHCNE_UPDATEDIR, SHCNF_PATHW, dir!, null);
+				}
+				LogHelper.Log("[AUMID] 已通知 shell 刷新开始菜单应用项: " + Path.GetFileName(lnk));
+			}
+			catch (Exception ex)
+			{
+				LogHelper.DebugError(ex, "[AUMID] 通知 shell 刷新失败");
+			}
+		}
+
+		private static string? ReadShortcutTarget(string lnk)
+		{
+			try
+			{
+				Type? shellType = Type.GetTypeFromProgID("WScript.Shell");
+				object? shell = (shellType == null) ? null : Activator.CreateInstance(shellType);
+				if (shellType == null || shell == null)
+				{
+					return null;
+				}
+				object sc = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
+				return sc.GetType().InvokeMember("TargetPath", BindingFlags.GetProperty, null, sc, null) as string;
+			}
+			catch
+			{
+				return null;
+			}
+		}
+
+		[StructLayout(LayoutKind.Sequential)]
+		private struct PROPERTYKEY
+		{
+			public Guid fmtid;
+
+			public int pid;
+		}
+
+		// 原生 PROPVARIANT 在 x64 上是 24 字节（2 字节 vt + 6 字节保留 + 16 字节联合体）。
+		// 显式声明 Size 必须给足：按字段算只有 16 字节，GetValue 输出时原生会写 24 字节，
+		// 直接踩坏栈 —— 表现为启动即 AccessViolationException。
+		[StructLayout(LayoutKind.Explicit, Size = 24)]
+		private struct PROPVARIANT
+		{
+			[FieldOffset(0)]
+			public ushort vt;
+
+			[FieldOffset(8)]
+			public IntPtr pwszVal;
+		}
+
+		[ComImport]
+		[Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+		[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+		private interface IPropertyStore
+		{
+			void GetCount(out uint count);
+
+			void GetAt(uint index, out PROPERTYKEY key);
+
+			void GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+
+			void SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+
+			void Commit();
+		}
+
+		[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+		private static extern int SHGetPropertyStoreFromParsingName(string path, IntPtr pbc, uint flags, ref Guid riid, out IPropertyStore store);
+
+		/// <summary>
+		/// 媒体卡真正读取的链：给 .lnk 写 AppUserModel 属性四件套。
+		/// AUMID 决定「是哪个应用」；RelaunchCommand / RelaunchIconResource /
+		/// RelaunchDisplayNameResource 决定 AppInfo 的显示名与图标来源 ——
+		/// 只写 AUMID 时，媒体卡的第一张（当前会话）能靠注册表链显示，
+		/// 排到第二张（非当前会话）就查不到显示名，回落「未知应用」。
+		/// 属性系统损坏时静默降级到注册表链。
+		/// </summary>
+		private static bool WriteShortcutAumid(string lnk)
+		{
+			try
+			{
+				Guid iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+				int hr = SHGetPropertyStoreFromParsingName(lnk, IntPtr.Zero, 2u, ref iid, out IPropertyStore store);
+				if (hr != 0 || store == null)
+				{
+					LogHelper.Log("[AUMID] 属性系统不可用，媒体卡应用名走注册表链");
+					return false;
+				}
+				Guid fmtid = new Guid("9F4C2855-9F98-11D0-A54F-0014A34736F9");
+				string exe = Environment.ProcessPath ?? "";
+				SetShortcutString(store, fmtid, 5, Aumid);
+				if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
+				{
+					SetShortcutString(store, fmtid, 2, "\"" + exe + "\"");
+					SetShortcutString(store, fmtid, 3, exe + ",0");
+				}
+				SetShortcutString(store, fmtid, 4, DisplayName);
+				store.Commit();
+				// 回读一遍再记日志：属性系统对这些键偶尔会「接受写入但丢弃」（权限/规范化），
+				// 只有回读到值才算真的生效，否则下次启动还要再补。
+				string id = ReadShortcutString(store, fmtid, 5);
+				string cmd = ReadShortcutString(store, fmtid, 2);
+				string icon = ReadShortcutString(store, fmtid, 3);
+				string name = ReadShortcutString(store, fmtid, 4);
+				LogHelper.Log($"[AUMID] 快捷方式属性回读: ID=[{id}] 显示名=[{name}] 图标=[{icon}] 命令=[{cmd}]");
+				return true;
+			}
+			catch (Exception ex)
+			{
+				LogHelper.Log("[AUMID] 快捷方式属性写入降级（媒体卡走注册表链）: " + ex.Message);
+				return false;
+			}
+		}
+
+		/// <summary>写一条 VT_LPWSTR 属性到快捷方式属性库（值由系统复制，写完即可释放）。</summary>
+		private static void SetShortcutString(IPropertyStore store, Guid fmtid, int pid, string value)
+		{
+			IntPtr mem = Marshal.StringToHGlobalUni(value ?? "");
+			try
+			{
+				PROPERTYKEY key = new PROPERTYKEY
+				{
+					fmtid = fmtid,
+					pid = pid
+				};
+				PROPVARIANT pv = new PROPVARIANT
+				{
+					vt = 31,
+					pwszVal = mem
+				};
+				store.SetValue(ref key, ref pv);
+			}
+			finally
+			{
+				Marshal.FreeHGlobal(mem);
+			}
+		}
+
+		[DllImport("ole32.dll")]
+		private static extern int PropVariantClear(ref PROPVARIANT pv);
+
+		/// <summary>回读一条字符串属性（失败/为空返回空串），用于确认写入是否真的生效。</summary>
+		private static string ReadShortcutString(IPropertyStore store, Guid fmtid, int pid)
+		{
+			PROPVARIANT pv = default(PROPVARIANT);
+			try
+			{
+				PROPERTYKEY key = new PROPERTYKEY
+				{
+					fmtid = fmtid,
+					pid = pid
+				};
+				store.GetValue(ref key, out pv);
+				if (pv.vt != 31 || pv.pwszVal == IntPtr.Zero)
+				{
+					return "";
+				}
+				return Marshal.PtrToStringUni(pv.pwszVal) ?? "";
+			}
+			catch
+			{
+				return "";
+			}
+			finally
+			{
+				try
+				{
+					PropVariantClear(ref pv);
+				}
+				catch
+				{
+				}
+			}
+		}
+	}
+
+	/// <summary>
+	/// 时序命门：SMTC 会话建立时拍下的是「当时」的进程 AUMID。
+	/// 用 ModuleInitializer 在 Main / App 构造之前登记，避免窗口或托盘抢跑。
+	/// </summary>
+	internal static class AppIdentityBootstrap
+	{
+		[ModuleInitializer]
+		internal static void Initialize()
+		{
+			try
+			{
+				AppIdentity.SetCurrentProcessExplicitAppUserModelID(AppIdentity.Aumid);
+			}
+			catch
+			{
+			}
+		}
 	}
 
 	

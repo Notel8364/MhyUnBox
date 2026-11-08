@@ -31,7 +31,7 @@ public static class ClientUpdater
 		ItemUrl parsed = ItemUrl.Parse(url);
 		if (parsed == null)
 		{
-			throw new InvalidOperationException("URL 不符合 item_<gameid>_<m>_v<ver>_<hash>.7z 格式");
+			throw new InvalidOperationException("URL 不符合 item_<gameid>_<m>_v<ver>_<hash>.7z / .zip / .exe 格式");
 		}
 		long targetId = ((gameId > 0) ? gameId : parsed.GameId);
 		if (gameId > 0 && parsed.GameId != targetId)
@@ -145,7 +145,7 @@ public static class ClientUpdater
 				ct.ThrowIfCancellationRequested();
 				if (totalLen > 0 && new FileInfo(partPath).Length != totalLen)
 				{
-					throw new InvalidOperationException($"下载不完整（期望 {totalLen:N0} 字节，实际 {new FileInfo(partPath).Length:N0}），.part 已保留，请重新点击「更新资源包」续下");
+					throw new InvalidOperationException($"下载不完整（期望 {totalLen:N0} 字节，实际 {new FileInfo(partPath).Length:N0} 字节）。重新点击「更新资源包」会先清掉 .part 再完整下载，请检查网络/CDN 稳定性。");
 				}
 				File.Move(partPath, pkg, overwrite: true);
 				sw.Stop();
@@ -382,11 +382,15 @@ public static class ClientUpdater
 			}
 			try
 			{
-				foreach (string item2 in Directory.EnumerateFiles(item, "item_*.7z", SearchOption.AllDirectories))
+				// item 包可能是 .7z（官方）、.zip 或自解压 .exe（7z SFX），三种都要能被扫描到。
+				foreach (string pattern in new string[3] { "item_*.7z", "item_*.zip", "item_*.exe" })
 				{
-					if (!list3.Any((string p) => string.Equals(p, item2, StringComparison.OrdinalIgnoreCase)))
+					foreach (string item2 in Directory.EnumerateFiles(item, pattern, SearchOption.AllDirectories))
 					{
-						list3.Add(item2);
+						if (!list3.Any((string p) => string.Equals(p, item2, StringComparison.OrdinalIgnoreCase)))
+						{
+							list3.Add(item2);
+						}
 					}
 				}
 			}
@@ -399,7 +403,7 @@ public static class ClientUpdater
 			ct.ThrowIfCancellationRequested();
 			try
 			{
-				Match match = Regex.Match(Path.GetFileName(path), "^item_(\\d+)_(\\d+)_(v\\d+)_([0-9A-Za-z]+)\\.7z$", RegexOptions.IgnoreCase);
+				Match match = Regex.Match(Path.GetFileName(path), "^item_(\\d+)_(\\d+)_(v\\d+)_([0-9A-Za-z]+)\\.(7z|zip|exe)$", RegexOptions.IgnoreCase);
 				if (!match.Success)
 				{
 					continue;
@@ -439,10 +443,10 @@ public static class ClientUpdater
 		{
 			throw new FileNotFoundException("资源包不存在：" + pkgPath);
 		}
-		Match match = Regex.Match(Path.GetFileName(pkgPath), "^item_(\\d+)_(\\d+)_(v\\d+)_([0-9A-Za-z]+)\\.7z$", RegexOptions.IgnoreCase);
+		Match match = Regex.Match(Path.GetFileName(pkgPath), "^item_(\\d+)_(\\d+)_(v\\d+)_([0-9A-Za-z]+)\\.(7z|zip|exe)$", RegexOptions.IgnoreCase);
 		if (!match.Success)
 		{
-			throw new InvalidOperationException("文件名不符合 item_<gameid>_<m>_v<ver>_<hash>.7z，无法识别（请用原始下载文件名）");
+			throw new InvalidOperationException("文件名不符合 item_<gameid>_<m>_v<ver>_<hash>.7z / .zip / .exe，无法识别（请用原始下载文件名）");
 		}
 		ItemUrl parsed = new ItemUrl
 		{
@@ -517,6 +521,38 @@ public static class ClientUpdater
 		// 失落世界等服务器贴图直接在资源包里加载，维持原有直接覆盖路径。
 		bool isElementPoetry = targetId == 4658261307332877912L || string.Equals(serverEntry?.Name, "元素之诗", StringComparison.Ordinal);
 		string? dragonTarget = (isElementPoetry ? ResolveDragonCoreTarget() : null);
+		// 更新页「第二合并路径」如果直接填的是 DragonCore / 版本客户端目录，也认作裁剪目标：
+		// 旧逻辑只记浏览选过的路径，手填的目录会被忽略，于是下载完仍走全量合并（表现为「不会自动裁剪合并」）。
+		string? tempDragonTarget = null;
+		if (isElementPoetry && dragonTarget == null && !string.IsNullOrWhiteSpace(extraMergeTarget))
+		{
+			try
+			{
+				string? resolvedTarget = await DragonCoreTrimService.ResolvePackDirAsync(extraMergeTarget);
+				if (resolvedTarget != null && DragonCoreTrimService.LooksLikeDragonCoreDir(resolvedTarget))
+				{
+					dragonTarget = resolvedTarget;
+					// 第二合并路径填的是压缩包时，ResolvePackDirAsync 会把它解压到 %TEMP%：
+					// 这种临时目录只能用于本次更新 —— 既不能记成长期目标（下次启动就失效），
+					// 也不能留着占体积（官方包解压后接近 1GB），合并完立即删除。
+					if (DragonCoreTrimService.IsTempDir(resolvedTarget))
+					{
+						tempDragonTarget = resolvedTarget;
+						L(log, "元素之诗：从「第二合并路径」压缩包临时解出 DragonCore（仅本次更新使用，不记为长期路径）: " + resolvedTarget);
+					}
+					else
+					{
+						SettingsManager.Instance.DragonCoreTargetDir = resolvedTarget;
+						SettingsManager.Save(SettingsManager.Instance);
+						L(log, "元素之诗：从「第二合并路径」解析到 DragonCore 裁剪目标: " + resolvedTarget);
+					}
+				}
+			}
+			catch (Exception ex4)
+			{
+				L(log, "元素之诗：解析「第二合并路径」失败，按原逻辑回退: " + ex4.Message);
+			}
+		}
 		bool trimmed = false;
 		if (isElementPoetry && dragonTarget == null)
 		{
@@ -524,7 +560,15 @@ public static class ClientUpdater
 		}
 		if (dragonTarget != null)
 		{
-			trimmed = await TryElementPoetryTrimAsync(text2, pkg, work, dragonTarget, target, log, ct);
+			try
+			{
+				trimmed = await TryElementPoetryTrimAsync(text2, pkg, work, dragonTarget, target, log, ct);
+			}
+			finally
+			{
+				// 临时解压出来的裁剪目标用完即删；真正记住的客户端目录 tempDragonTarget 为 null，不受影响
+				DragonCoreTrimService.CleanupTempDir(tempDragonTarget);
+			}
 			if (!trimmed)
 			{
 				L(log, "DragonCore 裁剪未命中（包内无 DragonCore 或提取失败），回退全量合并");
@@ -553,7 +597,14 @@ public static class ClientUpdater
 				L(log, $"  loose files: {num}");
 			}
 			// 第二合并目标（PCL 客户端实例，失落世界等）：网易实例合并完成后同样合并一份进 PCL
-			if (!string.IsNullOrWhiteSpace(extraMergeTarget) && Directory.Exists(extraMergeTarget) && !string.Equals(Path.GetFullPath(extraMergeTarget), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
+			bool extraIsDragonCore = !string.IsNullOrWhiteSpace(extraMergeTarget) && DragonCoreTrimService.LooksLikeDragonCoreDir(extraMergeTarget!);
+			if (extraIsDragonCore)
+			{
+				// 第二合并路径填的是 DragonCore 资源包目录（元素之诗裁剪目标）：
+				// 全量合并会把 mods/config 塞进资源包里，属于污染，直接跳过（裁剪路径已单独处理过）
+				L(log, "第二合并目标是 DragonCore 资源包目录，跳过全量合并（裁剪路径已单独处理）: " + extraMergeTarget);
+			}
+			else if (!string.IsNullOrWhiteSpace(extraMergeTarget) && Directory.Exists(extraMergeTarget) && !string.Equals(Path.GetFullPath(extraMergeTarget), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
 			{
 				L(log, "第二合并目标（PCL 客户端）: " + extraMergeTarget);
 				foreach (var item2 in MergeDirs(stage, extraMergeTarget, parsed.Hash))
@@ -667,7 +718,7 @@ public static class ClientUpdater
 		ItemUrl itemUrl = ItemUrl.Parse(url);
 		if (itemUrl == null)
 		{
-			throw new InvalidOperationException("URL 不符合 item_<gameid>_<m>_v<ver>_<hash>.7z 格式");
+			throw new InvalidOperationException("URL 不符合 item_<gameid>_<m>_v<ver>_<hash>.7z / .zip / .exe 格式");
 		}
 		L(log, $"parsed: {itemUrl.PackageName} gameId={itemUrl.GameId} module={itemUrl.Module} ver={itemUrl.Ver} hash={itemUrl.Hash}");
 		ServerEntry? installed = null;
@@ -726,7 +777,7 @@ public static class ClientUpdater
 					string[] array = File.ReadAllLines(item);
 					for (int i = 0; i < array.Length; i++)
 					{
-						Match match = Regex.Match(array[i], "https?://[^\\s']*?item_(\\d+)_(\\d+)_(v\\d+)_([0-9A-Za-z]+)\\.7z", RegexOptions.IgnoreCase);
+						Match match = Regex.Match(array[i], "https?://[^\\s']*?item_(\\d+)_(\\d+)_(v\\d+)_([0-9A-Za-z]+)\\.(7z|zip|exe)", RegexOptions.IgnoreCase);
 						if (match.Success)
 						{
 							long key = long.Parse(match.Groups[1].Value);
@@ -811,17 +862,17 @@ public static class ClientUpdater
 		}
 	}
 
-	private static string Resolve7z()
+	internal static string Resolve7z()
 	{
-		// 内置 7-Zip 独立版 7zr.exe（官方、免安装、专解 .7z）优先，解压不再依赖外部安装
-		string[] array = new string[6]
+		// 优先完整版 7z（支持 zip / 7z / 自解压 exe 三种来源），没有再用内置 7zr.exe 兜底。
+		// 7zr 是「7z 格式专用独立版」，解不了 zip / 自解压 exe，只在官方 item_*.7z 场景够用。
+		string[] array = new string[5]
 		{
-			Path.Combine(AppContext.BaseDirectory, "7zr.exe"),
-			Path.Combine(AppContext.BaseDirectory, "7za.exe"),
 			Path.Combine(AppContext.BaseDirectory, "7z.exe"),
-			"E:\\QQ_Information\\2998155760\\FileRecv\\EchooQt 1.1.2\\7z.exe",
+			Path.Combine(AppContext.BaseDirectory, "7za.exe"),
 			"C:\\Program Files\\7-Zip\\7z.exe",
-			"C:\\Program Files (x86)\\7-Zip\\7z.exe"
+			"C:\\Program Files (x86)\\7-Zip\\7z.exe",
+			Path.Combine(AppContext.BaseDirectory, "7zr.exe")
 		};
 		string[] array2 = array;
 		foreach (string text in array2)
@@ -834,8 +885,21 @@ public static class ClientUpdater
 		throw new InvalidOperationException("找不到内置 7zr.exe（程序目录），且未安装 7-Zip，请重新获取完整程序");
 	}
 
+	/// <summary>当前解析到的 7z 是否只是「7z 格式专用」的 7zr（不能解 zip / 自解压 exe）。</summary>
+	internal static bool IsLimited7zr(string sevenZip)
+	{
+		try
+		{
+			return string.Equals(Path.GetFileNameWithoutExtension(sevenZip), "7zr", StringComparison.OrdinalIgnoreCase);
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
 	// 运行 7z x 解压；includes 为 null 时全量解压，否则按通配只提取匹配条目
-	private static async Task ExtractAsync(string sevenZip, string pkg, string outDir, string[]? includes, CancellationToken ct)
+	internal static async Task ExtractAsync(string sevenZip, string pkg, string outDir, string[]? includes, CancellationToken ct)
 	{
 		ProcessStartInfo processStartInfo = new ProcessStartInfo(sevenZip)
 		{
@@ -870,7 +934,7 @@ public static class ClientUpdater
 	}
 
 	/// <summary>解压前先列出 7z 条目并校验路径，防止绝对路径 / .. 条目写到目标目录之外。</summary>
-	private static async Task EnsureArchiveEntriesSafeAsync(string sevenZip, string pkg, CancellationToken ct)
+	internal static async Task EnsureArchiveEntriesSafeAsync(string sevenZip, string pkg, CancellationToken ct)
 	{
 		List<string> entries = await ListArchiveAsync(sevenZip, pkg, ct);
 		foreach (string entry in entries)
@@ -1438,7 +1502,8 @@ public static class ClientUpdater
 			Directory.CreateDirectory(Path.GetDirectoryName(text2));
 			if (File.Exists(text2))
 			{
-				string text3 = Path.Combine(text, Path.GetFileName(relativePath));
+				// 备份保留相对路径：不同子目录下的同名文件（贴图重名很常见）不会互相覆盖
+				string text3 = Path.Combine(text, relativePath);
 				Directory.CreateDirectory(Path.GetDirectoryName(text3));
 				File.Copy(text2, text3, overwrite: true);
 			}

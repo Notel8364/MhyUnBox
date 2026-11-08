@@ -244,6 +244,43 @@ public static class ProxyCaptureService
 	/// <summary>最近一次客户端登录握手的真实协议版本（用于健康探测伪装，避免用固定 340 老协议号暴露代理特征触发风控）。</summary>
 	private static volatile int LastClientProtocol;
 
+	// ===== 2026-11-07 修复：恢复 v3.8.0 的代理层连接节流 =====
+	// 8.0.0 曾移除这层保护，改成「认证失败冷却期仍照常直连 + 换节点」，
+	// 结果是网易风控拒绝后连接数与 login-otp 一起叠加，把 IP 级标记越刷越深。
+	private static readonly ConcurrentDictionary<string, DateTime> TargetAuthFailAt = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+	private static readonly ConcurrentDictionary<string, DateTime[]> TargetConnectTimes = new ConcurrentDictionary<string, DateTime[]>(StringComparer.OrdinalIgnoreCase);
+
+	private static readonly object ConnectThrottleSync = new object();
+
+	private const int MaxActivePerTarget = 6;
+
+	private const int ConnectRateWindowSeconds = 8;
+
+	private const int MaxConnectsPerWindow = 8;
+
+	/// <summary>
+	/// 代理模式分流：true=正常代理登录（对齐 v3.8.0 的单目标直连，去掉自带连接节流/风控限制）；
+	/// false=防DDOS模式（对齐 v7.8.0 的节点轮换、预设 IP 池、健康探测与地址安全策略）。
+	/// 默认 normal：防DDOS 的节点轮换与探测流量容易被网易判为异常登录环境。
+	/// </summary>
+	internal static bool IsNormalMode
+	{
+		get
+		{
+			try
+			{
+				return !string.Equals(SettingsManager.Instance.ProxyMode, "ddos", StringComparison.OrdinalIgnoreCase);
+			}
+			catch
+			{
+				return true;
+			}
+		}
+	}
+
+	private static int _normalIpPoolCursor;
+
 	private static readonly string[] CredentialKickPhrases = new string[25]
 	{
 		"会话已失效", "会话失效", "凭证失效", "凭证已失效", "请先登录", "请重新登录", "重新登录", "登录已失效", "登录失效", "登录过期",
@@ -257,7 +294,23 @@ public static class ProxyCaptureService
 		"new device", "device change", "安全提醒", "账号安全", "异地登录"
 	};
 
-	private static readonly int MaxDumpBytes = 32;
+	// 抓包每块最大转储字节数：默认全量（0 = 不截断）。
+	// 通过环境变量 MHYUNBOX_CAPTURE_MAX_DUMP 控制；不设置或 <=0 时按 65536 处理，
+	// 用于完整记录交易行等大数据包（此前固定 32B 导致 GUI 数据无法分析）。
+	private static readonly int MaxDumpBytes = Math.Max(4096, ParseEnvInt("MHYUNBOX_CAPTURE_MAX_DUMP", 65536));
+
+	private static int ParseEnvInt(string name, int fallback)
+	{
+		try
+		{
+			string v = Environment.GetEnvironmentVariable(name) ?? "";
+			return int.TryParse(v, out int n) && n > 0 ? n : fallback;
+		}
+		catch
+		{
+			return fallback;
+		}
+	}
 
 	public static bool IsRunning { get; private set; }
 
@@ -418,6 +471,7 @@ public static class ProxyCaptureService
 		}
 		TargetHost = targetHost;
 		TargetPort = targetPort;
+		LogHelper.Log("[代理模式] " + (IsNormalMode ? "正常代理登录（v3.8.0 单目标直连，无风控限制）" : "防DDOS（v7.8.0 节点轮换 / 预设 IP 池 / 健康探测）"));
 		if (CaptureLogEnabled)
 		{
 			Directory.CreateDirectory(CaptureDir);
@@ -1248,10 +1302,70 @@ public static class ProxyCaptureService
 				}
 				statusPing = handshakeNextState == 1;
 			}
-			if (statusPing && IsProtectedTarget(targetHost, targetPort))
+			if (!IsNormalMode && statusPing && IsProtectedTarget(targetHost, targetPort))
 			{
 				await AnswerStatusLocallyAsync(client, handshake, targetHost, targetPort, sessionLabel, acceptCt);
 				return;
+			}
+			// 防DDOS模式保留连接节流；正常代理登录模式（v3.8.0 行为）去掉自带风控限制。
+			string targetKey = targetHost + ":" + targetPort;
+			if (!IsNormalMode)
+			{
+			// ===== 代理层连接节流（对齐 v3.8.0：认证失败冷却 8s / 8s 内 ≥8 次连接延迟 2.5s / 同目标并发 ≤6）=====
+			DateTime nowUtc = DateTime.UtcNow;
+			if (TargetAuthFailAt.TryGetValue(targetKey, out DateTime lastFailAt) && nowUtc - lastFailAt < TimeSpan.FromSeconds((double)ConnectRateWindowSeconds))
+			{
+				LogHelper.Log($"[代理抓取] {sessionLabel} 目标 {targetKey} 认证刚失败（{(int)(nowUtc - lastFailAt).TotalSeconds} 秒前），冷却 8 秒规避风控踢包");
+				try
+				{
+					await Task.Delay(8000, acceptCt).ConfigureAwait(continueOnCapturedContext: false);
+				}
+				catch (OperationCanceledException)
+				{
+					client.Dispose();
+					return;
+				}
+			}
+			for (int w = 0; w < 25; w++)
+			{
+				int activeForTarget = Active.Values.Count((ActiveSession s) => !s.Closed
+					&& string.Equals(s.TargetHostUsed, targetHost, StringComparison.OrdinalIgnoreCase)
+					&& s.TargetPortUsed == targetPort);
+				if (activeForTarget < MaxActivePerTarget)
+				{
+					break;
+				}
+				try
+				{
+					await Task.Delay(200, acceptCt).ConfigureAwait(continueOnCapturedContext: false);
+				}
+				catch (OperationCanceledException)
+				{
+					client.Dispose();
+					return;
+				}
+			}
+			bool needSlowDown = false;
+			lock (ConnectThrottleSync)
+			{
+				DateTime[] recent = TargetConnectTimes.GetOrAdd(targetKey, (string _) => Array.Empty<DateTime>())
+					.Where((DateTime t) => DateTime.UtcNow - t < TimeSpan.FromSeconds((double)ConnectRateWindowSeconds)).ToArray();
+				needSlowDown = recent.Length >= MaxConnectsPerWindow;
+				TargetConnectTimes[targetKey] = recent.Append(DateTime.UtcNow).ToArray();
+			}
+			if (needSlowDown)
+			{
+				LogHelper.Log($"[代理抓取] {sessionLabel} 目标 {targetKey} 8 秒内连接过于频繁，延迟 2.5 秒规避风控踢包");
+				try
+				{
+					await Task.Delay(2500, acceptCt).ConfigureAwait(continueOnCapturedContext: false);
+				}
+				catch (OperationCanceledException)
+				{
+					client.Dispose();
+					return;
+				}
+			}
 			}
 			TcpClient upstream;
 			using (CancellationTokenSource peekCts = CancellationTokenSource.CreateLinkedTokenSource(acceptCt))
@@ -1378,9 +1492,14 @@ public static class ProxyCaptureService
 					using CancellationTokenSource authCts = CancellationTokenSource.CreateLinkedTokenSource(acceptCt);
 					authCts.CancelAfter(TimeSpan.FromSeconds(150.0));
 					var (flag, text2) = await UpgradeEncryptionAuthAsync(session, bridge, binding, peekCts.Token, authCts.Token);
-					if (!flag)
+				if (!flag)
+				{
+					// 防DDOS模式：认证失败后对该目标冷却 8 秒；正常代理登录模式不记录（去掉自带风控限制）。
+					if (!IsNormalMode)
 					{
-						string text3 = (string.IsNullOrWhiteSpace(text2) ? "网易云认证失败" : text2);
+						TargetAuthFailAt[targetKey] = DateTime.UtcNow;
+					}
+					string text3 = (string.IsNullOrWhiteSpace(text2) ? "网易云认证失败" : text2);
 						LogHelper.Log("[代理抓取] " + sessionLabel + " 网易云认证未完成（" + text3 + "）");
 						session.Dispose();
 						if (Active.TryRemove(id, out value2))
@@ -1443,8 +1562,79 @@ public static class ProxyCaptureService
 		}
 	}
 
+	/// <summary>
+	/// 正常代理登录模式（对齐 v3.8.0）：单目标直连，不做节点轮换 / IP 池健康排序 /
+	/// 地址安全拦截 / 健康探测 / 本地状态应答，也不带任何连接节流（自带风控限制已去掉）。
+	/// 仅当目标被 hosts 劫持解析为回环时，才按预设 IP 池直连真实服务器 —— 这是 3.8.0 原有的
+	/// hosts 兜底，不是防DDOS 模式的节点轮换。
+	/// </summary>
+	private static async Task<TcpClient> ConnectUpstreamNormalAsync(string targetHost, int targetPort, string label, CancellationToken ct, ActiveSession? session)
+	{
+		bool loopResolved = false;
+		try
+		{
+			IPAddress[] addresses = await Dns.GetHostAddressesAsync(targetHost).ConfigureAwait(continueOnCapturedContext: false);
+			loopResolved = addresses.Length != 0 && addresses.All((IPAddress a) => IPAddress.IsLoopback(a));
+		}
+		catch
+		{
+		}
+		TcpClient upstream = new TcpClient
+		{
+			NoDelay = true
+		};
+		try
+		{
+			if (loopResolved)
+			{
+				string[] ipPool = ServerPresets.All.FirstOrDefault((ServerPreset p) => string.Equals(p.Host, targetHost, StringComparison.OrdinalIgnoreCase))?.IpPool ?? Array.Empty<string>();
+				if (ipPool.Length == 0)
+				{
+					throw new InvalidOperationException("目标 " + targetHost + " 解析到回环地址且无预设 IP 池，无法直连真实服务器");
+				}
+				Exception? last = null;
+				int start = Interlocked.Increment(ref _normalIpPoolCursor) % ipPool.Length;
+				for (int i = 0; i < ipPool.Length; i++)
+				{
+					string ip = ipPool[(start + i) % ipPool.Length];
+					try
+					{
+						await upstream.ConnectAsync(IPAddress.Parse(ip), targetPort, ct).ConfigureAwait(continueOnCapturedContext: false);
+						if (session != null)
+						{
+							session.UpstreamRoute = "预设IP池 " + ip + ":" + targetPort;
+						}
+						LogHelper.Log($"[代理抓取] {label} 目标 {targetHost} 被劫持解析为回环，改用预设 IP 池直连 {ip}:{targetPort}（正常代理登录模式）");
+						return upstream;
+					}
+					catch (Exception ex)
+					{
+						last = ex;
+					}
+				}
+				throw last ?? new InvalidOperationException("预设 IP 池全部连接失败");
+			}
+			await upstream.ConnectAsync(targetHost, targetPort, ct).ConfigureAwait(continueOnCapturedContext: false);
+			if (session != null)
+			{
+				session.UpstreamRoute = "直连 " + targetHost + ":" + targetPort;
+			}
+			LogHelper.Log($"[代理抓取] {label} 已连接上游 {targetHost}:{targetPort}（正常代理登录模式）");
+			return upstream;
+		}
+		catch
+		{
+			upstream.Dispose();
+			throw;
+		}
+	}
+
 	private static async Task<TcpClient> ConnectUpstreamAsync(string targetHost, int targetPort, string label, bool allowPrivateTarget, CancellationToken ct, ActiveSession? session = null)
 	{
+		if (IsNormalMode)
+		{
+			return await ConnectUpstreamNormalAsync(targetHost, targetPort, label, ct, session).ConfigureAwait(continueOnCapturedContext: false);
+		}
 		IPAddress[] resolved;
 		try
 		{
@@ -1477,7 +1667,7 @@ public static class ProxyCaptureService
 			}
 			if (IsLinePenalized(targetHost, targetPort, null))
 			{
-				LogHelper.Log($"[节点轮换] {label} 直连节点 {targetHost}:{targetPort} 处于认证失败冷却期，仍照常直连（IP 池节点排序中已降权）");
+				LogHelper.Log($"[节点轮换] {label} 直连节点 {targetHost}:{targetPort} 处于认证失败冷却期（连接入口已按 8 秒冷却等待），IP 池节点排序中已降权");
 			}
 			try
 			{
@@ -1730,6 +1920,11 @@ public static class ProxyCaptureService
 	/// <summary>按当前会话的实际线路（直连/预设IP池节点）上报认证阶段失败，供自动更换节点。</summary>
 	private static void ReportAuthLineFailureFromSession(ActiveSession session, string reason)
 	{
+		// 正常代理登录模式不做节点轮换（单目标固定，换节点是防DDOS 模式特性）。
+		if (IsNormalMode)
+		{
+			return;
+		}
 		try
 		{
 			string route = session.UpstreamRoute ?? "";
@@ -1756,6 +1951,10 @@ public static class ProxyCaptureService
 	/// <summary>认证通过后清除所用节点的失败计数：节点恢复正常即立即洗白，不留旧账。</summary>
 	private static void ReportAuthLineSuccessFromSession(ActiveSession session)
 	{
+		if (IsNormalMode)
+		{
+			return;
+		}
 		try
 		{
 			string route = session.UpstreamRoute ?? "";
@@ -3255,6 +3454,11 @@ public static class ProxyCaptureService
 
 	private static void EnsureHealthMonitorStarted()
 	{
+		// 正常代理登录模式不启动健康探测：周期性 status ping 是网易侧易识别的代理特征。
+		if (IsNormalMode)
+		{
+			return;
+		}
 		lock (HealthMonitorSync)
 		{
 			if (UpstreamHealth.Count == 0 || (HealthMonitorTask != null && !HealthMonitorTask.IsCompleted))

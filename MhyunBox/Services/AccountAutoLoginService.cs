@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using MhyunBox.Settings;
 
 namespace MhyunBox.Services;
 
@@ -10,9 +11,11 @@ public static class AccountAutoLoginService
 {
 	private static readonly Dictionary<string, int> RetryCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-	// 设计原则（2026-10-29 定版）：程序侧不设任何自作主张的"风控冷静期"，服务器和网易侧没有的限制
-	// 程序也不替它们猜：进不去、被拦截都照样照常发请求，仅记录日志供排查。
-	// 唯一例外是用户本轮明确要求的：自动重登连续失败 3 次 → 暂停自动登录 30 分钟（手动不受限，见下方注释）。
+	// 设计原则（2026-11-07 修订）：网易按环境拒绝（code=32 / login abnormally）后进入全局冷静期，
+	// 冷静期内所有自动链路（Cookie 保活 / 账密保活 / 兜底重登 / 自动重登）一律停发请求；
+	// 手动登录不受限，成功后 RiskNotice.Clear 立即解除。此前「不设冷静期、被拦截也照常发请求」
+	// 导致登录风暴，把本机出口 IP 与设备标记，连官方启动器与其它账号一并触发异常登录环境风控。
+	// 用户定版保留：自动重登连续失败 3 次 → 暂停自动登录 30 分钟（手动不受限）。
 
 	// 同一账号同一时间只允许一个重登任务，避免 S003/S004 两路连接同时失败时各登一次、重复请求。
 	private static readonly Dictionary<string, Task<bool>> InFlight = new Dictionary<string, Task<bool>>(StringComparer.OrdinalIgnoreCase);
@@ -44,106 +47,18 @@ public static class AccountAutoLoginService
 
 	public static void Start()
 	{
-		// 会话保活（每 15 分钟给开了自动登录且有本地凭证的账号重拉 token）
-		StartPeriodicRefresh();
-		// 账密级保活（每 90 分钟给保存了明文账密的账号用账密重新登录换全新会话，4399 换 Cookie / 网易账密重登）
+		// 用户定版（2026-11-07）：自动登录的保活机制统一改为「账密定时保活」。
+		// 原先每 60 分钟用本地 Cookie 重拉 token，叠加进服刷新后会形成 login-otp 风暴，
+		// 且新 token 会顶掉官方启动器/游戏内正在用的会话；改为每 6 小时用保存的明文账密
+		// 重登一次（无账密的账号不参与，进服时按需现拉 token 即可）。
 		StartCredentialRefresh();
-	}
-
-	private static bool _periodicStarted;
-
-	// 每 15 分钟给开了自动登录且有本地凭证的账号重拉一次 token。
-	// 旧版是 5 分钟，且失败后立刻走账密重登：4 个账号每小时会发几十次 login-otp，
-	// 网易侧很容易返回 login abnormally，并且新 token 还可能顶掉游戏内正在用的旧会话。
-	// 进服时 NeteaseAuthBridge 本来就会现拉一次 token，所以后台保活只做低频预热，不再做账密回退。
-	public static void StartPeriodicRefresh()
-	{
-		if (_periodicStarted)
-		{
-			return;
-		}
-		_periodicStarted = true;
-		Task.Run(async () =>
-		{
-			while (true)
-			{
-				try
-				{
-					await Task.Delay(TimeSpan.FromMinutes(15.0)).ConfigureAwait(continueOnCapturedContext: false);
-					List<AccountStore.LocalAccount> accounts = AccountStore.All.Where((AccountStore.LocalAccount a) => a.AutoLogin && !string.IsNullOrWhiteSpace(a.CookieJson)).ToList();
-					if (accounts.Count > 0)
-					{
-						// 官方网易启动器（WPFLauncher/MCLauncher）运行时整轮跳过保活：
-						// login-otp 换新会话会把同账号下官方启动器正在用的会话顶掉（表现为启动器掉线/要求重登）。
-						// 脱盒期间不动官方启动器的会话，是消除「脱盒导致启动器失效」的关键。
-						bool officialLauncherRunning = false;
-						try
-						{
-							foreach (GameProcessDetector.FoundGroup group in GameProcessDetector.FindRunning())
-							{
-								if (group.Label.Contains("我的世界", StringComparison.Ordinal) && group.Processes.Count > 0)
-								{
-									officialLauncherRunning = true;
-									break;
-								}
-							}
-						}
-						catch
-						{
-						}
-						if (officialLauncherRunning)
-						{
-							LogHelper.Log("[自动登录] 检测到官方网易启动器正在运行，本轮周期保活跳过（避免顶掉启动器登录会话）");
-							continue;
-						}
-						LogHelper.Log("[自动登录] 周期保活开始（每 15 分钟），共 " + accounts.Count + " 个账号");
-						foreach (AccountStore.LocalAccount acc in accounts)
-						{
-							try
-							{
-								if (string.IsNullOrWhiteSpace(acc.CookieJson))
-								{
-									continue;
-								}
-								if (ProxyCaptureService.IsAccountInGame(acc.Channel, acc.Account))
-								{
-									// 游戏内会话正在使用旧 token，此时再 login-otp 可能把旧会话顶掉，
-									// 表现为「玩着玩着网易云验证失败」。进服/重连时自然会重新拉取。
-									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 正在游戏内，跳过周期保活");
-									continue;
-								}
-								if (IsAutoLoginSuspended(acc.Channel, acc.Account))
-								{
-									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 自动登录暂停期（连续重登失败 3 次），跳过周期保活");
-									continue;
-								}
-								bool flag = await ReloginViaCookieAsync(acc).ConfigureAwait(continueOnCapturedContext: false);
-								ResetRetry(acc);
-								if (flag)
-								{
-									AccountStore.SetLoginState(acc.Channel, acc.Account, loggedIn: true);
-								}
-								await Task.Delay(RandomDelay()).ConfigureAwait(continueOnCapturedContext: false);
-							}
-							catch (Exception ex2)
-							{
-								LogHelper.LogError(ex2, "[自动登录] 周期保活单账号异常: " + Mask(acc.Account));
-							}
-						}
-					}
-				}
-				catch (Exception ex)
-				{
-					LogHelper.LogError(ex, "[自动登录] 周期保活异常");
-				}
-			}
-		});
 	}
 
 	private static bool _credentialStarted;
 
-	// 每 90 分钟给保存了明文账密的账号用账密直接重新登录一次，拿全新 Cookie+token。
-	// 旧版 30 分钟 + 每个账号都登录，账号多时会被网易当成批量登录；拉长到 90 分钟并跳过游戏内账号。
+	// 账密保活：自动登录开启后默认启用（用户定版 2026-11-07，不再提供开关）。
+	// 每 6 小时用保存的明文账密重登一次；账号多时网易可能视为批量登录，
+	// 因此仍保留风控冷静期、官方启动器检测、游戏内跳过与连续失败暂停。
 	public static void StartCredentialRefresh()
 	{
 		if (_credentialStarted)
@@ -151,15 +66,29 @@ public static class AccountAutoLoginService
 			return;
 		}
 		_credentialStarted = true;
+		LogHelper.Log("[自动登录] 账密定时保活已启动：每 " + Math.Max(60, SettingsManager.Instance.CredentialRefreshMinutes) + " 分钟检查一次（仅对开启自动登录且保存了账密的账号重登）");
 		Task.Run(async () =>
 		{
 			while (true)
 			{
 				try
 				{
-					await Task.Delay(TimeSpan.FromMinutes(90.0)).ConfigureAwait(continueOnCapturedContext: false);
-					List<AccountStore.LocalAccount> accounts = AccountStore.All.Where((AccountStore.LocalAccount a) => a.AutoLogin && a.HasCredentials).ToList();
-					LogHelper.Log("[自动登录] 账密保活检查（每 90 分钟）：有账密账号 " + accounts.Count + " 个");
+				int credMinutes = Math.Max(60, SettingsManager.Instance.CredentialRefreshMinutes);
+				await Task.Delay(TimeSpan.FromMinutes(credMinutes)).ConfigureAwait(continueOnCapturedContext: false);
+				// 风控冷静期：账密登录是风险最高的请求，冷静期内绝对不发。
+				if (RiskNotice.ShouldBlockAutomaticRequests)
+				{
+					LogHelper.Log($"[自动登录] 处于网易风控冷静期（剩余 {RiskNotice.Remaining.TotalMinutes:F0} 分钟），跳过本轮账密保活");
+					continue;
+				}
+				// 官方启动器运行时绝不发起账密重登：换全新 Cookie 会顶掉它正在用的同账号会话。
+				if (GameProcessDetector.IsOfficialLauncherRunning())
+				{
+					LogHelper.Log("[自动登录] 检测到官方启动器正在运行，跳过本轮账密保活（避免顶号）");
+					continue;
+				}
+				List<AccountStore.LocalAccount> accounts = AccountStore.All.Where((AccountStore.LocalAccount a) => a.AutoLogin && a.HasCredentials).ToList();
+				LogHelper.Log("[自动登录] 账密保活检查（每 " + credMinutes + " 分钟）：有账密账号 " + accounts.Count + " 个");
 					if (accounts.Count > 0)
 					{
 						foreach (AccountStore.LocalAccount acc in accounts)
@@ -280,9 +209,16 @@ public static class AccountAutoLoginService
 			}
 			// 拉取失败只记日志：不自动取消登录态、不标记失效（账号可能仍可用，由实际进入会话失败时按需重登兜底）
 			LogHelper.Log("[自动登录] 拉取失败: " + acc.Channel + " " + Mask(acc.Account) + " => " + LastReloginMessage);
-			// 保存了明文账密的账号：Cookie 级拉取失败立即用账密重登换新会话
-			//（4399=重登 4399 换新 Cookie；网易云=账密重新登录网易。不等失效判定，持续挂机）
-			// 注意：即使是网易拦截类失败（login abnormally）也照常继续账密重登——程序侧不做冷静期门槛。
+			// 2026-11-07 修复：命中网易登录环境风控时绝不继续账密重登。
+			// 旧逻辑「被拦截也照常重登」会把一次拒绝放大成一轮完整账密登录，形成登录风暴。
+			if (NeteaseLogin.IsRiskControlText(LastReloginMessage))
+			{
+				ReportRiskControl(acc.Channel, acc.Account, LastReloginMessage);
+				LogHelper.Force("[自动登录] " + Mask(acc.Account) + " Cookie 拉取命中网易登录环境风控，进入冷静期并跳过账密重登");
+				return false;
+			}
+			// 保存了明文账密的账号：Cookie 级拉取失败才用账密重登换新会话
+			//（4399=重登 4399 换新 Cookie；网易云=账密重新登录网易）。
 			if (acc.HasCredentials)
 			{
 				return await (acc.Is4399
@@ -432,6 +368,19 @@ public static class AccountAutoLoginService
 	public static Task<bool> EnsureLoginForAsync(string channel, string account, CancellationToken token = default(CancellationToken))
 	{
 		string key = (channel ?? "") + "|" + (account ?? "").Trim();
+		// 官方启动器运行时跳过自动重登：避免把同账号下官方启动器正在用的会话顶掉。
+		if (GameProcessDetector.IsOfficialLauncherRunning())
+		{
+			LogHelper.Log("[自动登录] 检测到官方启动器正在运行，跳过自动重登以避免顶号：" + Mask(account));
+			return Task.FromResult(false);
+		}
+		// 2026-11-07 修复：风控冷静期内禁止一切自动重登请求。
+		// 手动登录（账号绑定页 / 账号行「登录」按钮）直接调用 NeteaseLogin，不经过这里，不受限制。
+		if (RiskNotice.ShouldBlockAutomaticRequests)
+		{
+			LogHelper.Log($"[自动登录] 处于网易风控冷静期（剩余 {RiskNotice.Remaining.TotalMinutes:F0} 分钟），跳过自动重登：{Mask(account)}");
+			return Task.FromResult(false);
+		}
 		lock (InFlightSync)
 		{
 			// 用户定版限制：连续 3 次自动重登失败后暂停自动登录 30 分钟（手动登录走 ReloginAsync，不经过这里，不受限）
@@ -690,35 +639,38 @@ public static class AccountAutoLoginService
 
 	/// <summary>
 	/// 供认证桥等外部链路记录一次网易拦截（例如 GameStart 阶段返回 login abnormally）。
-	/// 程序侧不设冷静期：只记日志，不影响任何请求节奏（设计原则见文件头注释）。
+	/// 登记后进入全局冷静期，所有自动链路停发请求（设计原则见文件头注释）。
 	/// </summary>
 	public static void ReportRiskControl(string channel, string account, string message)
 	{
-		if (string.IsNullOrWhiteSpace(account) || !NeteaseLogin.IsRiskControlText(message))
+		string msg = message ?? "";
+		bool risk = NeteaseLogin.IsRiskControlText(msg)
+			|| msg.Contains("code=32")
+			|| msg.Contains("服务器维护中");
+		if (string.IsNullOrWhiteSpace(account) || !risk)
 		{
 			return;
 		}
-		LogHelper.Log("[自动登录] " + Mask(account) + " 记录一次网易拦截: " + (message ?? "") + "（仅记录，不设冷静期，请求照常）");
+		LogHelper.Force("[自动登录] " + Mask(account) + " 命中网易登录环境风控: " + msg + "；已进入 " + RiskNotice.RecoveryMinutes + " 分钟冷静期，自动链路暂停发请求（手动登录不受限）");
 		RiskNotice.Mark(Mask(account), "进服验证");
 	}
 
 	private static void SetRiskCooldown(AccountStore.LocalAccount acc, string message)
 	{
-		// 已废弃冷静期机制：仅保留日志+风控标记倒计时提示（纯信息展示，不设任何请求门槛）
-		LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 命中网易拦截（" + (message ?? "") + "），仅记录不设冷静期");
+		// 冷静期由 RiskNotice 全局闸门实现：Mark 后所有自动链路停发请求。
+		LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 命中网易拦截（" + (message ?? "") + "），已进入冷静期");
 		RiskNotice.Mark(Mask(acc.Account), "自动登录");
 	}
 
 	private static bool IsRiskCoolingDown(string channel, string account, out TimeSpan remaining)
 	{
-		// 已废弃冷静期机制：永远不在冷静期，任何调用方照常发请求
-		remaining = TimeSpan.Zero;
-		return false;
+		remaining = RiskNotice.Remaining;
+		return RiskNotice.ShouldBlockAutomaticRequests;
 	}
 
 	private static void ClearRiskCooldown(AccountStore.LocalAccount acc)
 	{
-		// 已废弃冷静期机制：无需要清理的状态
+		RiskNotice.Clear();
 	}
 
 	private static void ResetRetry(AccountStore.LocalAccount acc)

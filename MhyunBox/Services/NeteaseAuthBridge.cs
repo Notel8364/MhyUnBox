@@ -119,11 +119,13 @@ public sealed class NeteaseAuthBridge
 		{
 			return false;
 		}
-		// login abnormally 属于风控抖动，调用方会先用 IsRiskControlMessage 分流；
-		// 这里仍返回 true，保证旧调用点（例如角色刷新）不会把它当成普通错误静默掉。
+		// 2026-11-07 修复：风控 / 登录环境异常绝不能判为「会话失效」。
+		// 旧逻辑返回 true，导致 code=32 伪装拒绝被当成会话过期，立即触发账密重登，
+		// 重登又产生新的 login-otp，形成自我强化的风控闭环。
+		// 风控由调用方 IsRiskControlMessage 单独分流（只记录 + 冷静期，不发新登录请求）。
 		if (IsRiskControlMessage(msg))
 		{
-			return true;
+			return false;
 		}
 		if (msg.Contains("token expired", StringComparison.OrdinalIgnoreCase) || msg.Contains("token 过期", StringComparison.Ordinal) || msg.Contains("会话超时", StringComparison.Ordinal))
 		{
@@ -221,10 +223,9 @@ public sealed class NeteaseAuthBridge
 					// 程序侧不设冷静期：记录后交后台兜底重登（会话失效即照常请求）。
 					if (neteaseLoginResult.RiskControl || IsRiskControlMessage(text2))
 					{
-						// 文案已含具体原因（登录环境异常/会话失效），不再叠加前缀
-						LastFailReason = text2 + "。程序会自动重试，无需手动操作";
-						LogHelper.Force($"[认证] 账号「{account.Nickname}」login-otp 被网易拦截（{text2}），交后台兜底重登（照常请求）");
-						AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, text2);
+						LastFailReason = text2 + "。已进入风控冷静期，暂停自动重登；可稍后手动重试或更换网络环境";
+						LogHelper.Force($"[认证] 账号「{account.Nickname}」login-otp 命中网易登录环境风控（{text2}），仅记录并进入冷静期，不触发任何自动重登");
+						AccountAutoLoginService.ReportRiskControl(_failChannel, _failAccount, text2);
 						return false;
 					}
 					// 确定性会话失效信号（token expired / 会话为空 / 会话校验失败，已排除"网络异常"抖动）：
@@ -286,10 +287,9 @@ public sealed class NeteaseAuthBridge
 				// 程序侧不设冷静期——记录并交后台兜底重登（90 秒后照常再请求）。
 				if (IsRiskControlMessage(gsMsg))
 				{
-					LastFailReason = "网易返回登录环境异常：游戏会话启动失败，" + gsMsg + "。程序会自动重试，无需手动操作";
-					LogHelper.Force($"[认证] 账号「{account.Nickname}」GameStart 阶段网易登录环境异常（{gsMsg}），记录并交后台兜底重登");
+					LastFailReason = "网易返回登录环境异常：游戏会话启动失败，" + gsMsg + "。已进入冷静期，暂停自动重登";
+					LogHelper.Force($"[认证] 账号「{account.Nickname}」GameStart 阶段网易登录环境异常（{gsMsg}），仅记录并进入冷静期");
 					AccountAutoLoginService.ReportRiskControl(account.Channel, account.Account, gsMsg);
-					AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, gsMsg);
 					return false;
 				}
 				LastFailReason = "服务器会话启动失败：" + gsMsg;
@@ -325,9 +325,9 @@ public sealed class NeteaseAuthBridge
 				// join 阶段也可能直接返回 login abnormally（例如会话刚被风控标记）。
 				if (IsRiskControlMessage(yggMsg))
 				{
-					LastFailReason = "网易登录环境异常（风控拦截）：" + yggMsg + "。请等待 5-10 分钟后重试，期间不要频繁登录";
-					LogHelper.Force($"[认证] 账号「{account.Nickname}」join 阶段网易登录环境异常（{yggMsg}），跳过立即重登");
-					AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, yggMsg);
+					LastFailReason = "网易登录环境异常（风控拦截）：" + yggMsg + "。已进入 " + RiskNotice.RecoveryMinutes + " 分钟冷静期，期间暂停自动登录与保活，请勿频繁重试";
+					LogHelper.Force($"[认证] 账号「{account.Nickname}」join 阶段网易登录环境异常（{yggMsg}），仅记录并进入冷静期");
+					AccountAutoLoginService.ReportRiskControl(account.Channel, account.Account, yggMsg);
 					return false;
 				}
 				bool authFail = IsAuthFailMessage(yggMsg);
@@ -375,10 +375,9 @@ public sealed class NeteaseAuthBridge
 								// 否则按普通会话启动失败记录。
 								if (IsRiskControlMessage(retryGsMsg))
 								{
-									LastFailReason = "网易返回登录环境异常：自动重登后游戏会话启动仍失败，" + retryGsMsg + "。程序会自动重试";
-									LogHelper.Force($"[认证] 账号「{account.Nickname}」重登后 GameStart 阶段网易登录环境异常（{retryGsMsg}），记录并交后台兜底重登");
+									LastFailReason = "网易返回登录环境异常：自动重登后游戏会话启动仍失败，" + retryGsMsg + "。已进入冷静期";
+									LogHelper.Force($"[认证] 账号「{account.Nickname}」重登后 GameStart 阶段网易登录环境异常（{retryGsMsg}），仅记录并进入冷静期");
 									AccountAutoLoginService.ReportRiskControl(account.Channel, account.Account, retryGsMsg);
-									AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, retryGsMsg);
 								}
 								else
 								{

@@ -8,7 +8,7 @@ namespace MhyunBox.Services;
 
 public static class AppVersion
 {
-	public const string Display = "v7.8.0";
+	public const string Display = "v8.1.0";
 
 	private static readonly Regex VersionPattern = new Regex("^[vV]?\\d+\\.\\d+(\\.\\d+)?(\\.\\d+)?$", RegexOptions.Compiled);
 

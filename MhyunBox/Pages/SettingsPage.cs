@@ -180,6 +180,11 @@ public sealed partial class SettingsPage : Page
 
 	private NumberBox? _settingsBackupDaysBox;
 
+	private ToggleSwitch? _settingsProxyModeSwitch;
+
+	/// <summary>最近已知的播放模式，用于跨入口同步播放模式下拉框。</summary>
+	private string _lastKnownPlaybackMode = "";
+
 	private static string BackgroundsFolder => Path.Combine(AppContext.BaseDirectory, "Assets", "Backgrounds");
 
 	public SettingsPage()
@@ -191,12 +196,17 @@ public sealed partial class SettingsPage : Page
 		ThemeHelper.SolidComboPopup(BackgroundCombo);
 		ThemeHelper.SolidComboPopup(PlaybackModeCombo);
 		MusicService.InvalidateScanCache();
+		SettingsManager.Saved += OnSettingsSaved;
 		base.Unloaded += delegate
 		{
 			MusicService.StateChanged -= OnMusicStateChanged;
+			SettingsManager.Saved -= OnSettingsSaved;
 		};
 		base.Loaded += delegate
 		{
+			// 页面是缓存复用的，Unloaded 会退订；重新进入时先退订再订阅，避免重复订阅或漏订阅。
+			SettingsManager.Saved -= OnSettingsSaved;
+			SettingsManager.Saved += OnSettingsSaved;
 			OnLoaded();
 			RelayoutSettings(base.ActualWidth);
 			EnsureVersionFooter();
@@ -247,9 +257,23 @@ public sealed partial class SettingsPage : Page
 					IsOn = SettingsManager.Instance.AutoCleanupEnabled,
 					Margin = new Thickness(0.0, 10.0, 0.0, 0.0)
 				};
-				_settingsCleanupSwitch.Toggled += SettingsCleanupSwitch_Toggled;
-				SettingsRoot.Children.Add(_settingsCleanupSwitch);
-				_settingsBackupDaysBox = new NumberBox
+			_settingsCleanupSwitch.Toggled += SettingsCleanupSwitch_Toggled;
+			SettingsRoot.Children.Add(_settingsCleanupSwitch);
+			// —— 网易登录出口已固定为「跟随系统代理」（对齐 v3.8.0 行为，不再提供开关）；
+			//    自动登录的保活机制已内置为账密每 6 小时重登，也不再提供开关。 ——
+			// —— 代理模式（正常代理登录 / 防DDOS）：与首页 / 代理启动 / 快速启动共用同一组件 ——
+			_settingsProxyModeSwitch = CreateProxyModeSelector();
+			_settingsProxyModeSwitch.Margin = new Thickness(0.0, 10.0, 0.0, 0.0);
+			SettingsRoot.Children.Add(_settingsProxyModeSwitch);
+			SettingsRoot.Children.Add(new TextBlock
+			{
+				Text = "正常代理登录：单目标直连、不带连接节流与探测流量，避免被网易判为异常登录环境。防DDOS模式：节点轮换、预设 IP 池、健康探测与地址安全策略，适合被攻击时使用。切换后对新连接立即生效。",
+				FontSize = 12.0,
+				Opacity = 0.75,
+				TextWrapping = TextWrapping.Wrap,
+				Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
+			});
+			_settingsBackupDaysBox = new NumberBox
 				{
 					Header = "冗余备份保留天数（超期移入回收站，0 = 永不清理）",
 					Value = SettingsManager.Instance.RedundantBackupKeepDays,
@@ -269,6 +293,61 @@ public sealed partial class SettingsPage : Page
 		{
 			LogHelper.DebugError(ex, "[设置页] 添加版本信息/调试开关失败");
 		}
+	}
+
+	/// <summary>统一的代理模式写入口（设置页 / 首页 / 代理启动 / 快速启动 / 账号绑定共用）。</summary>
+	internal static void ApplyProxyMode(string mode)
+	{
+		try
+		{
+			AppSettings instance = SettingsManager.Instance;
+			if (string.Equals(instance.ProxyMode, mode, StringComparison.OrdinalIgnoreCase))
+			{
+				return;
+			}
+			instance.ProxyMode = mode;
+			SettingsManager.Save(instance);
+			LogHelper.Log("[代理模式] 切换为 " + mode + "（对新连接立即生效）");
+			MainWindow.Instance?.ShowToast(mode == "ddos"
+				? "已切换到防DDOS模式（节点轮换 / 预设 IP 池 / 健康探测）"
+				: "已切换到正常代理登录模式（单目标直连，无风控限制）");
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[代理模式] 切换失败");
+		}
+	}
+
+	/// <summary>
+	/// 构建可复用的「代理流模式」开关（设置页 / 首页 / 代理启动 / 快速启动 / 账号绑定共用）。
+	/// 选项格式与「调试模式」一致：一个 ToggleSwitch，关 = 正常代理登录，开 = 防DDOS模式。
+	/// </summary>
+	public static ToggleSwitch CreateProxyModeSelector()
+	{
+		ToggleSwitch toggle = new ToggleSwitch
+		{
+			Header = "代理流模式",
+			OffContent = "正常代理登录",
+			OnContent = "防DDOS模式",
+			IsOn = string.Equals(SettingsManager.Instance.ProxyMode, "ddos", StringComparison.OrdinalIgnoreCase),
+			Margin = new Thickness(0.0, 8.0, 0.0, 0.0)
+		};
+		// 先设状态再订阅，避免初始化时误触发一次写入
+		toggle.Toggled += delegate
+		{
+			ApplyProxyMode(toggle.IsOn ? "ddos" : "normal");
+		};
+		// 页面可能常驻内存：每次显示时按当前设置回填，避免在别的页面切换后这里显示旧状态。
+		// 程序化改 IsOn 也会触发 Toggled，但 ApplyProxyMode 对同值直接返回，不会重复写盘。
+		toggle.Loaded += delegate
+		{
+			bool on = string.Equals(SettingsManager.Instance.ProxyMode, "ddos", StringComparison.OrdinalIgnoreCase);
+			if (toggle.IsOn != on)
+			{
+				toggle.IsOn = on;
+			}
+		};
+		return toggle;
 	}
 
 	private void SettingsDebugSwitch_Toggled(object sender, RoutedEventArgs e)
@@ -684,7 +763,8 @@ public sealed partial class SettingsPage : Page
 			}
 			LogHelper.Log($"音乐列表刷新: rebuilt={flag}, noMusic={MusicService.NoMusicMode}, current={currentPath}, userSelect={text}, knownIdx={num2}, selectedIndex={MusicListBox.SelectedIndex}");
 			ComboBox playbackModeCombo = PlaybackModeCombo;
-			string playbackMode = instance.PlaybackMode;
+			string playbackMode = instance.PlaybackMode ?? "random";
+			_lastKnownPlaybackMode = playbackMode;
 			int selectedIndex2 = ((playbackMode == "loop") ? 1 : ((playbackMode == "sequential") ? 2 : 0));
 			playbackModeCombo.SelectedIndex = selectedIndex2;
 			RefreshMp4Hint();
@@ -1200,8 +1280,44 @@ public sealed partial class SettingsPage : Page
 		{
 			AppSettings instance = SettingsManager.Instance;
 			instance.PlaybackMode = ((PlaybackModeCombo.SelectedItem as ComboBoxItem)?.Tag as string) ?? "random";
+			_lastKnownPlaybackMode = instance.PlaybackMode;
 			SettingsManager.Save(instance);
+			// 立即应用到迷你播放器与背景视频循环状态（单曲循环不再等下一曲才生效）。
+			MainWindow.Instance?.ApplyPlaybackMode();
 			LogHelper.Log("播放模式: " + instance.PlaybackMode);
+		}
+	}
+
+	/// <summary>
+	/// 其它入口（迷你播放器按钮、命令行）改了播放模式时同步设置页下拉框。
+	/// 用 _loading 保护，避免 SelectedIndex 变化再次触发 SelectionChanged 形成递归保存。
+	/// </summary>
+	private void OnSettingsSaved(AppSettings settings)
+	{
+		if (settings == null || PlaybackModeCombo == null)
+		{
+			return;
+		}
+		string mode = settings.PlaybackMode ?? "random";
+		if (string.Equals(mode, _lastKnownPlaybackMode, StringComparison.Ordinal))
+		{
+			return;
+		}
+		_lastKnownPlaybackMode = mode;
+		int idx = ((mode == "loop") ? 1 : ((mode == "sequential") ? 2 : 0));
+		if (PlaybackModeCombo.SelectedIndex == idx)
+		{
+			return;
+		}
+		bool wasLoading = _loading;
+		_loading = true;
+		try
+		{
+			PlaybackModeCombo.SelectedIndex = idx;
+		}
+		finally
+		{
+			_loading = wasLoading;
 		}
 	}
 

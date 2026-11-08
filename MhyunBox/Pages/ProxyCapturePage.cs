@@ -269,6 +269,8 @@ public sealed partial class ProxyCapturePage : Page
 			solutionButton.Visibility = Visibility.Collapsed;
 		}
 		RebuildPresetChips();
+		// 代理流模式开关改为跟随「目标地址」放在控制卡片内（见 BuildTargetAddressBox），
+		// 不再挂在页面底部，避免用户要滚到最下面才能切模式。
 		BuildTrapButton();
 		PclPathBox.TextChanged += PclPath_TextChanged;
 		base.Unloaded += OnUnloaded;
@@ -365,6 +367,15 @@ public sealed partial class ProxyCapturePage : Page
 				_targetAddressBox.TextChanged += TargetAddressBox_TextChanged;
 				stackPanel2.Children.Add(_targetAddressBox);
 				stackPanel.Children.Add(stackPanel2);
+				// 代理流模式开关紧跟在「目标地址」下面（与设置页 / 首页 / 快速启动 / 账号绑定共用同一份设置）
+				try
+				{
+					stackPanel.Children.Add(SettingsPage.CreateProxyModeSelector());
+				}
+				catch (Exception exMode)
+				{
+					LogHelper.DebugError(exMode, "[代理启动] 代理模式切换构建失败");
+				}
 				UpdateTargetPlaceholder();
 				LogHelper.Log("[代理启动] 已添加目标服务器地址输入框");
 			}

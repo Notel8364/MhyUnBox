@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using MhyunBox.Services;
+using MhyunBox.Settings;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Text;
@@ -138,9 +139,17 @@ public sealed partial class LoginPage : Page
 
 	private void RelayoutLogin(double width)
 	{
+		if (width <= 0.0)
+		{
+			return;
+		}
 		bool flag = width >= 1200.0;
 		LoginRoot.HorizontalAlignment = (flag ? HorizontalAlignment.Center : HorizontalAlignment.Left);
 		LoginRoot.MaxWidth = (flag ? 1000.0 : 680.0);
+		// 关键修复：ScrollViewer 会按「无限宽度」测量内容，超长一行文本（原自动登录说明）
+		// 会把整张卡片撑出视口右侧（HorizontalScrollBarVisibility=Disabled 只禁滚动，不约束宽度）。
+		// 这里把内容宽度显式钉在视口宽度内，任何长文本都会按 TextWrapping 正常换行，不再拉宽布局。
+		LoginRoot.Width = Math.Max(320.0, Math.Min(width, LoginRoot.MaxWidth));
 	}
 
 	private void OnPageKeyDown(object sender, KeyRoutedEventArgs e)
@@ -573,6 +582,16 @@ public sealed partial class LoginPage : Page
 		Grid.SetColumnSpan(AutoLoginHint, 2);
 		grid.Children.Add(AutoLoginHint);
 		stackPanel.Children.Add(grid);
+		// 代理流模式开关（与设置页 / 首页 / 代理启动 / 快速启动共用同一份设置）
+		try
+		{
+			stackPanel.Children.Add(SettingsPage.CreateProxyModeSelector());
+		}
+		catch (Exception exMode)
+		{
+			LogHelper.DebugError(exMode, "[账号绑定] 代理模式切换构建失败");
+		}
+		// 自动登录的保活机制已内置（账密每 6 小时重登一次），不再提供单独开关与长说明文案。
 		// 网易 IP 风控标记倒计时横幅（纯信息展示，不设请求门槛；触发时出现，登录成功自动消失）
 		RiskBannerBorder = new Border
 		{
@@ -1207,11 +1226,11 @@ public sealed partial class LoginPage : Page
 			});
 			return;
 		}
-		int num = list.Count((AccountStore.LocalAccount a) => a.IsLoggedIn);
 		bool flag = list.Any((AccountStore.LocalAccount a) => a.AutoLogin);
 		AutoLoginAllButton.Visibility = Visibility.Visible;
 		AutoLoginAllButton.Content = (flag ? "关闭自动登录" : "自动登录");
-		AutoLoginHint.Text = (flag ? ("自动登录已开启（已开启 " + list.Count((AccountStore.LocalAccount a) => a.AutoLogin) + " 个）：每 5 分钟自动保活换新 token，4399 账号会话失效时自动用保存的账密重登换新 Cookie（持续挂机防掉号）；进入服务器时也会自动换取新 token。当前已登录 " + num + " 个。\n⚠ 自承风控标记风险：自动登录会周期性请求网易，可能触发网易 IP 级登录环境风控（login abnormally），风险自担。") : "");
+		// 用户定版：账号会话区不再显示保活说明长文案（自动登录状态由按钮本身表达）。
+		AutoLoginHint.Text = "";
 		// 平铺展示全部账号（用户定版：不再按渠道插分组头，账号列表直接排列）
 		foreach (AccountStore.LocalAccount item in list)
 		{
@@ -1717,9 +1736,8 @@ public sealed partial class LoginPage : Page
 			return;
 		}
 		AccountStore.SetAutoLoginAll(autoLogin: true);
-		LogHelper.Log("[自动登录] 用户开启自动登录（" + list.Count + " 个账号），周期保活自动进行");
-		// 不再全量逐个拉取：开关只改状态，会话由 5 分钟保活 / 30 分钟账密保活 / 进服失败兜底自动维护
-		ShowInfo("已开启自动登录：每 5 分钟保活会话，保存了账密的账号每 30 分钟自动换新会话，无需手动拉取。", ok: true, "自动登录");
+		LogHelper.Log("[自动登录] 用户开启自动登录（" + list.Count + " 个账号），账密定时保活每 6 小时自动进行");
+		ShowInfo("已开启自动登录：保存了账密的账号每 6 小时自动重登一次，进入服务器时按需换取新 token。", ok: true, "自动登录");
 		RefreshAccountList();
 	}
 

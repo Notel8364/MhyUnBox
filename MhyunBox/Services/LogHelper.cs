@@ -97,6 +97,31 @@ public static class LogHelper
 		}
 	}
 
+	/// <summary>
+	/// 风控回归审计日志：与全部日志一样受调试模式门控（关闭调试时不产出任何文件），
+	/// 写入独立文件，只记录非敏感字段（时间 / 接入点 / code / status / 结果）。
+	/// 不记录 Cookie、账密、token 等任何凭据内容。
+	/// </summary>
+	public static void RiskAudit(string message)
+	{
+		if (!DebugEnabled)
+		{
+			return;
+		}
+		try
+		{
+			lock (Lock)
+			{
+				Directory.CreateDirectory(LogDir);
+				string path = Path.Combine(LogDir, $"RiskAudit-{DateTime.Now:yyyyMMdd}.log");
+				File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{Environment.NewLine}", Encoding.UTF8);
+			}
+		}
+		catch
+		{
+		}
+	}
+
 	public static void FlushAndClose()
 	{
 		try

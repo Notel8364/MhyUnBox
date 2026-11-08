@@ -318,10 +318,7 @@ public sealed partial class MainWindow : Window
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
 	private Grid RootGrid;
 
-	// Toast 最外层显示用的独立 Popup（窗口弹出层，位于一切窗口内容之上）
-	private Microsoft.UI.Xaml.Controls.Primitives.Popup? _toastPopup;
-
-	private Grid? _toastPopupRoot;
+	// Toast 直接挂在 RootGrid 末尾 + 高 ZIndex（见构造函数），不再使用独立 Popup。
 
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
 	private Grid ContentBackgroundHost;
@@ -411,37 +408,24 @@ public sealed partial class MainWindow : Window
 	{
 		InitializeComponent();
 		_instance = this;
-		// Toast 提到最外层：从 RootGrid 内部（内容卡片下层）改为独立 Popup（窗口弹出层），
-		// 物理上位于一切窗口内容之上，浅色主题下不会再被内容卡片的半透明白底淡化遮挡
+		// Toast 提到最上层：只调整 ZIndex，绝不移动 XAML 元素。
+		// 原 XAML 里 ToastHost 声明在 ContentCard 之前，黑底深色把 ContentCard 改成不透明纯黑后会整片盖住。
+		// 自检实证：运行时加载的是预编译 .xbf，对这类元素做 Children.Remove/Add（或新建 Popup）
+		// 一律抛 COMException 0x800F1000，反而让 Toast 退回被遮挡的位置。
+		// 这里把 ToastHost 所在的行容器与 ToastHost 自身都提到最高 ZIndex（两者是 RootGrid 的兄弟子树）。
 		try
 		{
 			Panel? toastParent = ToastHost.Parent as Panel;
-			toastParent?.Children.Remove(ToastHost);
-			_toastPopupRoot = new Grid
+			if (toastParent != null)
 			{
-				Background = null,
-				IsHitTestVisible = false
-			};
-			_toastPopupRoot.Children.Add(ToastHost);
-			_toastPopup = new Microsoft.UI.Xaml.Controls.Primitives.Popup
-			{
-				Child = _toastPopupRoot,
-				IsLightDismissEnabled = false,
-				IsHitTestVisible = false
-			};
-			RootGrid.SizeChanged += delegate(object? s, SizeChangedEventArgs e)
-			{
-				if (_toastPopupRoot != null)
-				{
-					_toastPopupRoot.Width = e.NewSize.Width;
-					_toastPopupRoot.Height = e.NewSize.Height;
-				}
-			};
-			LogHelper.Log("[界面] Toast 已提升为独立 Popup 最外层显示（原父级=" + (toastParent?.GetType().Name ?? "无") + "）");
+				Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(toastParent, 32767);
+			}
+			Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(ToastHost, 32767);
+			LogHelper.Log("[界面] Toast 已提升 ZIndex 到最上层（不移动元素，原父级=" + (toastParent?.GetType().Name ?? "无") + "）");
 		}
 		catch (Exception ex)
 		{
-			LogHelper.LogError(ex, "[界面] Toast Popup 化失败，退回窗口内显示");
+			LogHelper.LogError(ex, "[界面] Toast 提升失败，保留原位置");
 		}
 		base.ExtendsContentIntoTitleBar = true;
 		SetTitleBar(AppTitleBar);
@@ -504,6 +488,8 @@ public sealed partial class MainWindow : Window
 			AccountAutoLoginService.Start();
 			// 服务器列表自动发现：后台用已登录网易账号拉取服务器并自动注册预设（默认两个保留）
 			ServerAutoDiscovery.Start(8);
+			// DLL 构建时间校验：落后仓库或 DLL 与主程序不同批次时，提示加群换 DLL（每天最多一次）
+			BuildStampService.StartStartupCheck();
 			// 用户定版（2026-11-01）：本机锁（程序账号/解锁弹窗）机制整体移除，启动不再要求解锁
 		});
 	}
@@ -673,7 +659,7 @@ public sealed partial class MainWindow : Window
 			{
 				source = PickInitialBackgroundVideo(text);
 			}
-			bool loop = _bgVideoPlaylist.Count <= 1;
+			bool loop = _bgVideoPlaylist.Count <= 1 || SettingsManager.Instance.PlaybackMode == "loop";
 			bool restartVideoRequested = MusicService.RestartVideoRequested;
 			MusicService.RestartVideoRequested = false;
 			if (!string.Equals(_backgroundVideoPath, source, StringComparison.OrdinalIgnoreCase))
@@ -736,8 +722,25 @@ public sealed partial class MainWindow : Window
 		catch
 		{
 		}
-		_bgVideoPlaylist.Sort(StringComparer.OrdinalIgnoreCase);
-		LogHelper.Log($"背景视频轮播列表: {_bgVideoPlaylist.Count} 个");
+		// 2026-11-07 修复：旧实现无条件按文件名排序，完全忽略设置页拖拽保存的 MusicOrder，
+		// 导致「音乐列表顺序」与「背景视频轮播顺序」不一致。改为保存顺序优先 + 新文件按文件名排序追加。
+		List<string> scanned = new List<string>(_bgVideoPlaylist);
+		List<string> savedOrder = SettingsManager.Instance.MusicOrder ?? new List<string>();
+		HashSet<string> remaining = new HashSet<string>(scanned, StringComparer.OrdinalIgnoreCase);
+		List<string> ordered = new List<string>(scanned.Count);
+		foreach (string p in savedOrder)
+		{
+			if (remaining.Remove(p))
+			{
+				ordered.Add(p);
+			}
+		}
+		List<string> rest = scanned.Where(remaining.Contains).ToList();
+		rest.Sort(StringComparer.OrdinalIgnoreCase);
+		ordered.AddRange(rest);
+		_bgVideoPlaylist.Clear();
+		_bgVideoPlaylist.AddRange(ordered);
+		LogHelper.Log($"背景视频轮播列表: {_bgVideoPlaylist.Count} 个（已按音乐列表顺序排列）");
 	}
 
 	private string? PickInitialBackgroundVideo(string preferred)
@@ -757,15 +760,27 @@ public sealed partial class MainWindow : Window
 		{
 			return null;
 		}
-		if (SettingsManager.Instance.PlaybackMode == "sequential")
+		string mode = SettingsManager.Instance.PlaybackMode;
+		if (mode == "loop")
+		{
+			// 单曲循环：保持当前视频，由播放器 IsLoopingEnabled 负责重播，绝不换片。
+			_bgIndex = Math.Clamp(_bgIndex, 0, _bgVideoPlaylist.Count - 1);
+		}
+		else if (mode == "sequential")
 		{
 			_bgIndex = (_bgIndex + 1) % _bgVideoPlaylist.Count;
 		}
-		else
+		else if (_bgVideoPlaylist.Count > 1)
 		{
-			_bgIndex = BgRandom.Next(_bgVideoPlaylist.Count);
+			// 随机播放不重复当前片，避免「随机了两下又回到同一首」。
+			int previous = _bgIndex;
+			do
+			{
+				_bgIndex = BgRandom.Next(_bgVideoPlaylist.Count);
+			}
+			while (_bgIndex == previous);
 		}
-		return _bgVideoPlaylist[Math.Max(0, _bgIndex)];
+		return _bgVideoPlaylist[Math.Max(0, Math.Min(_bgIndex, _bgVideoPlaylist.Count - 1))];
 	}
 
 	private void OnBackgroundVideoEnded(MediaPlayer sender, object args)
@@ -781,7 +796,9 @@ public sealed partial class MainWindow : Window
 				string text = PickNextBackgroundVideo();
 				if (text != null)
 				{
-					PlayBackgroundVideo(text, _bgVideoPlaylist.Count <= 1);
+					// loop（单曲循环）模式下让播放器自行循环，MediaEnded 后不再换片。
+					bool singleLoop = _bgVideoPlaylist.Count <= 1 || SettingsManager.Instance.PlaybackMode == "loop";
+					PlayBackgroundVideo(text, singleLoop);
 				}
 			}
 		});
@@ -880,11 +897,19 @@ public sealed partial class MainWindow : Window
 			systemMediaTransportControls.IsPreviousEnabled = false;
 			systemMediaTransportControls.PlaybackStatus = ((player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing) ? MediaPlaybackStatus.Playing : MediaPlaybackStatus.Paused);
 			systemMediaTransportControls.DisplayUpdater.Type = MediaPlaybackType.Music;
-			systemMediaTransportControls.DisplayUpdater.MusicProperties.Title = "视频背景播放";
-			systemMediaTransportControls.DisplayUpdater.MusicProperties.Artist = "视频背景播放";
+			// 上行：视频文件名（去后缀 + 去 4K/30fps/60帧 之类的画质帧率标记），
+			// 不再是笼统的「视频背景播放」；下行：完整路径
+			string rawVideoTitle = Path.GetFileNameWithoutExtension(path);
+			string videoTitle = MusicService.CleanQualityTags(rawVideoTitle);
+			if (string.IsNullOrWhiteSpace(videoTitle))
+			{
+				videoTitle = rawVideoTitle;
+			}
+			systemMediaTransportControls.DisplayUpdater.MusicProperties.Title = videoTitle;
+			systemMediaTransportControls.DisplayUpdater.MusicProperties.Artist = path;
 			systemMediaTransportControls.DisplayUpdater.Thumbnail = MusicService.CreateAppThumbnail();
 			systemMediaTransportControls.DisplayUpdater.Update();
-			LogHelper.Log("[SMTC诊断] 背景视频接管: path=" + path + " -> 显示'视频背景播放' IsEnabled=true");
+			LogHelper.Log("[SMTC诊断] 背景视频接管: path=" + path + " -> 显示视频名(去后缀/画质标记)+路径 IsEnabled=true");
 		}
 		catch (Exception ex)
 		{
@@ -2262,11 +2287,21 @@ public sealed partial class MainWindow : Window
 			(fgR, fgG, fgB) = (255, 255, 255);
 			(bdA, bdR, bdG, bdB) = (90, 110, 22, 18);
 		}
-		else if (RootGrid.ActualTheme == ElementTheme.Dark)
+		else if (ThemeHelper.IsDark)
 		{
-			(bgA, bgR, bgG, bgB) = (250, 28, 28, 28);
+			// 用 ThemeHelper 判断而不是 ToastHost 自己的 ActualTheme：Toast 挂在独立 Popup 树里，
+			// ActualTheme 不一定跟随 RootGrid。黑底深色下提高背景亮度与边框对比，避免与纯黑背景糊在一起。
+			if (ThemeHelper.IsBlack)
+			{
+				(bgA, bgR, bgG, bgB) = (255, 38, 38, 38);
+				(bdA, bdR, bdG, bdB) = (140, 255, 255, 255);
+			}
+			else
+			{
+				(bgA, bgR, bgG, bgB) = (250, 28, 28, 28);
+				(bdA, bdR, bdG, bdB) = (70, 255, 255, 255);
+			}
 			(fgR, fgG, fgB) = (255, 255, 255);
-			(bdA, bdR, bdG, bdB) = (70, 255, 255, 255);
 		}
 		else
 		{
@@ -2279,30 +2314,7 @@ public sealed partial class MainWindow : Window
 		ToastText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, fgR, fgG, fgB));
 		ToastText.Text = message;
 		ToastHost.Visibility = Visibility.Visible;
-		// Popup 最外层显示：确保 XamlRoot/尺寸并保持打开（ToastHost 自身控制显隐）
-		try
-		{
-			if (_toastPopup != null && _toastPopupRoot != null)
-			{
-				if (_toastPopup.XamlRoot == null)
-				{
-					_toastPopup.XamlRoot = RootGrid.XamlRoot;
-				}
-				if (RootGrid.ActualWidth > 0)
-				{
-					_toastPopupRoot.Width = RootGrid.ActualWidth;
-					_toastPopupRoot.Height = RootGrid.ActualHeight;
-				}
-				if (!_toastPopup.IsOpen)
-				{
-					_toastPopup.IsOpen = true;
-				}
-			}
-		}
-		catch (Exception ex)
-		{
-			LogHelper.LogError(ex, "[界面] Toast Popup 打开失败");
-		}
+		// ToastHost 已挂在 RootGrid 末尾并由 Canvas.ZIndex 保证最上层，无需 Popup / XamlRoot。
 		if ((object)_toastTimer == null)
 		{
 			_toastTimer = CreateToastTimer();
@@ -2355,7 +2367,28 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	private void UpdateMiniPlayer()
+	/// <summary>播放模式变更后即时刷新迷你播放器与背景视频循环状态（设置页与迷你按钮共用）。</summary>
+	public void ApplyPlaybackMode()
+	{
+		UpdateMiniPlayer();
+		SyncBackgroundVideo();
+	}
+
+	/// <summary>音乐列表顺序变更后重建背景视频轮播顺序，保证设置页列表与实际轮播一致。</summary>
+	public void OnMusicOrderChanged()
+	{
+		try
+		{
+			_bgPlaylistKey = null;
+			SyncBackgroundVideo();
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[背景视频] 音乐顺序变更后刷新失败");
+		}
+	}
+
+	public void UpdateMiniPlayer()
 	{
 		MiniPlayPauseButton.Content = (MusicService.IsPlaying ? "暂停" : "播放");
 		MiniPlayModeButton.Content = PlayModeLabel(SettingsManager.Instance.PlaybackMode);
@@ -2596,7 +2629,8 @@ public sealed partial class MainWindow : Window
 		string playbackMode2 = ((!(playbackMode == "random")) ? ((!(playbackMode == "sequential")) ? "random" : "loop") : "sequential");
 		instance.PlaybackMode = playbackMode2;
 		SettingsManager.Save(instance);
-		UpdateMiniPlayer();
+		// 立即把新模式应用到迷你播放器与背景视频循环状态，避免要等下一曲才生效。
+		ApplyPlaybackMode();
 		ShowToast("播放模式：" + PlayModeLabel(instance.PlaybackMode));
 	}
 

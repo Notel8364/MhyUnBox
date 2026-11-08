@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using MhyunBox.Settings;
 using Microsoft.UI.Dispatching;
@@ -452,40 +453,53 @@ public static class MusicService
 
 	private static void ApplySavedOrder()
 	{
+		// 2026-11-07 修复：旧实现用 list.AddRange(HashSet) 追加「未在保存顺序里」的文件，
+		// HashSet 枚举顺序不稳定，且新增文件按文件系统枚举顺序插入，导致每次扫描后
+		// 设置页列表与播放顺序看起来都在乱跳。改为：保存顺序优先 + 新文件按文件名稳定排序追加。
+		List<string> scanned = new List<string>(KnownMusic);
 		List<string> musicOrder = SettingsManager.Instance.MusicOrder;
-		if (musicOrder == null || musicOrder.Count <= 0)
+		HashSet<string> remaining = new HashSet<string>(scanned, StringComparer.OrdinalIgnoreCase);
+		List<string> ordered = new List<string>(scanned.Count);
+		if (musicOrder != null)
 		{
-			return;
-		}
-		HashSet<string> hashSet = new HashSet<string>(KnownMusic, StringComparer.OrdinalIgnoreCase);
-		List<string> list = new List<string>(KnownMusic.Count);
-		foreach (string item in musicOrder)
-		{
-			if (hashSet.Remove(item))
+			foreach (string item in musicOrder)
 			{
-				list.Add(item);
+				if (remaining.Remove(item))
+				{
+					ordered.Add(item);
+				}
 			}
 		}
-		list.AddRange(hashSet);
+		List<string> rest = scanned.Where(remaining.Contains).ToList();
+		rest.Sort((string a, string b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(a), Path.GetFileName(b)));
+		ordered.AddRange(rest);
 		KnownMusic.Clear();
-		KnownMusic.AddRange(list);
+		KnownMusic.AddRange(ordered);
 	}
 
 	public static void ReorderKnownMusic(IReadOnlyList<string> ordered)
 	{
-		HashSet<string> hashSet = new HashSet<string>(KnownMusic, StringComparer.OrdinalIgnoreCase);
-		KnownMusic.Clear();
+		// 拖拽结果优先；未出现在拖拽列表里的项按当前相对顺序 + 文件名排序追加，保证结果确定。
+		List<string> original = new List<string>(KnownMusic);
+		HashSet<string> remaining = new HashSet<string>(original, StringComparer.OrdinalIgnoreCase);
+		List<string> list = new List<string>(original.Count);
 		foreach (string item in ordered)
 		{
-			if (hashSet.Remove(item))
+			if (remaining.Remove(item))
 			{
-				KnownMusic.Add(item);
+				list.Add(item);
 			}
 		}
-		KnownMusic.AddRange(hashSet);
+		List<string> rest = original.Where(remaining.Contains).ToList();
+		rest.Sort((string a, string b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(a), Path.GetFileName(b)));
+		list.AddRange(rest);
+		KnownMusic.Clear();
+		KnownMusic.AddRange(list);
 		AppSettings instance = SettingsManager.Instance;
 		instance.MusicOrder = new List<string>(KnownMusic);
 		SettingsManager.Save(instance);
+		// 背景视频轮播列表按 MusicOrder 排序，拖拽后必须重建，否则两处顺序不一致。
+		MainWindow.Instance?.OnMusicOrderChanged();
 		LogHelper.Log($"音乐顺序已调整: {KnownMusic.Count} 首");
 	}
 
@@ -746,14 +760,21 @@ public static class MusicService
 				return;
 			}
 			systemMediaTransportControls.IsEnabled = true;
-			string fileName = Path.GetFileName(currentPath);
+			// 上行：文件名去后缀 + 去画质/帧率标记（4K/30fps/60帧之类）；
+			// 下行：改回完整路径显示（曾固定成程序名「MhyUnBox」，用户要求改回来）。
+			string rawName = Path.GetFileNameWithoutExtension(currentPath);
+			string fileName = CleanQualityTags(rawName);
+			if (string.IsNullOrWhiteSpace(fileName))
+			{
+				fileName = rawName;
+			}
 			systemMediaTransportControls.DisplayUpdater.Type = MediaPlaybackType.Music;
 			systemMediaTransportControls.DisplayUpdater.MusicProperties.Title = fileName;
-			systemMediaTransportControls.DisplayUpdater.MusicProperties.Artist = GetRelativePath(currentPath);
+			systemMediaTransportControls.DisplayUpdater.MusicProperties.Artist = currentPath;
 			systemMediaTransportControls.DisplayUpdater.Thumbnail = CreateAppThumbnail();
 			systemMediaTransportControls.DisplayUpdater.Update();
 			systemMediaTransportControls.PlaybackStatus = GetPlaybackStatus();
-			LogHelper.Log($"[SMTC诊断] 音乐 path={currentPath} title={fileName} artist={GetRelativePath(currentPath)} IsEnabled=true");
+			LogHelper.Log($"[SMTC诊断] 音乐 path={currentPath} title={fileName} artist={currentPath} IsEnabled=true");
 		}
 		catch (Exception ex)
 		{
@@ -761,20 +782,38 @@ public static class MusicService
 		}
 	}
 
-	private static string GetRelativePath(string? path)
+	// 画质/帧率标记：4K、2K、8K、24/30/60/120fps、60帧 之类，大小写不限。
+	// 「4King」这种 K 后面跟着字母的不算；标记与名字之间的 _ - · 空白一起吃掉。
+	private static readonly Regex QualityTagRegex = new(
+		@"(?i)[\s_\-·]*(?:\d+\s*k|\d+\s*fps|\d+\s*帧)(?![a-z])[\s_\-·]*",
+		RegexOptions.Compiled);
+
+	// 剥完标记后可能残留空括号（如「名字（4K）」→「名字（）」），一并清掉。
+	private static readonly Regex EmptyBracketRegex = new(
+		@"（\s*）|\(\s*\)|\[\s*\]|【\s*】|\{\s*\}",
+		RegexOptions.Compiled);
+
+	/// <summary>
+	/// 展示用的媒体名：去掉文件后缀之后，再把 4K / 30fps / 60帧 这类画质帧率
+	/// 标记剥掉（「xxx 4K 60fps」→「xxx」）。全部被剥光时返回空串，
+	/// 由调用方退回原始名兜底。
+	/// </summary>
+	public static string CleanQualityTags(string? text)
 	{
-		if (string.IsNullOrWhiteSpace(path))
+		if (string.IsNullOrWhiteSpace(text))
 		{
-			return "MhyUnBox";
+			return "";
 		}
 		try
 		{
-			string directoryName = Path.GetDirectoryName(path);
-			return string.IsNullOrWhiteSpace(directoryName) ? path : directoryName;
+			string cleaned = QualityTagRegex.Replace(text, " ").Trim();
+			cleaned = EmptyBracketRegex.Replace(cleaned, "").Trim();
+			cleaned = Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
+			return cleaned;
 		}
 		catch
 		{
-			return path;
+			return text;
 		}
 	}
 
@@ -925,7 +964,9 @@ public static class MusicService
 		}
 		else if (playbackMode == "sequential")
 		{
-			index = ((num >= 0) ? ((num + 1) % list.Count) : 0);
+			// 当前曲目被标记跳过 / 不在可播放列表时，按它在完整列表中的相对位置继续往后，
+			// 而不是每次都回到第 0 首（旧行为表现为「列表循环总从头开始、顺序乱跳」）。
+			index = ((num >= 0) ? ((num + 1) % list.Count) : NextPlayableAfterCurrent(list));
 		}
 		else if (list.Count == 1)
 		{
@@ -948,6 +989,32 @@ public static class MusicService
 		Play(list[index]);
 	}
 
+	/// <summary>
+	/// 当前曲目不在可播放列表（被标记跳过 / 视频源切换）时，
+	/// 按完整 KnownMusic 顺序找到它之后的第一个可播放项；找不到才回到列表开头。
+	/// </summary>
+	private static int NextPlayableAfterCurrent(List<string> playable)
+	{
+		if (CurrentPath == null || playable.Count == 0)
+		{
+			return 0;
+		}
+		int raw = KnownMusic.FindIndex((string f) => string.Equals(f, CurrentPath, StringComparison.OrdinalIgnoreCase));
+		if (raw < 0)
+		{
+			return 0;
+		}
+		for (int i = raw + 1; i < KnownMusic.Count; i++)
+		{
+			int found = playable.FindIndex((string f) => string.Equals(f, KnownMusic[i], StringComparison.OrdinalIgnoreCase));
+			if (found >= 0)
+			{
+				return found;
+			}
+		}
+		return 0;
+	}
+
 	public static void PlayNext()
 	{
 		_dispatcher?.TryEnqueue(delegate
@@ -963,7 +1030,7 @@ public static class MusicService
 				if (list.Count != 0)
 				{
 					int num = ((CurrentPath == null) ? (-1) : list.FindIndex((string f) => string.Equals(f, CurrentPath, StringComparison.OrdinalIgnoreCase)));
-					int index = ((num >= 0) ? ((num + 1) % list.Count) : 0);
+					int index = ((num >= 0) ? ((num + 1) % list.Count) : NextPlayableAfterCurrent(list));
 					Play(list[index]);
 				}
 			}

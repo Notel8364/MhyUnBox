@@ -124,6 +124,13 @@ public class AppSettings
 
 	public bool GuardAutoScan { get; set; } = true;
 
+	/// <summary>
+	/// 代理模式：normal=正常代理登录（对齐 v3.8.0 的单目标直连，去掉自带的连接节流/风控限制）；
+	/// ddos=防DDOS模式（对齐 v7.8.0 的节点轮换、预设 IP 池、健康探测与地址安全策略）。
+	/// 默认 normal：防DDOS 的节点轮换与探测流量容易被网易判为异常登录环境。
+	/// </summary>
+	public string ProxyMode { get; set; } = "normal";
+
 	public bool DebugMode { get; set; }
 
 	public bool DetectGameProcesses { get; set; } = true;
@@ -172,7 +179,31 @@ public class AppSettings
 
 	public string LastGoodLauncherVersion { get; set; } = "";
 
+	// ===== 网易登录环境风控相关（2026-11-07 修复）=====
+
+	/// <summary>
+	/// 旧版「网易登录请求跟随系统代理」开关的持久化字段。
+	/// 2026-11-07 定版：该开关已从 UI 移除，登录请求固定跟随系统代理（对齐 v3.8.0），
+	/// 此字段仅用于兼容旧设置文件，代码不再读取。
+	/// </summary>
+	public bool NeteaseUseSystemProxy { get; set; } = true;
+
+	/// <summary>旧版账密保活开关的持久化字段；自动登录现已内置账密保活，此字段不再读取。</summary>
+	public bool EnableCredentialRefresh { get; set; }
+
+	/// <summary>账密保活周期（分钟）。自动登录开启后每 6 小时用保存的账密重登一次。</summary>
+	public int CredentialRefreshMinutes { get; set; } = 360;
+
+	/// <summary>旧版 Cookie 级保活间隔（分钟）；保活机制已改为账密重登，此字段不再读取。</summary>
+	public int CookieRefreshMinutes { get; set; } = 60;
+
 	public long AutoStartBootTick64 { get; set; }
 
 	public bool GameDetectedThisBoot { get; set; }
+
+	/// <summary>
+	/// 最近一次弹出「DLL 构建时间不一致 / 版本落后，提示加群」的日期（yyyy-MM-dd）。
+	/// 同一天只提醒一次，避免每次启动都弹。
+	/// </summary>
+	public string BuildCheckPromptDate { get; set; } = "";
 }

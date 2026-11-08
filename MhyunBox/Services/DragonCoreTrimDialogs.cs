@@ -29,13 +29,19 @@ public static class DragonCoreTrimDialogs
 		return storageFolder?.Path;
 	}
 
-	public static async Task<string?> PickZipAsync()
+	/// <summary>选择资源包压缩文件：支持 zip / 7z / 官方自解压 exe（内部会自动解压）。zipOnly=true 用于合并增量包（合并只认 zip）。</summary>
+	public static async Task<string?> PickArchiveAsync(bool zipOnly = false)
 	{
 		FileOpenPicker fileOpenPicker = new FileOpenPicker
 		{
 			ViewMode = PickerViewMode.List
 		};
 		fileOpenPicker.FileTypeFilter.Add(".zip");
+		if (!zipOnly)
+		{
+			fileOpenPicker.FileTypeFilter.Add(".7z");
+			fileOpenPicker.FileTypeFilter.Add(".exe");
+		}
 		WinRT.Interop.InitializeWithWindow.Initialize(fileOpenPicker, WinRT.Interop.WindowNative.GetWindowHandle(MainWindow.Instance));
 		StorageFile storageFile = await fileOpenPicker.PickSingleFileAsync();
 		return storageFile?.Path;
@@ -49,13 +55,13 @@ public static class DragonCoreTrimDialogs
 		{
 			return;
 		}
-		string? baselineDir = DragonCoreTrimService.ResolvePackDir(baseline);
+		string? baselineDir = await DragonCoreTrimService.ResolvePackDirAsync(baseline);
 		if (baselineDir == null)
 		{
 			await DialogGate.ShowAsync(new ContentDialog
 			{
 				Title = "无法识别资源包",
-				Content = "在所选位置没有找到 DragonCore 资源包（需要含 gui/models/sound 子目录或 .data 文件，或版本客户端目录）。\n所选：\n" + baseline,
+				Content = "在所选位置没有找到 DragonCore 资源包（需要含 gui/models/sound 子目录或 .data 文件，或版本客户端目录）。\n所选：\n" + baseline + "\n\n提示：若选的是 .7z / 自解压 exe，需要完整版 7-Zip（装 7-Zip 或把 7z.exe 放到程序目录）；只带内置 7zr 时请改选 .zip 或文件夹。",
 				CloseButtonText = "知道了",
 				XamlRoot = xamlRoot
 			});
@@ -98,13 +104,13 @@ public static class DragonCoreTrimDialogs
 				return;
 			}
 		}
-		string? currentDir = DragonCoreTrimService.ResolvePackDir(current);
+		string? currentDir = await DragonCoreTrimService.ResolvePackDirAsync(current);
 		if (currentDir == null)
 		{
 			await DialogGate.ShowAsync(new ContentDialog
 			{
 				Title = "无法识别资源包",
-				Content = "在所选位置没有找到 DragonCore 资源包（需要含 gui/models/sound 子目录或 .data 文件，或版本客户端目录）。\n所选：\n" + current,
+				Content = "在所选位置没有找到 DragonCore 资源包（需要含 gui/models/sound 子目录或 .data 文件，或版本客户端目录）。\n所选：\n" + current + "\n\n提示：若选的是 .7z / 自解压 exe，需要完整版 7-Zip（装 7-Zip 或把 7z.exe 放到程序目录）；只带内置 7zr 时请改选 .zip 或文件夹。",
 				CloseButtonText = "知道了",
 				XamlRoot = xamlRoot
 			});
@@ -113,15 +119,15 @@ public static class DragonCoreTrimDialogs
 		await RunTrimAsync(xamlRoot, baselineDir, currentDir, currentRaw);
 	}
 
-	// 选资源包来源：文件夹或压缩包（选压缩包=增量源/新包 zip，选文件夹=DragonCore 目录/版本客户端目录自动拼路径）
+	// 选资源包来源：文件夹或压缩包（zip / 7z / 官方自解压 exe，选文件后自动解压对比）
 	private static async Task<string?> PickPackSourceAsync(XamlRoot xamlRoot, string title)
 	{
 		ContentDialogResult result = await DialogGate.ShowAsync(new ContentDialog
 		{
 			Title = title,
-			Content = "选择来源类型：\n・文件夹：DragonCore 资源包目录、版本客户端目录（自动定位其中的 DragonCore）\n・压缩包：官方新包 zip（自动解压后对比）",
+			Content = "选择来源类型：\n・文件夹：DragonCore 资源包目录、版本客户端目录（自动定位其中的 DragonCore）\n・压缩文件：官方新包 zip / 7z / 自解压 exe（自动解压后对比）",
 			PrimaryButtonText = "选文件夹",
-			SecondaryButtonText = "选压缩包",
+			SecondaryButtonText = "选压缩文件",
 			CloseButtonText = "取消",
 			DefaultButton = ContentDialogButton.Primary,
 			XamlRoot = xamlRoot
@@ -132,7 +138,7 @@ public static class DragonCoreTrimDialogs
 		}
 		if (result == ContentDialogResult.Secondary)
 		{
-			return await PickZipAsync();
+			return await PickArchiveAsync();
 		}
 		return null;
 	}
@@ -145,7 +151,7 @@ public static class DragonCoreTrimDialogs
 		{
 			return null;
 		}
-		string? resolved = DragonCoreTrimService.ResolvePackDir(picked);
+		string? resolved = await DragonCoreTrimService.ResolvePackDirAsync(picked);
 		if (resolved == null)
 		{
 			await DialogGate.ShowAsync(new ContentDialog
@@ -331,28 +337,33 @@ public static class DragonCoreTrimDialogs
 			});
 			// —— 裁剪后自动合并进元素客户端 ——
 			string? target = GetKnownMergeTarget();
-			ContentDialogResult mergeChoice = await DialogGate.ShowAsync(new ContentDialog
+			if (target != null)
 			{
-				Title = "自动合并",
-				Content = (target != null)
-					? ("检测到元素客户端 DragonCore 资源包目录：\n" + target + "\n\n把刚生成的增量包合并进去？")
-					: "是否把刚生成的增量包合并进元素客户端的 DragonCore 资源包？（未检测到本地目录，需要手动选择）",
-				PrimaryButtonText = (target != null) ? "合并到该目录" : "选择目录合并…",
-				SecondaryButtonText = (target != null) ? "选择其他目录…" : "",
-				CloseButtonText = "跳过",
-				DefaultButton = ContentDialogButton.Primary,
-				XamlRoot = xamlRoot
-			});
-			if (mergeChoice != ContentDialogResult.None)
+				// 用户定版（2026-11-07）：检测到本地 DragonCore 目录就直接解压合并，不再弹确认框。
+				// 原来这里要再点一次「合并到该目录」，裁剪+合并的自动化链路被人为打断。
+				LogHelper.Force("[DragonCore裁剪] 裁剪完成，自动合并到已知目录: " + target);
+				await RunMergeCoreAsync(xamlRoot, trimResult.OutputZip, target);
+				SaveMergeTarget(target);
+			}
+			else
 			{
-				if (mergeChoice == ContentDialogResult.Secondary || target == null)
+				ContentDialogResult mergeChoice = await DialogGate.ShowAsync(new ContentDialog
+				{
+					Title = "自动合并",
+					Content = "未检测到本地 DragonCore 资源包目录。选择元素客户端的 DragonCore 目录后，程序会自动解压并合并刚生成的增量包。",
+					PrimaryButtonText = "选择目录合并…",
+					CloseButtonText = "跳过",
+					DefaultButton = ContentDialogButton.Primary,
+					XamlRoot = xamlRoot
+				});
+				if (mergeChoice == ContentDialogResult.Primary)
 				{
 					target = await PickMergeTargetManuallyAsync(xamlRoot);
-				}
-				if (target != null)
-				{
-					await RunMergeCoreAsync(xamlRoot, trimResult.OutputZip, target);
-					SaveMergeTarget(target);
+					if (target != null)
+					{
+						await RunMergeCoreAsync(xamlRoot, trimResult.OutputZip, target);
+						SaveMergeTarget(target);
+					}
 				}
 			}
 			// —— 可选删除新包（大文件夹/压缩包）释放空间 ——
@@ -388,8 +399,8 @@ public static class DragonCoreTrimDialogs
 			LogHelper.Force($"[DragonCore裁剪] 删除询问：raw={currentRaw} dir={currentDir} target={target}");
 			// 缓冲：上一个弹窗可能仍在关闭动画中，ContentDialog 同一 XamlRoot 只允许一个，稍等避免竞态静默失败
 			await Task.Delay(300);
-			bool isZip = System.IO.File.Exists(currentRaw) && string.Equals(System.IO.Path.GetExtension(currentRaw), ".zip", StringComparison.OrdinalIgnoreCase);
-			if (!isZip && !System.IO.Directory.Exists(currentRaw))
+			bool isArchive = System.IO.File.Exists(currentRaw) && DragonCoreTrimService.IsArchivePath(currentRaw);
+			if (!isArchive && !System.IO.Directory.Exists(currentRaw))
 			{
 				LogHelper.Force("[DragonCore裁剪] 删除询问跳过：来源不存在");
 				return;
@@ -412,7 +423,7 @@ public static class DragonCoreTrimDialogs
 			ContentDialogResult choice = await DialogGate.ShowAsync(new ContentDialog
 			{
 				Title = "释放空间",
-				Content = "是否删除新包" + (isZip ? "压缩包" : "大文件夹") + "？\n" + currentRaw + "\n\n删除后不可恢复（增量包已生成，合并不受影响；正式服务器资源请自行确认不再需要）。",
+				Content = "是否删除新包" + (isArchive ? "压缩包" : "大文件夹") + "？\n" + currentRaw + "\n\n删除后不可恢复（增量包已生成，合并不受影响；正式服务器资源请自行确认不再需要）。",
 				PrimaryButtonText = "删除",
 				CloseButtonText = "保留",
 				DefaultButton = ContentDialogButton.Close,
@@ -424,7 +435,7 @@ public static class DragonCoreTrimDialogs
 			}
 			try
 			{
-				if (isZip)
+				if (isArchive)
 				{
 					System.IO.File.Delete(currentRaw);
 				}
@@ -454,7 +465,7 @@ public static class DragonCoreTrimDialogs
 	// 合并流程：选增量包 → 目标=程序记住的路径/自动候选（都没有才手动选）→ 合并 → 结果弹窗（O+P 提示）→ 记住路径
 	public static async Task ShowMergeFlowAsync(XamlRoot xamlRoot)
 	{
-		string? text = await PickZipAsync();
+		string? text = await PickArchiveAsync(zipOnly: true);
 		if (text == null)
 		{
 			return;

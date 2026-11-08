@@ -126,6 +126,27 @@ public sealed partial class AboutPage : Page
 						usage.Children.RemoveAt(i);
 					}
 				}
+				// 反馈情况里补一行群号（.xbf 内容无法改，运行时追加）
+				bool hasGroup = false;
+				foreach (object child in usage.Children)
+				{
+					if (child is TextBlock existing && (existing.Text ?? "").Contains(CommunityChannel.QqGroupNumber, StringComparison.Ordinal))
+					{
+						hasGroup = true;
+						break;
+					}
+				}
+				if (!hasGroup)
+				{
+					usage.Children.Add(new TextBlock
+					{
+						Text = "QQ 群：" + CommunityChannel.QqGroupNumber,
+						FontSize = 13.0,
+						FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+						Margin = new Thickness(0.0, 6.0, 0.0, 0.0),
+						IsTextSelectionEnabled = true
+					});
+				}
 			}
 		}
 		catch (Exception ex3)

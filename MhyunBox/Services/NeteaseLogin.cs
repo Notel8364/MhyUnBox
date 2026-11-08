@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using MhyunBox.Settings;
 
 namespace MhyunBox.Services;
 
@@ -316,12 +317,17 @@ public sealed class NeteaseLogin : IDisposable
 
 	private const int MinSessionIntervalMs = 1200;
 
-	// 关键：UseProxy=false 绕过系统代理/加速器。玩家常挂加速器（只为游戏端口），若跟随系统代理，
-	// 网易账号 API 会被代理劫持导致登录失败（开发者无代理一直正常，用户挂加速器全挂）。
+	/// <summary>单次会话最多尝试的接入点数（域名 + 至多 1 个解析 IP）。命中风控拒绝时立即停止，不再换点。</summary>
+	private const int MaxCoreEndpoints = 2;
+
+	// 2026-11-07 定版：出口 IP 与官方启动器保持一致，固定跟随系统代理。
+	// v3.8.0 用 new HttpClient() 默认跟随系统代理，从未触发 IP 级风控；
+	// 8.0.0 曾强制 UseProxy=false 直连，导致同一账号在「加速器出口 / 宽带出口」间交替登录被标记。
+	// 用户已要求去掉「网易登录请求跟随系统代理」开关，此处不再读取设置，永远跟随系统代理。
 	// 证书回调：允许用解析出的 IP 直连网关（Host 头仍是域名），校验证书主题确属网易域名，防止中间人。
 	private readonly HttpClient _http = new HttpClient(new HttpClientHandler
 	{
-		UseProxy = false,
+		UseProxy = true,
 		ServerCertificateCustomValidationCallback = (req, cert, chain, errors) =>
 		{
 			if (errors == System.Net.Security.SslPolicyErrors.None)
@@ -498,7 +504,7 @@ public sealed class NeteaseLogin : IDisposable
 		}
 	}
 
-	/// <summary>网络类异常时附带直连诊断提示（登录请求已绕过系统代理，直连网易失败多为本地网络/加速器干扰）。</summary>
+	/// <summary>网络类异常时附带诊断提示（登录请求固定跟随系统代理，与官方启动器出口保持一致）。</summary>
 	private static string FriendlyNetError(Exception ex)
 	{
 		string msg = ex.Message ?? "";
@@ -509,7 +515,7 @@ public sealed class NeteaseLogin : IDisposable
 			|| msg.Contains("timeout", StringComparison.OrdinalIgnoreCase)
 			|| msg.Contains("response", StringComparison.OrdinalIgnoreCase);
 		return isNet
-			? msg + "（登录为直连网易，不经过加速器；若开启了加速器/VPN/系统代理，请关闭后重试）"
+			? msg + "（登录请求固定跟随系统代理；若加速器劫持了登录接口，请暂时关闭加速器或改用规则模式后重试）"
 			: msg;
 	}
 
@@ -576,7 +582,9 @@ public sealed class NeteaseLogin : IDisposable
 			}
 			if (!string.Equals(channel, "netease", StringComparison.Ordinal))
 			{
-				AuthSessionAsync(cookieJson);
+				// 2026-11-07 修复：此前 fire-and-forget，调用方 using 结束即 Dispose HttpClient，
+				// uni_sauth 请求 2ms 内被取消（TaskCanceledException）。改为 await；结果不影响本流程。
+				await AuthSessionAsync(cookieJson).ConfigureAwait(false);
 			}
 			return new NeteaseLoginResult
 			{
@@ -1060,14 +1068,20 @@ public sealed class NeteaseLogin : IDisposable
 			}
 			string? guid = SecureStore.Load("x19_guid");
 			string? deviceJson = SecureStore.Load("x19_device");
-			// 旧版把作者机器的 GUID 编译进程序，所有安装共用同一个 unique_id，
-			// 多账号/多用户同时登录时很容易被网易判成 login abnormally。这里按安装生成唯一值。
-			bool sharedBuiltinGuid = !string.IsNullOrWhiteSpace(guid) && string.Equals(guid!.Trim(), BuiltinGuid, StringComparison.OrdinalIgnoreCase);
-			if (string.IsNullOrWhiteSpace(guid) || sharedBuiltinGuid)
+			// 2026-11-07 修复：设备标识必须跨版本稳定。
+			// v3.8.0 把内置共享 GUID 持久化到 %LOCALAPPDATA%\MhyunBox\secure\x19_guid；
+			// 8.0.0 曾主动检测并替换该值，导致老用户升级后在网易侧变成「全新设备」，
+			// 叠加高频登录一起触发异常登录环境风控。现在只要本地已有值就原样复用。
+			if (!string.IsNullOrWhiteSpace(guid) && string.Equals(guid!.Trim(), BuiltinGuid, StringComparison.OrdinalIgnoreCase))
+			{
+				LogHelper.Log("[网易登录] 复用 v3.8.0 持久化设备号（跨版本保持稳定，不生成新设备指纹）");
+			}
+			// 仅全新安装（无任何记录）才生成按安装唯一的设备号，避免所有新用户共用同一标识。
+			if (string.IsNullOrWhiteSpace(guid))
 			{
 				guid = Guid.NewGuid().ToString("N");
 				SecureStore.Save("x19_guid", guid);
-				LogHelper.Log("[网易登录] 已生成本机唯一设备号（" + (sharedBuiltinGuid ? "替换内置共享值" : "首次运行") + "），长度=" + guid.Length);
+				LogHelper.Log("[网易登录] 首次运行，已生成本机唯一设备号，长度=" + guid.Length);
 			}
 			if (string.IsNullOrWhiteSpace(deviceJson))
 			{
@@ -1275,15 +1289,24 @@ public sealed class NeteaseLogin : IDisposable
 		{
 			sauth_json = cookieJson
 		}, Relaxed);
-		// login-otp 多接入点尝试：域名直连优先，被网关按环境拒绝（code=32 / login abnormally）或网络失败时换解析 IP 重试
+		// login-otp 接入点尝试：域名优先，最多再试 1 个解析 IP；命中网关按环境拒绝后立即停止（见下方修复注释）
 		EntityWrap<JsonElement?>? entityWrap = null;
 		string status = "";
 		int code = -1;
 		string text = "";
 		string? coreEndpoint = null;
 		int triedEndpoints = 0;
+		// 2026-11-07 修复：限制单次会话的接入点数，且命中网关环境拒绝（code=32 / login abnormally）
+		// 时立即停止，不再逐 IP 换点重试。实证日志：0.14 秒内两次 login-otp 打到域名 + 124.160.141.131，
+		// 是网易判定「异常登录环境」的直接诱因；拒绝后继续换点只会自我强化风控。
+		int maxEndpoints = Math.Min(GetCoreEndpoints().Count, MaxCoreEndpoints);
+		bool gatewayRejected = false;
 		foreach (string endpoint in GetCoreEndpoints())
 		{
+			if (triedEndpoints >= maxEndpoints)
+			{
+				break;
+			}
 			triedEndpoints++;
 			try
 			{
@@ -1306,28 +1329,37 @@ public sealed class NeteaseLogin : IDisposable
 				}
 				status = ExtractEntityStatus(entityWrap);
 				code = entityWrap?.Code ?? -1;
-				LogHelper.Log($"[网易登录] login-otp[{triedEndpoints}/{GetCoreEndpoints().Count}] {endpoint}: HTTP {(int)resp1.StatusCode}, 响应 {text.Length}B, code={code}, status={Safe(status)}, message={Safe(entityWrap?.Message)}");
+				LogHelper.Log($"[网易登录] login-otp[{triedEndpoints}/{maxEndpoints}] {endpoint}: HTTP {(int)resp1.StatusCode}, 响应 {text.Length}B, code={code}, status={Safe(status)}, message={Safe(entityWrap?.Message)}");
+				LogHelper.RiskAudit($"login-otp endpoint={endpoint} http={(int)resp1.StatusCode} code={code} status={Safe(status)} message={Safe(entityWrap?.Message)} bytes={text.Length}");
 				if (entityWrap != null && entityWrap.Code == 0 && entityWrap.Data.HasValue && entityWrap.Data.Value.ValueKind == JsonValueKind.Object)
 				{
 					coreEndpoint = endpoint;
 					break;
 				}
-				// 网关拒绝（维护中/环境异常）→ 换下一个接入点；其它业务错误（如 Cookie 无效）不必换点
+				// 网关按环境拒绝：登记全局冷静期并立即停止，绝不换点重试。
 				if (IsGatewayReject(code, status, entityWrap?.Message))
 				{
-					continue;
+					gatewayRejected = true;
+					RiskNotice.Mark("(会话刷新)", "login-otp");
+					LogHelper.Force($"[网易登录] login-otp 命中网易登录环境拒绝 code={code} status={Safe(status)}，已进入 {RiskNotice.RecoveryMinutes} 分钟冷静期并停止换点重试");
+					break;
 				}
+				// 其它业务错误（如 Cookie 无效）也不换点：单端点失败即返回，由上层按类型处理。
 				break;
 			}
 			catch (Exception sendEx)
 			{
 				LogHelper.Log($"[网易登录] login-otp[{triedEndpoints}] {endpoint} 网络失败: {sendEx.GetType().Name}: {sendEx.Message}");
-				continue;
+				LogHelper.RiskAudit($"login-otp endpoint={endpoint} network-error={sendEx.GetType().Name}");
+				break;
 			}
 		}
 		if (coreEndpoint == null)
 		{
-			return (Otp: null, Error: BuildSessionError("login-otp", status, entityWrap?.Message, code) + ((IsGatewayReject(code, status, entityWrap?.Message) && triedEndpoints > 1) ? "（已自动尝试全部 " + triedEndpoints + " 个接入点均被拒，多为该地区/网络环境被网易风控，可稍后重试或换网络）" : ""));
+			string err = gatewayRejected
+				? "login-otp 登录环境异常（网易按环境拒绝，code=" + code + "）：已进入冷静期，请稍后再试或更换网络环境"
+				: BuildSessionError("login-otp", status, entityWrap?.Message, code);
+			return (Otp: null, Error: err);
 		}
 		LoginOtp? loginOtp = null;
 		try
@@ -1397,6 +1429,9 @@ public sealed class NeteaseLogin : IDisposable
 		{
 			return (Otp: null, Error: "authentication-otp 返回空会话字段");
 		}
+		// 会话建立成功即说明网易已放行，解除风控冷静期；审计日志只记非敏感字段。
+		RiskNotice.Clear();
+		LogHelper.RiskAudit($"authentication-otp ok endpoint={coreEndpoint} code={code2}");
 		return (Otp: entityWrap2.Data, Error: null);
 	}
 
@@ -1437,9 +1472,11 @@ public sealed class NeteaseLogin : IDisposable
 		{
 			detail = ((code != 0) ? ("code=" + code) : "空响应");
 		}
-		if (IsRiskControlText(detail))
+		// code=32 是网关按环境拒绝的伪装回执（"服务器维护中 / token expired"），
+		// 必须归类为风控而非会话失效，否则会被当成「会话已失效」触发账密重登，形成登录风暴。
+		if (code == 32 || IsRiskControlText(detail))
 		{
-			return stage + " 登录环境异常（" + detail + "）";
+			return stage + " 登录环境异常（" + detail + ((code != 0) ? (", code=" + code) : "") + "）";
 		}
 		if (IsSessionExpiredText(detail))
 		{

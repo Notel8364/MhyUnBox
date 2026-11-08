@@ -241,6 +241,15 @@ public sealed class GroupsQuickPage : Page
 			VerticalAlignment = VerticalAlignment.Top
 		};
 		BuildControlCard();
+		// 代理流模式切换（与设置页 / 首页 / 代理启动共用同一份设置）
+		try
+		{
+			stackPanel.Children.Add(SettingsPage.CreateProxyModeSelector());
+		}
+		catch (Exception exMode)
+		{
+			LogHelper.LogError(exMode, "[快速启动] 代理模式切换构建失败");
+		}
 		stackPanel.Children.Add(GroupsSection);
 		return new ScrollViewer
 		{

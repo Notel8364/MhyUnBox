@@ -351,6 +351,11 @@ public static class DragonCoreTrimService
 					count++;
 				}
 			}, ct);
+			// 空包/选错包：不能报「合并成功 0 个文件」，否则用户以为更新了其实啥也没进去
+			if (count == 0)
+			{
+				throw new InvalidDataException("这个 zip 里没有可合并的资源文件（只有目录或说明清单），请确认选的是 DragonCore 增量包");
+			}
 			await Task.Run(delegate
 			{
 				// 逐条解压：兼容新旧两种格式（新格式 zip 内嵌套 DragonCore 文件夹，剥掉前缀直接落进目标目录）
@@ -372,16 +377,16 @@ public static class DragonCoreTrimService
 					ArchiveSafety.ExtractEntry(entry, destPath, overwrite: true, ref extractedBytes);
 				}
 			}, ct);
-		mergeResult.Extracted = count;
-		mergeResult.TargetDir = dragonCoreDir;
-		mergeResult.Success = true;
-		LogHelper.Force("[DragonCore裁剪] 已合并增量包 " + Path.GetFileName(zipPath) + " => " + dragonCoreDir);
-		// 合并成功后：增量包属于「文件/包」，仅在开启自动清理时移入回收站
-		// （默认保留 —— 同一份增量包常要分发给其他用户，删了就没了）
-		CleanupHelper.RecycleIfEnabled(zipPath, delegate (string m)
-		{
-			LogHelper.Force("[DragonCore裁剪] " + m);
-		}, "已合并的增量包");
+			mergeResult.Extracted = count;
+			mergeResult.TargetDir = dragonCoreDir;
+			mergeResult.Success = true;
+			LogHelper.Force("[DragonCore裁剪] 已合并增量包 " + Path.GetFileName(zipPath) + " => " + dragonCoreDir);
+			// 合并成功后：增量包属于「文件/包」，仅在开启自动清理时移入回收站
+			// （默认保留 —— 同一份增量包常要分发给其他用户，删了就没了）
+			CleanupHelper.RecycleIfEnabled(zipPath, delegate (string m)
+			{
+				LogHelper.Force("[DragonCore裁剪] " + m);
+			}, "已合并的增量包");
 		}
 		catch (Exception ex)
 		{
@@ -400,6 +405,11 @@ public static class DragonCoreTrimService
 			rel = rel.Substring("DragonCore\\".Length);
 		}
 		if (string.IsNullOrWhiteSpace(rel))
+		{
+			return null;
+		}
+		// 增量包自带的说明清单不属于资源包内容，跳过（否则会被丢进 DragonCore 目录里）
+		if (string.Equals(rel, "_mhy_incremental_manifest.json", StringComparison.OrdinalIgnoreCase))
 		{
 			return null;
 		}
@@ -455,35 +465,43 @@ public static class DragonCoreTrimService
 
 	/// <summary>
 	/// 把用户选择解析成 DragonCore 资源包目录：
-	/// 本身就是 DragonCore 目录 → 原样返回；zip → 解压到临时目录后返回；版本客户端/上级文件夹 → 自动拼接/浅搜索 DragonCore 路径。
-	/// 返回 null 表示解析失败。zip 解压的临时目录需要调用方用 CleanupTempDir 清理。
+	/// 本身就是 DragonCore 目录 → 原样返回；zip / 7z / 自解压 exe → 自动解压到临时目录后返回；
+	/// 版本客户端/上级文件夹 → 自动拼接/浅搜索 DragonCore 路径。
+	/// 返回 null 表示解析失败。临时解压目录需要调用方用 CleanupTempDir 清理。
 	/// </summary>
-	public static string? ResolvePackDir(string? selected, Action<TrimProgress>? progress = null)
+	public static async Task<string?> ResolvePackDirAsync(string? selected, Action<TrimProgress>? progress = null)
 	{
 		if (string.IsNullOrWhiteSpace(selected))
 		{
 			return null;
 		}
 		selected = selected.Trim().Trim('"');
-		if (File.Exists(selected) && string.Equals(Path.GetExtension(selected), ".zip", StringComparison.OrdinalIgnoreCase))
+		if (File.Exists(selected) && IsArchivePath(selected))
 		{
 			string tempDir = Path.Combine(Path.GetTempPath(), "MhyDragonTrim_" + Guid.NewGuid().ToString("N").Substring(0, 8));
-			string tempZip = Path.Combine(tempDir, "pack.zip");
 			try
 			{
 				Directory.CreateDirectory(tempDir);
 				TempDirs[tempDir] = 0;
-				File.Copy(selected, tempZip, overwrite: true);
-				progress?.Invoke(new TrimProgress { Phase = "解压新包压缩包…" });
-				ArchiveSafety.ExtractZipToDirectory(tempZip, tempDir, overwrite: true);
-				try
+				// zip 走内置 .NET 解压（不依赖系统装没装 7-Zip）；
+				// 7z / 自解压 exe 交给 7z（优先完整版，回退内置 7zr）。
+				progress?.Invoke(new TrimProgress { Phase = "解压新包（zip / 7z / 自解压 exe）…" });
+				if (string.Equals(Path.GetExtension(selected), ".zip", StringComparison.OrdinalIgnoreCase))
 				{
-					File.Delete(tempZip);
+					ArchiveSafety.ExtractZipToDirectory(selected, tempDir, overwrite: true);
 				}
-				catch
+				else
 				{
+					string sevenZip = ClientUpdater.Resolve7z();
+					// 内置 7zr.exe 只认 .7z：解 zip / 自解压 exe 必须完整版 7-Zip，否则会拿到一堆 exit=2 的莫名其妙报错
+					if (ClientUpdater.IsLimited7zr(sevenZip) && !string.Equals(Path.GetExtension(selected), ".7z", StringComparison.OrdinalIgnoreCase))
+					{
+						throw new InvalidOperationException("当前只有内置 7zr.exe（仅支持 .7z），无法解压 " + Path.GetExtension(selected) + "：请安装完整版 7-Zip（或把 7z.exe 放到程序目录），也可以直接改用 .zip 包");
+					}
+					await ClientUpdater.EnsureArchiveEntriesSafeAsync(sevenZip, selected, CancellationToken.None);
+					await ClientUpdater.ExtractAsync(sevenZip, selected, tempDir, null, CancellationToken.None);
 				}
-				// zip 根可能直接就是包内容，也可能多包一层 DragonCore 文件夹
+				// 包根可能直接就是包内容，也可能多包一层 DragonCore 文件夹
 				if (LooksLikeDragonCoreDir(tempDir))
 				{
 					return tempDir;
@@ -493,11 +511,17 @@ public static class DragonCoreTrimService
 				{
 					return inner;
 				}
+				// 官方包常见 .minecraft/resourcepacks/DragonCore 或 versions/<ver>/resourcepacks/DragonCore
+				string? nested = FindDragonCoreDir(tempDir, 4);
+				if (nested != null)
+				{
+					return nested;
+				}
 				return tempDir;
 			}
 			catch (Exception ex)
 			{
-				LogHelper.LogError(ex, "[DragonCore裁剪] 解压所选压缩包失败: " + Path.GetFileName(selected));
+				LogHelper.LogError(ex, "[DragonCore裁剪] 解压所选资源包失败: " + Path.GetFileName(selected));
 				CleanupTempDir(tempDir);
 				return null;
 			}
@@ -558,6 +582,44 @@ public static class DragonCoreTrimService
 		return null;
 	}
 
+	/// <summary>裁剪来源支持的压缩格式：zip / 7z / 自解压 exe（7z SFX）。</summary>
+	public static bool IsArchivePath(string path)
+	{
+		string ext = Path.GetExtension(path);
+		return string.Equals(ext, ".zip", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(ext, ".7z", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(ext, ".exe", StringComparison.OrdinalIgnoreCase);
+	}
+
+	/// <summary>在解压目录里递归找名为 DragonCore 且像资源包的目录（限制深度，避免扫全盘）。</summary>
+	private static string? FindDragonCoreDir(string root, int maxDepth)
+	{
+		try
+		{
+			if (maxDepth < 0)
+			{
+				return null;
+			}
+			foreach (string dir in Directory.EnumerateDirectories(root))
+			{
+				if (string.Equals(Path.GetFileName(dir), "DragonCore", StringComparison.OrdinalIgnoreCase)
+					&& LooksLikeDragonCoreDir(dir))
+				{
+					return dir;
+				}
+				string? nested = FindDragonCoreDir(dir, maxDepth - 1);
+				if (nested != null)
+				{
+					return nested;
+				}
+			}
+		}
+		catch
+		{
+		}
+		return null;
+	}
+
 	private static IEnumerable<DirectoryInfo> SafeSubDirs(DirectoryInfo dir)
 	{
 		try
@@ -568,6 +630,32 @@ public static class DragonCoreTrimService
 		{
 			return Array.Empty<DirectoryInfo>();
 		}
+	}
+
+	/// <summary>该路径是否落在本进程解压出来的临时目录里（临时目录不能当长期合并目标记住）。</summary>
+	public static bool IsTempDir(string? dir)
+	{
+		if (string.IsNullOrWhiteSpace(dir))
+		{
+			return false;
+		}
+		try
+		{
+			string full = Path.GetFullPath(dir!);
+			foreach (string root in TempDirs.Keys)
+			{
+				string rootFull = Path.GetFullPath(root);
+				if (string.Equals(full, rootFull, StringComparison.OrdinalIgnoreCase)
+					|| full.StartsWith(rootFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+			}
+		}
+		catch
+		{
+		}
+		return false;
 	}
 
 	/// <summary>删除 ResolvePackDir 创建的临时解压目录；只接受本进程登记过的临时根，避免误删用户目录。</summary>

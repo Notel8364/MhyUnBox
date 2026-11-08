@@ -158,7 +158,7 @@ public sealed class ClientUpdatePage : Page
 		});
 		_urlBox = new TextBox
 		{
-			PlaceholderText = "https://x19.gph.netease.com/item_..._204_v..._....7z",
+			PlaceholderText = "https://x19.gph.netease.com/item_..._204_v..._....7z（也支持 .zip / 自解压 .exe）",
 			TextWrapping = TextWrapping.Wrap,
 			AcceptsReturn = false
 		};
@@ -306,7 +306,7 @@ public sealed class ClientUpdatePage : Page
 		};
 		_dragonTrimBtn = new Button
 		{
-			Content = "① 裁剪增量包（本地包VS官方新包 → 产出小 zip）"
+			Content = "① 裁剪增量包（本地包 VS 官方新包 zip/7z/自解压 exe → 自动解压裁剪并合并）"
 		};
 		_dragonTrimBtn.Click += DragonCoreTrim_Click;
 		_dragonMergeBtn = new Button

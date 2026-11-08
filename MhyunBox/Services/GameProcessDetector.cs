@@ -81,6 +81,29 @@ public static class GameProcessDetector
 		return list;
 	}
 
+	/// <summary>
+	/// 官方网易启动器（WPFLauncher / MCLauncher / 其启动的游戏进程）是否正在运行。
+	/// 供所有「自动发起网易账号登录」的链路共用：程序在官方启动器运行时换新会话，
+	/// 会把同账号下官方启动器正在用的会话顶掉（表现为启动器掉线 / 要求重登 / 连不上）。
+	/// </summary>
+	public static bool IsOfficialLauncherRunning()
+	{
+		try
+		{
+			foreach (FoundGroup group in FindRunning())
+			{
+				if (group.Label.Contains("我的世界", StringComparison.Ordinal) && group.Processes.Count > 0)
+				{
+					return true;
+				}
+			}
+		}
+		catch
+		{
+		}
+		return false;
+	}
+
 	private static string TryGetModulePath(Process p)
 	{
 		try

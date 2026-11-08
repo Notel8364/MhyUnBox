@@ -3,6 +3,7 @@ using System.CodeDom.Compiler;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using MhyunBox.Services;
+using MhyunBox.Settings;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -53,14 +54,14 @@ public sealed partial class HomePage : Page
 		InitializeComponent();
 		TrimNoticeCard();
 		ApplyOpenSourceTweaks();
-		// GitHub 仓库联动卡片：置于首页顶部开源提示声明之下、盐值获取之上
+		// 反馈与更新（QQ 群 + 构建时间校验，代理流模式开关也放这张卡里）
 		try
 		{
-			HomeRoot.Children.Add(BuildGitHubCard());
+			HomeRoot.Children.Add(BuildCommunityCard());
 		}
-		catch (Exception ex3)
+		catch (Exception exCommunity)
 		{
-			LogHelper.LogError(ex3, "首页 GitHub 联动卡片加载失败");
+			LogHelper.LogError(exCommunity, "首页反馈/构建校验卡片加载失败");
 		}
 		// 盐值与版本卡片（代码后置构建：Alane 首位地址 / 404 三层 Fernet / 官方 DLL 索取 / 0x11 自动切换）
 		try
@@ -95,9 +96,21 @@ public sealed partial class HomePage : Page
 		};
 	}
 
-	// ---------- GitHub 联动卡片（更新检查 / 合并请求） ----------
+	// ---------- 反馈与更新 / 构建时间校验 ----------
 
-	private FrameworkElement BuildGitHubCard()
+	private TextBlock? _stampDllText;
+
+	private TextBlock? _stampExeText;
+
+	private TextBlock? _stampRemoteText;
+
+	private TextBlock? _stampStatusText;
+
+	private Button? _stampRefreshButton;
+
+	private bool _stampChecking;
+
+	private FrameworkElement BuildCommunityCard()
 	{
 		StackPanel card = new StackPanel
 		{
@@ -105,10 +118,265 @@ public sealed partial class HomePage : Page
 		};
 		card.Children.Add(new TextBlock
 		{
-			Text = "仓库与更新",
+			Text = "反馈与更新",
 			FontSize = 16.0,
 			FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
 		});
+		card.Children.Add(new TextBlock
+		{
+			Text = "QQ 群：" + CommunityChannel.QqGroupNumber,
+			FontSize = 13.0,
+			Opacity = 0.85,
+			IsTextSelectionEnabled = true
+		});
+		Style? accent = null;
+		try
+		{
+			if (Application.Current?.Resources != null && Application.Current.Resources.TryGetValue("AccentButtonStyle", out object styleObj) && styleObj is Style style)
+			{
+				accent = style;
+			}
+		}
+		catch
+		{
+		}
+		StackPanel buttons = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 8.0
+		};
+		Button joinButton = new Button
+		{
+			Content = "一键加群",
+			Style = accent
+		};
+		ToolTipService.SetToolTip(joinButton, "复制群号并打开 QQ，在顶部搜索框粘贴群号回车即可加群");
+		joinButton.Click += delegate
+		{
+			CommunityChannel.OpenQqGroup();
+		};
+		buttons.Children.Add(joinButton);
+		Button copyButton = new Button
+		{
+			Content = "复制群号"
+		};
+		copyButton.Click += delegate
+		{
+			CommunityChannel.CopyGroupNumberWithToast();
+		};
+		buttons.Children.Add(copyButton);
+		Button issuesButton = new Button
+		{
+			Content = "提交 Issues"
+		};
+		issuesButton.Click += delegate
+		{
+			try
+			{
+				Process.Start(new ProcessStartInfo(GitHubService.IssuesUrl)
+				{
+					UseShellExecute = true
+				});
+			}
+			catch (Exception ex)
+			{
+				LogHelper.LogError(ex, "打开 Issues 失败");
+			}
+		};
+		buttons.Children.Add(issuesButton);
+		card.Children.Add(buttons);
+		// 仓库与更新：合并进同一张卡（原先独立的卡片已移除）
+		card.Children.Add(new Border
+		{
+			Height = 1.0,
+			Background = ThemeHelper.Resolve("CardStrokeColorDefaultBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(30, 128, 128, 128)),
+			Margin = new Thickness(0.0, 4.0, 0.0, 4.0)
+		});
+		card.Children.Add(BuildGitHubSection());
+		// 代理流模式（与设置页 / 代理启动 / 快速启动 / 账号绑定共用同一份设置）
+		card.Children.Add(new Border
+		{
+			Height = 1.0,
+			Background = ThemeHelper.Resolve("CardStrokeColorDefaultBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(30, 128, 128, 128)),
+			Margin = new Thickness(0.0, 4.0, 0.0, 4.0)
+		});
+		card.Children.Add(SettingsPage.CreateProxyModeSelector());
+		card.Children.Add(new TextBlock
+		{
+			Text = "构建时间校验",
+			FontSize = 15.0,
+			FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+			Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
+		});
+		Grid grid = new Grid
+		{
+			ColumnSpacing = 12.0,
+			RowSpacing = 3.0
+		};
+		grid.ColumnDefinitions.Add(new ColumnDefinition
+		{
+			Width = new GridLength(112.0)
+		});
+		grid.ColumnDefinitions.Add(new ColumnDefinition
+		{
+			Width = new GridLength(1.0, GridUnitType.Star)
+		});
+		_stampDllText = AddStampRow(grid, "本地 DLL", 0);
+		_stampExeText = AddStampRow(grid, "本地主程序", 1);
+		_stampRemoteText = AddStampRow(grid, "仓库最新提交", 2);
+		_stampStatusText = AddStampRow(grid, "状态", 3);
+		_stampStatusText.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+		card.Children.Add(grid);
+		StackPanel actions = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 8.0
+		};
+		_stampRefreshButton = new Button
+		{
+			Content = "重新检测"
+		};
+		_stampRefreshButton.Click += async delegate
+		{
+			await RefreshBuildStampAsync(forceRefresh: true);
+		};
+		actions.Children.Add(_stampRefreshButton);
+		if (SettingsManager.Instance.DebugMode)
+		{
+			HyperlinkButton previewLink = new HyperlinkButton
+			{
+				Content = "预览加群提示",
+				FontSize = 12.0,
+				VerticalAlignment = VerticalAlignment.Center
+			};
+			previewLink.Click += async delegate
+			{
+				try
+				{
+					BuildStampInfo info = await BuildStampService.CheckAsync();
+					await CommunityChannel.ShowJoinPromptAsync("发现 DLL 版本不一致", BuildStampService.BuildPromptText(info, preview: true), "一键加群换 DLL");
+				}
+				catch (Exception exPreview)
+				{
+					LogHelper.LogError(exPreview, "[构建校验] 预览加群提示失败");
+				}
+			};
+			actions.Children.Add(previewLink);
+		}
+		card.Children.Add(actions);
+		_ = RefreshBuildStampAsync(forceRefresh: false);
+		return new Border
+		{
+			Background = ThemeHelper.Resolve("CardBackgroundFillColorSecondaryBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(28, 128, 128, 128)),
+			BorderBrush = ThemeHelper.Resolve("CardStrokeColorDefaultBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(40, 128, 128, 128)),
+			BorderThickness = new Thickness(1.0),
+			CornerRadius = new CornerRadius(12.0),
+			Padding = new Thickness(16.0, 14.0, 16.0, 14.0),
+			Margin = new Thickness(0.0, 10.0, 0.0, 4.0),
+			Child = card
+		};
+	}
+
+	private static TextBlock AddStampRow(Grid grid, string label, int row)
+	{
+		grid.RowDefinitions.Add(new RowDefinition
+		{
+			Height = GridLength.Auto
+		});
+		TextBlock labelBlock = new TextBlock
+		{
+			Text = label,
+			FontSize = 12.0,
+			Opacity = 0.65,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		Grid.SetColumn(labelBlock, 0);
+		Grid.SetRow(labelBlock, row);
+		grid.Children.Add(labelBlock);
+		TextBlock valueBlock = new TextBlock
+		{
+			Text = "检测中…",
+			FontSize = 12.0,
+			TextWrapping = TextWrapping.Wrap,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		Grid.SetColumn(valueBlock, 1);
+		Grid.SetRow(valueBlock, row);
+		grid.Children.Add(valueBlock);
+		return valueBlock;
+	}
+
+	private async Task RefreshBuildStampAsync(bool forceRefresh)
+	{
+		if (_stampChecking || _stampDllText == null || _stampStatusText == null)
+		{
+			return;
+		}
+		_stampChecking = true;
+		try
+		{
+			if (_stampRefreshButton != null)
+			{
+				_stampRefreshButton.IsEnabled = false;
+				_stampRefreshButton.Content = "检测中…";
+			}
+			BuildStampInfo info = await BuildStampService.CheckAsync(forceRefresh);
+			if (_stampDllText != null)
+			{
+				_stampDllText.Text = info.HasLocal
+					? (BuildStampService.FormatUtc(info.LocalDllUtc) + "（" + info.LocalSource + "）")
+					: "读取失败";
+			}
+			if (_stampExeText != null)
+			{
+				_stampExeText.Text = BuildStampService.FormatUtc(info.LocalExeUtc);
+			}
+			if (_stampRemoteText != null)
+			{
+				_stampRemoteText.Text = info.RemoteCommitUtc.HasValue
+					? BuildStampService.FormatUtc(info.RemoteCommitUtc.Value)
+					: (info.RemoteError ?? "获取失败");
+			}
+			TextBlock statusBlock = _stampStatusText;
+			if (statusBlock != null)
+			{
+				statusBlock.Text = info.StatusText;
+				statusBlock.Foreground = info.Status switch
+				{
+					BuildStampStatus.Mixed => new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(byte.MaxValue, 235, 80, 80)),
+					BuildStampStatus.Behind => ThemeHelper.Resolve("SystemFillColorCautionBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(byte.MaxValue, 230, 160, 40)),
+					BuildStampStatus.Ahead => ThemeHelper.Resolve("SystemFillColorCautionBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(byte.MaxValue, 230, 160, 40)),
+					_ => ThemeHelper.Resolve("TextFillColorSecondaryBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(200, 128, 128, 128))
+				};
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[构建校验] 首页检测失败");
+			if (_stampStatusText != null)
+			{
+				_stampStatusText.Text = "检测失败：" + ex.Message;
+			}
+		}
+		finally
+		{
+			_stampChecking = false;
+			if (_stampRefreshButton != null)
+			{
+				_stampRefreshButton.IsEnabled = true;
+				_stampRefreshButton.Content = "重新检测";
+			}
+		}
+	}
+
+	// ---------- GitHub 联动卡片（更新检查 / 合并请求） ----------
+
+	private FrameworkElement BuildGitHubSection()
+	{
+		StackPanel card = new StackPanel
+		{
+			Spacing = 10.0
+		};
 		card.Children.Add(new TextBlock
 		{
 			Text = "开源仓库：" + GitHubService.RepoUrl + "　当前版本 " + AppVersion.Display
@@ -184,17 +452,7 @@ public sealed partial class HomePage : Page
 		row.Children.Add(tokenBtn);
 
 		card.Children.Add(row);
-
-		return new Border
-		{
-			Background = ThemeHelper.Resolve("CardBackgroundFillColorSecondaryBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(28, 128, 128, 128)),
-			BorderBrush = ThemeHelper.Resolve("CardStrokeColorDefaultBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(40, 128, 128, 128)),
-			BorderThickness = new Thickness(1.0),
-			CornerRadius = new Microsoft.UI.Xaml.CornerRadius(12.0),
-			Padding = new Thickness(16.0, 14.0, 16.0, 14.0),
-			Margin = new Thickness(0.0, 10.0, 0.0, 4.0),
-			Child = card
-		};
+		return card;
 	}
 
 	private async Task ShowUpdateResultAsync()
