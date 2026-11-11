@@ -36,6 +36,8 @@
     <Compile Remove="deps\**\*.cs" />
     <!-- 独立测试 harness（有自己的 csproj/obj，勿并入主程序） -->
     <Compile Remove="tools\**\*.cs" />
+    <!-- 安装包工程（Installer/ 下另有 csproj，独立构建，勿并入主程序） -->
+    <Compile Remove="Installer\**\*.cs" />
     <!-- WinRT AOT 源生成器（随 Windows SDK 引用自动引入）会自行生成 GlobalVtableLookup，排除旧副本 -->
     <Compile Remove="WinRT\MhyunBoxGenericHelpers\**\*.cs" />
     <!-- 源生成器会为 App/MainWindow/各 Page 自动生成 vtable 类，排除反编译遗留的旧副本避免重复定义；

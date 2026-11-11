@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text.RegularExpressions;
+using System.Threading;
 using MhyunBox.Settings;
 
 namespace MhyunBox.Services;
@@ -253,78 +254,33 @@ public static class ModInjectService
 
 	// ---- 更多显示：主模组(moreshow-*) 与 附属(MoreShow_Extra-*) 分开处理，互不误删 ----
 
+	/// <summary>
+	/// 更多显示注入：主模组与附属各自「族内只保留一个文件」。
+	/// 源优先取官网最新（官网只有附属时用本地缓存），再与本地内置包按版本取新。
+	/// </summary>
 	private static (InjectResultKind Kind, string Message) InjectMoreShow(string modsDir)
 	{
 		List<string> parts = new List<string>();
 		bool failed = false;
 		bool injected = false;
-		// —— 主模组：目标 1.6.4，先删客户端里低于该版本的旧版，再补/保 1.6.4 ——
+
+		// —— 主模组 moreshow-* ——
 		try
 		{
-			string mainSrc = HighestLocalMatch("moreshow-"); // 内置主模组（Mods 目录随程序分发）
-			string mainSrcVer = (mainSrc != null) ? ExtractVersion(Path.GetFileName(mainSrc)) : "1.6.4";
-			List<string> clientMains = SafeFiles(modsDir).Where(delegate (string f)
+			string? siteMain = TryFetchFamilyFromSite(IsSiteMainJarName);
+			string? localMain = HighestLocalMatch("moreshow-");
+			string? mainSrc = PickNewer(siteMain, localMain);
+			if (mainSrc == null)
 			{
-				string fileName = Path.GetFileName(f);
-				return fileName.StartsWith("moreshow", StringComparison.OrdinalIgnoreCase)
-					&& !fileName.StartsWith("MoreShow_Extra", StringComparison.OrdinalIgnoreCase);
-			}).ToList();
-			// 先删：客户端里版本低于目标的旧主模组（含 .disabled 残留）
-			int removedOld = 0;
-			foreach (string old in clientMains.ToList())
-			{
-				string fn = Path.GetFileName(old);
-				if (fn.EndsWith(".disabled", StringComparison.OrdinalIgnoreCase)
-					|| CompareVersionKeys(VersionTokens(ExtractVersion(fn)), VersionTokens(mainSrcVer)) < 0)
-				{
-					if (SafeDelete(old))
-					{
-						removedOld++;
-					}
-					clientMains.Remove(old);
-				}
-			}
-			string mainMsg;
-			if (clientMains.Count > 0)
-			{
-				// 同族多版本并存时只保留最新一个，删除其余重复（Forge 同 modid 重复加载会冲突）
-				clientMains = clientMains
-					.OrderByDescending((string f) => VersionTokens(ExtractVersion(Path.GetFileName(f))), VersionKeyComparer.Instance)
-					.ToList();
-				string existing = clientMains[0];
-				foreach (string dup in clientMains.Skip(1))
-				{
-					if (SafeDelete(dup))
-					{
-						removedOld++;
-					}
-				}
-				if (mainSrc != null && string.Equals(Path.GetFileName(existing), Path.GetFileName(mainSrc), StringComparison.OrdinalIgnoreCase)
-					&& new FileInfo(existing).Length != new FileInfo(mainSrc).Length)
-				{
-					// 同版本但程序内置包内容已更新（如加图标/修补丁）：静默覆盖
-					File.Copy(mainSrc, Path.Combine(modsDir, Path.GetFileName(mainSrc)), overwrite: true);
-					injected = true;
-					mainMsg = "已更新主模组: " + Path.GetFileName(mainSrc) + "（内容刷新）";
-				}
-				else
-				{
-					mainMsg = "主模组已是 " + ExtractVersion(Path.GetFileName(existing)) + "，保留";
-				}
-			}
-			else if (mainSrc != null)
-			{
-				string dst = Path.Combine(modsDir, Path.GetFileName(mainSrc));
-				File.Copy(mainSrc, dst, overwrite: true);
-				injected = true;
-				mainMsg = "已注入主模组: " + Path.GetFileName(mainSrc);
+				failed = true;
+				parts.Add("主模组源缺失（程序 Mods 目录无 moreshow-*.jar，官网也未取到）");
 			}
 			else
 			{
-				failed = true;
-				mainMsg = "主模组源缺失（程序 Mods 目录无 moreshow-*.jar）";
+				var (removed, action, _) = EnsureFamilySingle(modsDir, InMainJarFamily, mainSrc, keepClientNewer: false);
+				injected |= action.StartsWith("已注入", StringComparison.Ordinal) || action.StartsWith("已更新", StringComparison.Ordinal);
+				parts.Add(action + (removed > 0 ? "，已清理同族文件 " + removed + " 个" : ""));
 			}
-			parts.Add((removedOld > 0 ? "已删除旧版更多显示 " + removedOld + " 个，" : "") + mainMsg);
 		}
 		catch (Exception ex)
 		{
@@ -332,41 +288,23 @@ public static class ModInjectService
 			LogHelper.LogError(ex, "[模组注入] 更多显示主模组处理失败");
 			parts.Add("主模组处理失败: " + ex.Message);
 		}
-		// —— 附属：官网最新优先（下载地址兜底），删客户端旧附属后注入 ——
+
+		// —— 附属 MoreShow_Extra-* ——
 		try
 		{
-			string siteLatest = TryGetLatestMoreShowFromSite();
-			string extraSrc = siteLatest ?? HighestLocalMatch("MoreShow_Extra");
-			if (extraSrc != null)
+			string? siteExtra = TryFetchFamilyFromSite(IsSiteExtraJarName);
+			string? localExtra = HighestLocalMatch("MoreShow_Extra");
+			string? extraSrc = PickNewer(siteExtra, localExtra);
+			if (extraSrc == null)
 			{
-				string extraName = Path.GetFileName(extraSrc);
-				string dst = Path.Combine(modsDir, extraName);
-				List<string> clientExtras = SafeFiles(modsDir).Where(delegate (string f)
-				{
-					string fileName = Path.GetFileName(f);
-					return fileName.StartsWith("MoreShow_Extra", StringComparison.OrdinalIgnoreCase)
-						&& !string.Equals(fileName, extraName, StringComparison.OrdinalIgnoreCase);
-				}).ToList();
-				int removed = 0;
-				foreach (string old in clientExtras)
-				{
-					if (SafeDelete(old))
-					{
-						removed++;
-					}
-				}
-				bool copiedExtra = false;
-				if (!File.Exists(dst) || new FileInfo(dst).Length != new FileInfo(extraSrc).Length)
-				{
-					File.Copy(extraSrc, dst, overwrite: true);
-					injected = true;
-					copiedExtra = true;
-				}
-				parts.Add((copiedExtra ? "附属已更新: " : "附属已就绪: ") + extraName + "（" + ((siteLatest != null) ? "官网最新" : "本地缓存") + "）" + (removed > 0 ? "，已删除旧附属 " + removed + " 个" : ""));
+				parts.Add("附属未获取到下载源（官网不可达且无本地缓存），保留现状");
 			}
 			else
 			{
-				parts.Add("附属未获取到下载源（官网不可达且无缓存），保留现状");
+				var (removed, action, _) = EnsureFamilySingle(modsDir, InExtraJarFamily, extraSrc, keepClientNewer: false);
+				injected |= action.StartsWith("已注入", StringComparison.Ordinal) || action.StartsWith("已更新", StringComparison.Ordinal);
+				string from = (siteExtra != null && string.Equals(Path.GetFileName(extraSrc), Path.GetFileName(siteExtra), StringComparison.OrdinalIgnoreCase)) ? "官网最新" : "本地缓存";
+				parts.Add("附属" + action + "（" + from + "）" + (removed > 0 ? "，已清理同族文件 " + removed + " 个" : ""));
 			}
 		}
 		catch (Exception ex)
@@ -374,106 +312,194 @@ public static class ModInjectService
 			LogHelper.LogError(ex, "[模组注入] 更多显示附属处理失败");
 			parts.Add("附属处理失败: " + ex.Message);
 		}
+
 		string text = string.Join("；", parts);
 		LogHelper.Log("[模组注入] [更多显示] " + text);
 		return (failed ? InjectResultKind.Failed : (injected ? InjectResultKind.Injected : InjectResultKind.AlreadyLatest), text);
 	}
 
-	// ---- MhyCPTD：先删客户端里低于源版本的旧版（MhyCPTD/CPTD/mhycptd 全家族），再注入最新 ----
+	// ---- MhyCPTD：族内只保留最新一个；客户端已存在更新版时不回退覆盖 ----
 
 	private static (InjectResultKind Kind, string Message) InjectCptd(string modsDir)
 	{
-		// 重新启用注入：清理 .disabled 残留
-		foreach (string item in SafeFiles(modsDir))
-		{
-			string fileName = Path.GetFileName(item);
-			if (fileName.ToLowerInvariant().Contains("cptd") && fileName.EndsWith(".disabled", StringComparison.OrdinalIgnoreCase))
-			{
-				SafeDelete(item);
-			}
-		}
-		string src = HighestLocalMatch("MhyCPTD-");
+		string? src = HighestLocalMatch("MhyCPTD-") ?? HighestLocalMatch("CPTD-");
 		if (src == null)
 		{
-			src = HighestLocalMatch("CPTD-");
-		}
-		if (src == null)
-		{
-			string[] family = SafeFiles(modsDir).Where((string f) => Path.GetFileName(f).ToLowerInvariant().Contains("cptd")).ToArray();
+			string[] family = SafeFiles(modsDir).Where(f => InCptdJarFamily(Path.GetFileName(f))).ToArray();
 			if (family.Length > 0)
 			{
 				return (InjectResultKind.AlreadyLatest, "未获取到 CPTD 更新源，保留现有模组: " + Path.GetFileName(family[0]));
 			}
 			return (InjectResultKind.Failed, "CPTD 模组源缺失（程序 Mods 目录无 MhyCPTD-*.jar）");
 		}
-		string srcName = Path.GetFileName(src);
-		string srcVer = ExtractVersion(srcName);
-		// 先删：客户端里版本 ≤ 源版本的旧版/同名重复（含 .disabled 残留）；比源版本新的保留且不覆盖
-		int removedOld = 0;
-		bool clientNewer = false;
-		List<string> keepNewer = new List<string>();
-		foreach (string item2 in SafeFiles(modsDir))
-		{
-			string fileName2 = Path.GetFileName(item2);
-			if (!fileName2.ToLowerInvariant().Contains("cptd"))
-			{
-				continue;
-			}
-			if (string.Equals(fileName2, srcName, StringComparison.OrdinalIgnoreCase))
-			{
-				continue;
-			}
-			int cmp = CompareVersionKeys(VersionTokens(ExtractVersion(fileName2)), VersionTokens(srcVer));
-			if (cmp > 0)
-			{
-				clientNewer = true;
-				keepNewer.Add(fileName2);
-				continue;
-			}
-			if (SafeDelete(item2))
-			{
-				removedOld++;
-			}
-		}
-		// 客户端里有多个更新版 CPTD 并存时只保留最新一个，删除其余重复（同 modid 冲突）
-		if (keepNewer.Count > 1)
-		{
-			keepNewer = keepNewer
-				.OrderByDescending((string n) => VersionTokens(ExtractVersion(n)), VersionKeyComparer.Instance)
-				.ToList();
-			foreach (string dupName in keepNewer.Skip(1))
-			{
-				string dupPath = SafeFiles(modsDir).FirstOrDefault((string f) => string.Equals(Path.GetFileName(f), dupName, StringComparison.OrdinalIgnoreCase));
-				if (dupPath != null && SafeDelete(dupPath))
-				{
-					removedOld++;
-				}
-			}
-			keepNewer = keepNewer.Take(1).ToList();
-		}
-		string dst2 = Path.Combine(modsDir, srcName);
-		bool copied = false;
-		if (!clientNewer && (!File.Exists(dst2) || new FileInfo(dst2).Length != new FileInfo(src).Length))
-		{
-			File.Copy(src, dst2, overwrite: true);
-			copied = true;
-		}
-		string text = (clientNewer ? "客户端已有更新版 CPTD（" + string.Join("、", keepNewer) + "），保留不覆盖" : (copied ? "已注入: " + srcName : "CPTD 已是最新: " + srcName)) + (removedOld > 0 ? "，已删除旧版 " + removedOld + " 个" : "");
-		LogHelper.Log("[模组注入] [CPTD] " + text);
-		return ((copied || clientNewer) ? InjectResultKind.Injected : InjectResultKind.AlreadyLatest, text);
-	}
-
-	// ---- 更多显示官网自动更新 ----
-
-	private static string? TryGetLatestMoreShowFromSite()
-	{
 		try
 		{
-			string text = Http.GetStringAsync(MoreShowDownloadPage).GetAwaiter().GetResult();
-			// (文件名, 完整下载地址)：href 可能是相对路径也可能是绝对链接，统一转绝对 URL 后用原 href 下载，
-			// 不再用「页面地址 + 文件名」拼接（官网目录结构与页面地址不同时会 404）
-			List<(string Name, string Url)> list = new List<(string, string)>();
-			foreach (Match item in Regex.Matches(text, "href=\"([^\"]+\\.jar)\"", RegexOptions.IgnoreCase))
+			var (removed, action, _) = EnsureFamilySingle(modsDir, InCptdJarFamily, src, keepClientNewer: true);
+			bool injected = action.StartsWith("已注入", StringComparison.Ordinal) || action.StartsWith("已更新", StringComparison.Ordinal);
+			string text = action + (removed > 0 ? "，已清理同族文件 " + removed + " 个" : "");
+			LogHelper.Log("[模组注入] [CPTD] " + text);
+			return (injected ? InjectResultKind.Injected : InjectResultKind.AlreadyLatest, text);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[模组注入] CPTD 注入失败");
+			return (InjectResultKind.Failed, "CPTD 注入失败: " + ex.Message);
+		}
+	}
+
+	// ---- 族内唯一化：同一 modid 只允许存在一个 jar（含防重复注入） ----
+
+	/// <summary>
+	/// 保证 modsDir 里「同族文件」只有一个，且内容与 source 一致。
+	/// 关键点：先按文件名忽略大小写判断是否已有同一份，再按长度确认内容；
+	/// 不一致就先把整族删干净再复制，复制后还会再兜底清一次同族残留 —— 这样即使用户客户端
+	/// 里已有同 modid 的旧包/重命名包/删除失败的包，也不会出现「两份同名模组一起加载」。
+	/// </summary>
+	/// <returns>(清理数量, 说明文本, 最终文件名)</returns>
+	private static (int Removed, string Action, string FinalName) EnsureFamilySingle(
+		string modsDir, Func<string, bool> inFamily, string sourcePath, bool keepClientNewer)
+	{
+		string srcName = Path.GetFileName(sourcePath);
+		string srcVer = ExtractVersion(srcName);
+		long srcLen = new FileInfo(sourcePath).Length;
+		List<string> files = SafeFiles(modsDir)
+			.Where(f => inFamily(Path.GetFileName(f)))
+			.OrderByDescending(f => VersionTokens(ExtractVersion(Path.GetFileName(f))), VersionKeyComparer.Instance)
+			.ToList();
+		int removed = 0;
+
+		// 客户端里已有更高版本：保留它（CPTD 专用策略，避免把用户更新的版本降级）
+		if (keepClientNewer && files.Count > 0)
+		{
+			string best = files[0];
+			if (CompareVersionKeys(VersionTokens(ExtractVersion(Path.GetFileName(best))), VersionTokens(srcVer)) > 0)
+			{
+				foreach (string dup in files.Skip(1))
+				{
+					if (SafeDelete(dup))
+					{
+						removed++;
+					}
+				}
+				return (removed, "客户端已有更新版 " + Path.GetFileName(best) + "，保留不覆盖", Path.GetFileName(best));
+			}
+		}
+
+		string? same = files.FirstOrDefault(f => string.Equals(Path.GetFileName(f), srcName, StringComparison.OrdinalIgnoreCase));
+		bool sameContent = same != null && new FileInfo(same).Length == srcLen;
+
+		if (!sameContent)
+		{
+			// 先清空同族（含 .disabled、重命名副本、旧版本）
+			foreach (string old in files)
+			{
+				if (SafeDelete(old))
+				{
+					removed++;
+				}
+			}
+			string dst = Path.Combine(modsDir, srcName);
+			File.Copy(sourcePath, dst, overwrite: true);
+			// 兜底：删除失败的文件可能还留着，复制后再清一遍同族（排除目标文件本身）
+			foreach (string leftover in SafeFiles(modsDir).Where(f =>
+				inFamily(Path.GetFileName(f))
+				&& !string.Equals(Path.GetFileName(f), srcName, StringComparison.OrdinalIgnoreCase)).ToList())
+			{
+				if (SafeDelete(leftover))
+				{
+					removed++;
+				}
+			}
+			return (removed, (files.Count > 0 ? "已更新为 " : "已注入 ") + srcName, srcName);
+		}
+
+		// 目标文件已存在且内容一致：只清理同族其它文件（这就是「客户端里已有相同模组」的正解）
+		foreach (string dup2 in files.Where(f => !string.Equals(Path.GetFileName(f), srcName, StringComparison.OrdinalIgnoreCase)))
+		{
+			if (SafeDelete(dup2))
+			{
+				removed++;
+			}
+		}
+		return (removed, srcName + " 已就绪", srcName);
+	}
+
+	private static bool InMainJarFamily(string fileName)
+	{
+		return fileName.StartsWith("moreshow", StringComparison.OrdinalIgnoreCase)
+			&& !fileName.StartsWith("MoreShow_Extra", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static bool InExtraJarFamily(string fileName)
+	{
+		return fileName.StartsWith("MoreShow_Extra", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static bool InCptdJarFamily(string fileName)
+	{
+		return fileName.ToLowerInvariant().Contains("cptd");
+	}
+
+	private static bool IsSiteMainJarName(string fileName)
+	{
+		return fileName.EndsWith(".jar", StringComparison.OrdinalIgnoreCase) && InMainJarFamily(fileName);
+	}
+
+	private static bool IsSiteExtraJarName(string fileName)
+	{
+		return fileName.EndsWith(".jar", StringComparison.OrdinalIgnoreCase) && InExtraJarFamily(fileName);
+	}
+
+	/// <summary>两个候选源里取版本更高的那个（任一方为空则取另一方）。</summary>
+	private static string? PickNewer(string? a, string? b)
+	{
+		if (a == null)
+		{
+			return b;
+		}
+		if (b == null)
+		{
+			return a;
+		}
+		int num = CompareVersionKeys(
+			VersionTokens(ExtractVersion(Path.GetFileName(a))),
+			VersionTokens(ExtractVersion(Path.GetFileName(b))));
+		return (num >= 0) ? a : b;
+	}
+
+	// ---- 官网自动更新 ----
+
+	/// <summary>官网目录页的 jar 清单（一次注入会处理多个客户端，10 分钟内复用同一份）。</summary>
+	private static readonly object SiteLock = new object();
+
+	private static List<(string Name, string Url)> _siteJars;
+
+	private static DateTime _siteJarsAt = DateTime.MinValue;
+
+	private static readonly TimeSpan SiteCacheTtl = TimeSpan.FromMinutes(10);
+
+	private static List<(string Name, string Url)> GetSiteJars(bool forceRefresh = false)
+	{
+		lock (SiteLock)
+		{
+			if (!forceRefresh && _siteJars != null && DateTime.UtcNow - _siteJarsAt < SiteCacheTtl)
+			{
+				return _siteJars;
+			}
+			List<(string Name, string Url)> list = new List<(string Name, string Url)>();
+			string html = DownloadStringWithRetry(MoreShowDownloadPage);
+			if (html == null)
+			{
+				// 拉页面失败时保留上次结果，避免把已知可用的缓存冲掉
+				if (_siteJars != null)
+				{
+					return _siteJars;
+				}
+				_siteJars = list;
+				_siteJarsAt = DateTime.UtcNow;
+				return list;
+			}
+			foreach (Match item in Regex.Matches(html, "href=\"([^\"]+\\.jar)\"", RegexOptions.IgnoreCase))
 			{
 				string raw = Uri.UnescapeDataString(item.Groups[1].Value);
 				string abs;
@@ -491,66 +517,119 @@ public static class ModInjectService
 				{
 					name = name.Substring(num + 1);
 				}
-				if (name.StartsWith("MoreShow_Extra", StringComparison.OrdinalIgnoreCase) && name.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
+				if (name.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
 				{
 					list.Add((name, abs));
 				}
 			}
+			_siteJars = list;
+			_siteJarsAt = DateTime.UtcNow;
 			if (list.Count == 0)
 			{
-				LogHelper.Log("[模组注入] 官网未解析到 MoreShow_Extra jar");
+				LogHelper.Log("[模组注入] 官网页面未解析到任何 jar 链接: " + MoreShowDownloadPage);
+			}
+			else
+			{
+				LogHelper.Log("[模组注入] 官网清单: " + string.Join("、", list.Select(x => x.Name)));
+			}
+			return list;
+		}
+	}
+
+	/// <summary>网页抓取带 3 次重试（先失败常见于网络抖动/官网慢，单次失败就放弃会让用户以为「拉不到」）。</summary>
+	private static string DownloadStringWithRetry(string url)
+	{
+		for (int attempt = 1; attempt <= 3; attempt++)
+		{
+			try
+			{
+				return Http.GetStringAsync(url).GetAwaiter().GetResult();
+			}
+			catch (Exception ex)
+			{
+				if (attempt >= 3)
+				{
+					LogHelper.Log("[模组注入] 官网页面拉取失败（已重试 " + attempt + " 次）: " + ex.GetType().Name + ": " + ex.Message);
+					return null;
+				}
+				Thread.Sleep(350 * attempt);
+			}
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// 从官网清单里挑出某族（主模组 / 附属）的最新版，下载到程序 Mods 目录后返回本地路径。
+	/// 已缓存且文件非空则直接复用；下载走 .tmp 再改名，失败会清理临时文件。
+	/// </summary>
+	private static string? TryFetchFamilyFromSite(Func<string, bool> isSiteJarName)
+	{
+		string tmp = null;
+		try
+		{
+			List<(string Name, string Url)> jars = GetSiteJars();
+			if (jars.Count == 0)
+			{
 				return null;
 			}
-			(string text3, string downloadUrl) = list
-				.OrderByDescending((ValueTuple<string, string> n) => VersionTokens(ExtractVersion(n.Item1)), VersionKeyComparer.Instance)
-				.ThenBy((ValueTuple<string, string> n) => n.Item1.Length)
-				.First();
-			string text4 = Path.Combine(ModsDirectory(), text3);
-			if (!File.Exists(text4) || new FileInfo(text4).Length == 0)
+			var best = jars
+				.Where(j => isSiteJarName(j.Name))
+				.OrderByDescending(j => VersionTokens(ExtractVersion(j.Name)), VersionKeyComparer.Instance)
+				.ThenBy(j => j.Name.Length)
+				.FirstOrDefault();
+			if (string.IsNullOrEmpty(best.Name))
 			{
-				Directory.CreateDirectory(ModsDirectory());
-				string text5 = text4 + ".tmp";
-				using (var response = Http.GetAsync(downloadUrl).GetAwaiter().GetResult())
+				return null;
+			}
+			string dir = ModsDirectory();
+			Directory.CreateDirectory(dir);
+			string local = Path.Combine(dir, best.Name);
+			if (File.Exists(local) && new FileInfo(local).Length > 0)
+			{
+				return local;
+			}
+			tmp = local + ".tmp";
+			using (var response = Http.GetAsync(best.Url).GetAwaiter().GetResult())
+			{
+				if (!response.IsSuccessStatusCode)
 				{
-					if (!response.IsSuccessStatusCode)
-					{
-						LogHelper.Log("[模组注入] 官网下载失败 HTTP " + (int)response.StatusCode + ": " + downloadUrl);
-						return null;
-					}
-					using FileStream destination = new FileStream(text5, FileMode.Create);
-					response.Content.CopyToAsync(destination).GetAwaiter().GetResult();
+					LogHelper.Log("[模组注入] 官网下载失败 HTTP " + (int)response.StatusCode + ": " + best.Url);
+					return null;
 				}
-				File.Move(text5, text4, overwrite: true);
-				LogHelper.Log("[模组注入] 已从官网下载最新: " + text3 + "（" + downloadUrl + "）");
-				string[] array = SafeFiles(ModsDirectory());
-				foreach (string text6 in array)
+				using FileStream destination = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None);
+				response.Content.CopyToAsync(destination).GetAwaiter().GetResult();
+			}
+			if (!File.Exists(tmp) || new FileInfo(tmp).Length == 0)
+			{
+				LogHelper.Log("[模组注入] 官网下载内容为空: " + best.Url);
+				return null;
+			}
+			File.Move(tmp, local, overwrite: true);
+			tmp = null;
+			LogHelper.Log("[模组注入] 已从官网下载最新: " + best.Name + "（" + (new FileInfo(local).Length / 1024) + " KB）");
+			// 清掉程序 Mods 目录里同族的其它缓存包，避免下次选源选到旧包
+			foreach (string other in SafeFiles(dir))
+			{
+				string fn = Path.GetFileName(other);
+				if (isSiteJarName(fn) && !string.Equals(fn, best.Name, StringComparison.OrdinalIgnoreCase))
 				{
-					string fileName = Path.GetFileName(text6);
-					if (fileName.StartsWith("MoreShow_Extra", StringComparison.OrdinalIgnoreCase) && fileName.EndsWith(".jar", StringComparison.OrdinalIgnoreCase) && !string.Equals(fileName, text3, StringComparison.OrdinalIgnoreCase))
-					{
-						SafeDelete(text6);
-					}
+					SafeDelete(other);
 				}
 			}
-			return text4;
+			return local;
 		}
 		catch (Exception ex)
 		{
-			LogHelper.Log("[模组注入] 官网获取最新 MoreShow_Extra 失败（回退本地缓存/内置包）: " + ex.GetType().Name + ": " + ex.Message);
+			if (tmp != null)
+			{
+				SafeDelete(tmp);
+			}
+			LogHelper.Log("[模组注入] 官网获取最新包失败（回退本地缓存/内置包）: " + ex.GetType().Name + ": " + ex.Message);
 			return null;
 		}
 	}
 
 	// ---- 本地解析与工具 ----
-
-	private static string[] FamilyFiles(string modsDir, ModInjectRule rule)
-	{
-		return SafeFiles(modsDir).Where((string f) =>
-		{
-			string fileName = Path.GetFileName(f);
-			return !string.IsNullOrWhiteSpace(rule.Family) && fileName.ToLowerInvariant().Contains(rule.Family);
-		}).ToArray();
-	}
 
 	private static string? HighestLocalMatch(string prefix)
 	{

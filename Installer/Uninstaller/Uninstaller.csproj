@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    卸载器：由安装包在安装时释放到安装目录（uninstall.exe）。
+    刻意做成「框架依赖 + 单文件」：体积只有几百 KB。
+    因为本程序运行的前提就是机器上已有 .NET 8 桌面运行时，
+    卸载时它必然存在，不需要再自包含一份运行时。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>uninstall</AssemblyName>
+    <RootNamespace>MhyUnBoxSetup.Uninstaller</RootNamespace>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ApplicationIcon>..\..\Assets\app.ico</ApplicationIcon>
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+    <DebugType>none</DebugType>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    MhyUnBox 安装包（不是程序本体）。
+    设计要点：
+    1. 自包含 + 单文件：机器上没有 .NET 也能先把安装器跑起来，
+       之后由它去下载 / 安装 .NET 8 桌面运行时（程序本体是框架依赖的）。
+    2. 内嵌 payload.zip（程序本体打包）：断网也能装上主体，只有运行时需要联网。
+    3. 内嵌 uninstaller.bin（几百 KB 的框架依赖卸载器），安装时释放成 uninstall.exe。
+    4. asInvoker：默认装到 %LOCALAPPDATA%\Programs\MhyUnBox（免 UAC）。
+       仅在确实需要装 .NET 运行时那一步单独提权（UAC 只会弹一次）。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>MhyUnBoxSetup</AssemblyName>
+    <RootNamespace>MhyUnBoxSetup</RootNamespace>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ApplicationIcon>..\Assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+    <Version>8.3.0</Version>
+    <FileVersion>8.3.0.0</FileVersion>
+    <AssemblyVersion>8.3.0.0</AssemblyVersion>
+    <Product>MhyUnBox</Product>
+    <Company>Notel</Company>
+    <Copyright>Copyright © Notel</Copyright>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <!-- 发布参数（dotnet publish 时生效；build 也可用） -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Uninstaller/ 是独立工程（有自己的 csproj/obj），默认通配会把它的源码和生成文件吸进来 -->
+    <Compile Remove="Uninstaller\**\*.cs" />
+    <Compile Remove="artifacts\**\*.cs" />
+    <Compile Remove="dist\**\*.cs" />
+    <None Remove="Uninstaller\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 程序本体（安装前由 build.ps1 用当前 Release 输出打成 zip） -->
+    <EmbeddedResource Include="payload.zip" LogicalName="payload.zip" Condition="Exists('payload.zip')" />
+    <!-- 卸载器单文件 exe，安装时释放为 uninstall.exe -->
+    <EmbeddedResource Include="uninstaller.bin" LogicalName="uninstaller.bin" Condition="Exists('uninstaller.bin')" />
+  </ItemGroup>
+</Project>

@@ -27,3 +27,7 @@ secure/
 MhyunBox.deps.json
 MhyunBox.runtimeconfig.json
 workloads*.json
+
+# 安装包构建产物（自包含单文件体积约 100MB，不入库；用 Installer/build.ps1 现场生成）
+Installer/dist/
+Installer/artifacts/
