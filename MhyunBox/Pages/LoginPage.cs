@@ -26,15 +26,16 @@ public sealed partial class LoginPage : Page
 
 	private readonly Microsoft.UI.Dispatching.DispatcherQueue _queue;
 
+	/// <summary>「验证并绑定」按钮右侧的就地状态文字（黑底主题下 Toast 会被页面埋掉）。</summary>
+	private const string VerifyHintDefault = "Enter 可下一行与确认";
+
+	private TextBlock? _verifyStatusText;
+
+	private Microsoft.UI.Dispatching.DispatcherQueueTimer? _verifyStatusTimer;
+
 	private bool _smsCodeSent;
 
 	private bool _busy;
-
-	private Border? RiskBannerBorder;
-
-	private TextBlock? RiskBannerText;
-
-	private Microsoft.UI.Dispatching.DispatcherQueueTimer? _riskTimer;
 
 	private StackPanel LoginRoot;
 
@@ -193,11 +194,38 @@ public sealed partial class LoginPage : Page
 
 	private void ShowInfo(string message, bool ok, string? title = null)
 	{
-		// 绑定成功/失败改用顶部 Toast 提示（绿=成功、红=失败），不再用底部 InfoBar
 		_ = title;
 		_queue.TryEnqueue(delegate
 		{
-			MainWindow.Instance?.ShowToast(message, ok);
+			// 黑底主题的 ContentCard 是不透明纯黑，顶层 Toast 仍会被页面内容埋掉。
+			// 状态直接写在「验证并绑定」按钮右侧，任何主题下都看得见。
+			if (_verifyStatusText == null)
+			{
+				MainWindow.Instance?.ShowToast(message, ok);
+				return;
+			}
+			_verifyStatusText.Text = message;
+			_verifyStatusText.Opacity = 1.0;
+			_verifyStatusText.Foreground = new SolidColorBrush(ok
+				? Windows.UI.Color.FromArgb(255, 60, 179, 113)
+				: Windows.UI.Color.FromArgb(255, 255, 99, 71));
+			if ((object)_verifyStatusTimer == null)
+			{
+				_verifyStatusTimer = _queue.CreateTimer();
+				_verifyStatusTimer.Interval = TimeSpan.FromSeconds(6.0);
+				_verifyStatusTimer.Tick += delegate
+				{
+					_verifyStatusTimer?.Stop();
+					if (_verifyStatusText != null)
+					{
+						_verifyStatusText.Text = VerifyHintDefault;
+						_verifyStatusText.ClearValue(TextBlock.ForegroundProperty);
+						_verifyStatusText.Opacity = 0.7;
+					}
+				};
+			}
+			_verifyStatusTimer.Stop();
+			_verifyStatusTimer.Start();
 		});
 	}
 
@@ -492,14 +520,16 @@ public sealed partial class LoginPage : Page
 		};
 		stackPanel5.Children.Add(VerifyButton);
 		stackPanel5.Children.Add(BusyRing);
-		stackPanel5.Children.Add(new TextBlock
+		_verifyStatusText = new TextBlock
 		{
-			Text = "Enter 可下一行与确认",
+			Text = VerifyHintDefault,
 			VerticalAlignment = VerticalAlignment.Center,
 			FontSize = 12.0,
 			Opacity = 0.7,
-			TextWrapping = TextWrapping.Wrap
-		});
+			TextWrapping = TextWrapping.Wrap,
+			MaxWidth = 460.0
+		};
+		stackPanel5.Children.Add(_verifyStatusText);
 		stackPanel.Children.Add(stackPanel5);
 		border.Child = stackPanel;
 		return border;
@@ -592,30 +622,7 @@ public sealed partial class LoginPage : Page
 			LogHelper.DebugError(exMode, "[账号绑定] 代理模式切换构建失败");
 		}
 		// 自动登录的保活机制已内置（账密每 6 小时重登一次），不再提供单独开关与长说明文案。
-		// 网易 IP 风控标记倒计时横幅（纯信息展示，不设请求门槛；触发时出现，登录成功自动消失）
-		RiskBannerBorder = new Border
-		{
-			Background = new SolidColorBrush(Color.FromArgb(230, 120, 53, 15)),
-			CornerRadius = new CornerRadius(6.0),
-			Padding = new Thickness(10.0, 6.0, 10.0, 6.0),
-			Visibility = Visibility.Collapsed
-		};
-		RiskBannerText = new TextBlock
-		{
-			FontSize = 12.0,
-			TextWrapping = TextWrapping.Wrap,
-			Foreground = new SolidColorBrush(Colors.White)
-		};
-		RiskBannerBorder.Child = RiskBannerText;
-		stackPanel.Children.Add(RiskBannerBorder);
-		RiskNotice.Changed += OnRiskNoticeChanged;
-		_riskTimer = _queue.CreateTimer();
-		_riskTimer.Interval = TimeSpan.FromSeconds(1.0);
-		_riskTimer.Tick += delegate
-		{
-			UpdateRiskBanner();
-		};
-		_riskTimer.Start();
+		// 风控提醒横幅与冷静期已移除（2026-11-11）：登录环境异常问题不复存在，程序不设自设门槛。
 		SessionListPanel = new StackPanel
 		{
 			Spacing = 8.0
@@ -1045,7 +1052,7 @@ public sealed partial class LoginPage : Page
 						LogHelper.Log("[账号存储] 已保存 " + storeChannel + " 账密（本地加密，用于自动账密重登）: " + AccountStore.Mask(account));
 					}
 				}
-				ShowInfo(item, ok: true);
+				ShowInfo("登录成功 · " + item, ok: true);
 				RefreshAccountList();
 				PasswordBox.Password = "";
 				AccountBox.Text = "";
@@ -1236,30 +1243,6 @@ public sealed partial class LoginPage : Page
 		{
 			SessionListPanel.Children.Add(BuildAccountRow(item));
 		}
-	}
-
-	private void OnRiskNoticeChanged()
-	{
-		_queue.TryEnqueue(delegate
-		{
-			UpdateRiskBanner();
-		});
-	}
-
-	private void UpdateRiskBanner()
-	{
-		if (RiskBannerBorder == null || RiskBannerText == null)
-		{
-			return;
-		}
-		string? text = RiskNotice.BannerText();
-		if (text == null)
-		{
-			RiskBannerBorder.Visibility = Visibility.Collapsed;
-			return;
-		}
-		RiskBannerText.Text = text;
-		RiskBannerBorder.Visibility = Visibility.Visible;
 	}
 
 	/// <summary>

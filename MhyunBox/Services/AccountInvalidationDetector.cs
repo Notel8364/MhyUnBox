@@ -50,12 +50,6 @@ public static class AccountInvalidationDetector
 		{
 			return;
 		}
-		// 风控冷静期：任何自动兜底都不发请求，避免把 IP 级标记越刷越深。
-		if (RiskNotice.ShouldBlockAutomaticRequests)
-		{
-			LogHelper.Log($"[账号检测] 处于网易风控冷静期（剩余 {RiskNotice.Remaining.TotalMinutes:F0} 分钟），跳过自动兜底重登：{nick}/{acc}");
-			return;
-		}
 		// 官方启动器运行时不安排任何兜底重登，避免把它的同账号会话顶掉。
 		if (GameProcessDetector.IsOfficialLauncherRunning())
 		{
@@ -101,11 +95,6 @@ public static class AccountInvalidationDetector
 
 	private static async Task TryAutoReloginAsync(Info info)
 	{
-		// 二次确认：排队期间可能刚进入冷静期。
-		if (RiskNotice.ShouldBlockAutomaticRequests)
-		{
-			return;
-		}
 		try
 		{
 			bool ok = await AccountAutoLoginService.EnsureLoginForAsync(info.Channel, info.Account).ConfigureAwait(continueOnCapturedContext: false);

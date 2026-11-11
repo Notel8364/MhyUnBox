@@ -508,7 +508,7 @@ public static class Auth404Client
 	private const string SessionStoreName = "auth404_session";
 
 	// 兼容：历史版本曾把 token 明文写到 json，读取时回退一次并在迁移后删除明文文件
-	public static string SessionFilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MhyunBox", "auth404_session.json");
+	public static string SessionFilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MhyUnBox", "auth404_session.json");
 
 	public static void SaveSession(string token, string username)
 	{

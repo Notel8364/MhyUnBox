@@ -31,7 +31,7 @@ public static class ModInjectService
 	{
 		try
 		{
-			Http.DefaultRequestHeaders.UserAgent.ParseAdd("MhyunBox/6.8");
+			Http.DefaultRequestHeaders.UserAgent.ParseAdd("MhyUnBox/6.8");
 		}
 		catch
 		{

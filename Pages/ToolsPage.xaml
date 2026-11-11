@@ -70,9 +70,9 @@
                                     <Border.Child>
                                         <StackPanel Spacing="10">
                                             <StackPanel.Children>
-                                                <TextBlock Text="电脑布防 (MhyunBox)" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <TextBlock Text="电脑布防 (MhyUnBox)" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
                                                 <TextBlock Text="部署蜜罐诱饵文件（假账号密码文件）并监控「防护被篡改」：木马翻找窃密文件、给 Defender 添加排除项、关闭实时保护、劫持杀软进程（IFEO）、写 DisallowRun、改 hosts 屏蔽杀软更新、篡改系统 DLL 等行为都会触发告警。布防自动恢复诱饵并启动银狐扫描（含特征库样本比对、系统 DLL 签名/注入检测），确认可疑项后经二次确认才运行内置威胁清理。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
-                                                <TextBlock Text="开始布防会同时注册「守护计划任务」：即使 MhyunBox 程序没有运行，也每 30 分钟自动检查蜜罐完整性、防护篡改、特征库样本与系统 DLL 签名，发现异常自动联动扫描并把告警写入日志，下次打开程序时自动展示。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                                <TextBlock Text="开始布防会同时注册「守护计划任务」：即使 MhyUnBox 程序没有运行，也每 30 分钟自动检查蜜罐完整性、防护篡改、特征库样本与系统 DLL 签名，发现异常自动联动扫描并把告警写入日志，下次打开程序时自动展示。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
                                                 <TextBlock
                                                     Text="如有防护需求，建议尽量安装并使用主流防护软件（360/火绒/卡巴斯基等），并保持实时防护开启——先有防护，木马才没有机会注入。"
                                                     FontSize="12"
@@ -109,7 +109,7 @@
                                                 <TextBlock x:Name="MiningIsolationStatusText" Text="正在读取挖矿断网防护状态..." FontSize="12" Opacity="0.75" TextWrapping="Wrap" />
                                                 <TextBlock Text="「挖矿断网防护」不再按矿池 IP 封禁（木马换 IP 就绕过），改为「默认阻断全部出站 + 白名单放行」：开启后本机仅白名单内的服务/程序能联网，木马无论换到哪个矿池 IP 都连不上。白名单文件位于 KillTools\断网白名单.txt（service:/program:/port: 三种格式），开启前请先把你常用的软件（浏览器、游戏等）以 program: 形式加进去，否则它们也无法联网。Windows 更新与 Defender 已默认放行。" FontSize="12" Opacity="0.6" TextWrapping="Wrap" />
                                                 <TextBlock x:Name="DefenseStatusText" Text="尚未部署蜜罐文件，点击「部署/重建蜜罐诱饵」开始布防。" FontSize="12" Opacity="0.75" TextWrapping="Wrap" />
-                                                <TextBlock Text="防护原理对照（参考安全厂商公开资料）：主流防护软件的核心功能 = 文件/蜜罐监控、进程与启动项监控、注册表与 IFEO 监控、行为拦截、云端查杀。MhyunBox 布防对应实现了蜜罐诱饵、防护篡改监控、特征库样本比对与系统 DLL 签名/注入检测（样本库在 KillTools\特征库.txt，可自行增补特征）。这些手段能生效的前提是「提前布好防」：一旦木马先跑起来而电脑没有任何防护，它就可能把代码注入进删不掉、关不掉的系统 DLL——先装好主流防护软件再操作，才是最稳妥的做法。" FontSize="12" Opacity="0.6" TextWrapping="Wrap" />
+                                                <TextBlock Text="防护原理对照（参考安全厂商公开资料）：主流防护软件的核心功能 = 文件/蜜罐监控、进程与启动项监控、注册表与 IFEO 监控、行为拦截、云端查杀。MhyUnBox 布防对应实现了蜜罐诱饵、防护篡改监控、特征库样本比对与系统 DLL 签名/注入检测（样本库在 KillTools\特征库.txt，可自行增补特征）。这些手段能生效的前提是「提前布好防」：一旦木马先跑起来而电脑没有任何防护，它就可能把代码注入进删不掉、关不掉的系统 DLL——先装好主流防护软件再操作，才是最稳妥的做法。" FontSize="12" Opacity="0.6" TextWrapping="Wrap" />
                                                 <TextBlock Text="布防实时日志：" FontSize="12" FontWeight="SemiBold" Opacity="0.8" />
                                                 <ScrollViewer x:Name="DefenseLogScroll" Height="150" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                                                     <ScrollViewer.Content>
@@ -145,7 +145,7 @@
                                     <Border.Child>
                                         <StackPanel Spacing="10">
                                             <StackPanel.Children>
-                                                <TextBlock Text="恶意木马与威胁清理 (MhyunBox)" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
+                                                <TextBlock Text="恶意木马与威胁清理 (MhyUnBox)" FontSize="13" FontWeight="SemiBold" Opacity="0.8" />
                                                 <TextBlock Text="银狐木马会隐藏进程、劫持启动项并禁用杀毒软件。内置火绒恶性木马专杀工具与银狐综合威胁清理脚本（一键扫描并清理，实时日志）。" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
                                                 <TextBlock
                                                     Text="静默运行说明：扫描与清理默认在后台静默执行、不会弹出命令行窗口，过程与结果实时显示在下方日志；「威胁清理（扫描+清理）」需要管理员权限时只会弹出一次 UAC 授权框（属正常提示）。"

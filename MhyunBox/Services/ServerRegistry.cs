@@ -9,7 +9,7 @@ internal class ServerRegistry
 {
 	public Dictionary<long, ServerEntry> Entries { get; set; } = new Dictionary<long, ServerEntry>();
 
-	private static string Path { get; } = System.IO.Path.Combine(AppContext.BaseDirectory, "MhyunBox_Logs", "server_registry.json");
+	private static string Path { get; } = System.IO.Path.Combine(AppContext.BaseDirectory, "MhyUnBox_Logs", "server_registry.json");
 
 	public static ServerRegistry Load()
 	{

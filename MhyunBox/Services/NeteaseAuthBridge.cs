@@ -322,11 +322,11 @@ public sealed class NeteaseAuthBridge
 				//（join type= 拒绝码在游戏端即渲染为「验证失败: Auth fail」）。盐/版本家族的错误已在
 				// JoinServerAsync 内部自愈（刷盐+版本梯子+盐值源轮换），走到这里多为会话被踢/过期。
 				string yggMsg = yggdrasilResult.Message ?? "";
-				// join 阶段也可能直接返回 login abnormally（例如会话刚被风控标记）。
+				// join 阶段的拒绝只做记录，不再进入冷静期/暂停自动链路（2026-11-11）。
 				if (IsRiskControlMessage(yggMsg))
 				{
-					LastFailReason = "网易登录环境异常（风控拦截）：" + yggMsg + "。已进入 " + RiskNotice.RecoveryMinutes + " 分钟冷静期，期间暂停自动登录与保活，请勿频繁重试";
-					LogHelper.Force($"[认证] 账号「{account.Nickname}」join 阶段网易登录环境异常（{yggMsg}），仅记录并进入冷静期");
+					LastFailReason = "登录被拒绝：" + yggMsg + "（仅记录，不设冷静期）";
+					LogHelper.Force($"[认证] 账号「{account.Nickname}」join 阶段被拒绝（{yggMsg}），仅记录");
 					AccountAutoLoginService.ReportRiskControl(account.Channel, account.Account, yggMsg);
 					return false;
 				}

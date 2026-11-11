@@ -911,7 +911,7 @@ public sealed partial class ToolsPage : Page
 		}
 		if (await new ContentDialog
 		{
-			Title = "下一代威胁扫描 (MhyunBox)",
+			Title = "下一代威胁扫描 (MhyUnBox)",
 			Content = "将执行下一代威胁扫描（仅检测，不修改系统）：\n1. LOLBins 滥用（powershell/mshta/rundll32/certutil 等被木马拿来用的合法程序）\n2. 进程伪装与异常亲缘（svchost 不在 System32、Office 拉起 powershell 等）\n3. WMI 持久化订阅、计划任务隐藏载荷、可疑启动项\n4. BYOVD 恶意驱动（带漏洞的第三方驱动被用来打穿内核防护）\n5. 系统 DLL 签名/注入、启动配置（bcdedit）与 hosts/DNS 劫持\n\n需要管理员权限（将弹出 UAC 授权）。是否继续？",
 			PrimaryButtonText = "开始扫描",
 			CloseButtonText = "取消",
@@ -979,7 +979,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "开启异常命令监控 (MhyunBox)",
+			Title = "开启异常命令监控 (MhyUnBox)",
 			Content = "将注册开机自启的「命令守卫」计划任务（隐藏后台运行）：\n1. 实时监控全系统的进程创建与命令行\n2. 发现危险指令（加密/编码的 powershell、mshta 远程脚本、杀软对抗、删除卷影副本、高危 LOLBins 等）立即击杀进程树、隔离样本、防火墙阻断出网\n3. 同时弹出置顶警示对话框，需要你确认\n\n需要管理员权限（UAC）。监控日志会写入本机日志目录，可在「布防日志」查看告警。",
 			PrimaryButtonText = "开启监控",
 			CloseButtonText = "取消",
@@ -994,7 +994,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "关闭异常命令监控 (MhyunBox)",
+			Title = "关闭异常命令监控 (MhyUnBox)",
 			Content = "将注销「命令守卫」计划任务并停止已在运行的监控进程。\n\n确定关闭吗？",
 			PrimaryButtonText = "关闭监控",
 			CloseButtonText = "取消",
@@ -1047,7 +1047,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "🚨 一键应急止血 (MhyunBox)",
+			Title = "🚨 一键应急止血 (MhyUnBox)",
 			Content = "用于「已经中毒 / 木马正在运行 / 被入侵」的紧急场景，将立即执行：\n1. 防火墙阻断全部出站与入站（断网止血，阻止外联回传与横向扩散）\n2. 强杀全部可疑进程（随机名 / 伪装系统进程 / 诱导名 / 编码命令等），并隔离样本\n3. 冻结可疑自启动项与计划任务（之后可一键恢复）\n4. 挂载系统守护进程，防止桌面与关键服务被木马连带打崩导致系统崩溃\n\n安全说明：系统关键进程、微软签名文件、杀毒软件进程均有白名单保护，不会误杀；未安装任何杀毒软件的电脑同样可用。\n应急结束后请点「应急恢复」还原网络。需要管理员权限（UAC）。",
 			PrimaryButtonText = "立即止血",
 			CloseButtonText = "取消",
@@ -1063,7 +1063,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "应急响应 - 标准 (MhyunBox)",
+			Title = "应急响应 - 标准 (MhyUnBox)",
 			Content = "在「一键止血」（断网 + 强杀 + 冻结自启动）之后追加：\n1. 全项下一代威胁扫描（LOLBins / 进程伪装 / WMI 订阅 / 计划任务 / 启动项 / BYOVD 驱动 / hosts 劫持）\n2. 若系统自带 Windows 安全中心可用，同时触发 Defender 快速扫描\n\n适合：怀疑中毒但不确定根因，想一次性查干净的场景。需要管理员权限（UAC）。",
 			PrimaryButtonText = "开始应急",
 			CloseButtonText = "取消",
@@ -1079,7 +1079,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "应急响应 - 深度 (MhyunBox)",
+			Title = "应急响应 - 深度 (MhyUnBox)",
 			Content = "在「标准」全部内容之外追加：\n1. 常见病毒投放目录（Temp / AppData / Public / Downloads / 桌面等）全枚举，列出所有未签名可执行与脚本\n2. 引导层检查（bcdedit 测试模式 / 关闭完整性检查）\n3. 取证信息打包：进程列表 / 网络连接 / 服务 / 启动项 / 计划任务，导出到\n   %LOCALAPPDATA%\\MhyunBox\\Incident_时间戳\\\n\n耗时较长（数分钟），适合感染严重、需要留痕排查的场景。需要管理员权限（UAC）。",
 			PrimaryButtonText = "开始深度应急",
 			CloseButtonText = "取消",
@@ -1095,7 +1095,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "应急恢复 (MhyunBox)",
+			Title = "应急恢复 (MhyUnBox)",
 			Content = "将还原应急响应期间的改动：\n1. 删除应急防火墙阻断规则，恢复原始出站/入站策略（恢复上网）\n2. 解冻被冻结的自启动项\n3. 停止后台系统守护进程\n\n注意：被强杀和隔离的样本不会自动恢复（这是有意为之，避免病毒复活）。确定恢复吗？",
 			PrimaryButtonText = "恢复",
 			CloseButtonText = "取消",
@@ -1225,7 +1225,7 @@ public sealed partial class ToolsPage : Page
 
 	// 给代码后置动态卡片按当前主题统一配色（背景/描边 + 卡片内文本前景）。
 	// 关键：绝不能用 TextElement.ForegroundProperty 给 Border 设前景——那是 TextElement 拥有的附加属性，
-	// 在 Border 上走原生 ABI SetValue 会触发 AccessViolation 直接崩进程（MhyunBox 打开工具页闪退的根因）。
+	// 在 Border 上走原生 ABI SetValue 会触发 AccessViolation 直接崩进程（MhyUnBox 打开工具页闪退的根因）。
 	// 正确做法：Border 自身只设 Background/BorderBrush，文本前景逐个设到 TextBlock 上（按钮由框架自动跟随主题）。
 	private static void ApplyCardTheme(Border card)
 	{
@@ -1675,7 +1675,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "确认执行威胁清理 (MhyunBox)",
+			Title = "确认执行威胁清理 (MhyUnBox)",
 			Content = "即将执行银狐木马综合威胁清理（需要管理员权限，将弹出 UAC 授权）：\n\n1. 清空被恶意启用的 WDAC 策略，解除杀毒软件禁用\n2. 删除旧版银狐驱动与 wow64log.dll\n3. 禁用根目录计划任务\n4. 劫持并终止隐藏进程\n5. 禁用可疑服务\n\n本工具会修改系统，请确认你的电脑感染了银狐木马。",
 			PrimaryButtonText = "继续清理",
 			CloseButtonText = "取消",
@@ -1773,7 +1773,7 @@ public sealed partial class ToolsPage : Page
 		}
 		if (await new ContentDialog
 		{
-			Title = "开始主力杀毒扫描 (MhyunBox)",
+			Title = "开始主力杀毒扫描 (MhyUnBox)",
 			Content = "将执行主力杀毒扫描：\n1. Defender 病毒库更新 + 快速扫描（MpCmdRun）\n2. 自研特征扫描（随机名/乱码名进程、高占用与外联、可疑启动项与计划任务、载荷目录、特征库样本比对）\n\n发现威胁时会自动调用「威胁清理」脚本清理，清理环节需要管理员权限（将弹出 UAC 授权框）。是否继续？",
 			PrimaryButtonText = "开始扫描",
 			CloseButtonText = "取消",
@@ -1995,7 +1995,7 @@ public sealed partial class ToolsPage : Page
 		AppendDefenseLog($"== 布防监控已开启：蜜罐文件 {num} 个 + 防护篡改监控（Defender 排除项/实时保护、IFEO 劫持、DisallowRun、hosts、系统DLL签名）==");
 		AppendDefenseLog(line);
 		AppendDefenseLog(line2);
-		AppendDefenseLog("提示：守护计划任务每 30 分钟运行一次，即使 MhyunBox 未打开也会检查并自动联动扫描，下次打开时可在本日志查看告警。");
+		AppendDefenseLog("提示：守护计划任务每 30 分钟运行一次，即使 MhyUnBox 未打开也会检查并自动联动扫描，下次打开时可在本日志查看告警。");
 		RefreshDefenseUi();
 		LoadGuardAlerts();
 		try
@@ -2064,7 +2064,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "紧急断网 (MhyunBox)",
+			Title = "紧急断网 (MhyUnBox)",
 			Content = "将禁用所有当前已连接的网卡（有线/无线），彻底断开网络，阻止木马继续下载、对抗或外传数据。\n\n需要管理员权限（UAC）。断网后可通过「恢复网络」重新启用。\n\n确定要立即断网吗？",
 			PrimaryButtonText = "立即断网",
 			CloseButtonText = "取消",
@@ -2082,7 +2082,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "恢复网络 (MhyunBox)",
+			Title = "恢复网络 (MhyUnBox)",
 			Content = "将重新启用所有被禁用的网卡。需要管理员权限（UAC）。\n\n确定要恢复网络吗？",
 			PrimaryButtonText = "恢复网络",
 			CloseButtonText = "取消",
@@ -2105,7 +2105,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "开启挖矿断网防护 (MhyunBox)",
+			Title = "开启挖矿断网防护 (MhyUnBox)",
 			Content = "将启用「默认阻断全部出站 + 白名单放行」策略：木马无论把矿池换成哪个 IP/域名都无法联网（不再按 IP 封）。\n\n开启前请确认 KillTools\\断网白名单.txt 中已加入你日常要用的软件（浏览器、游戏等，program: 格式），否则这些程序将无法联网。Windows 更新与 Defender 已默认放行。\n\n需要管理员权限（UAC）。确定开启吗？",
 			PrimaryButtonText = "开启",
 			CloseButtonText = "取消",
@@ -2121,7 +2121,7 @@ public sealed partial class ToolsPage : Page
 	{
 		if (await new ContentDialog
 		{
-			Title = "关闭挖矿断网防护 (MhyunBox)",
+			Title = "关闭挖矿断网防护 (MhyUnBox)",
 			Content = "将移除全部「默认阻断出站」规则，本机恢复联网。\n\n注意：特征库命中时自动添加的「MhyunBox_阻断_*」程序级阻断规则仍会保留（可在防火墙高级设置中单独删除）。\n\n需要管理员权限（UAC）。确定关闭吗？",
 			PrimaryButtonText = "关闭",
 			CloseButtonText = "取消",
@@ -2280,7 +2280,7 @@ public sealed partial class ToolsPage : Page
 		MainWindow.Instance?.BringToFront("布防自动扫描发现可疑项");
 		if (await new ContentDialog
 		{
-			Title = "检测到可疑项 (MhyunBox)",
+			Title = "检测到可疑项 (MhyUnBox)",
 			Content = $"布防告警触发的扫描发现了 {suspicious} 项可疑内容（隐藏进程 / 隐藏启动项 / 可疑服务），电脑可能已被木马入侵。\n\n是否立即运行内置威胁清理（扫描+清理，需要管理员权限）？",
 			PrimaryButtonText = "运行威胁清理",
 			CloseButtonText = "暂不处理",
@@ -2293,7 +2293,7 @@ public sealed partial class ToolsPage : Page
 		}
 		else if (await new ContentDialog
 		{
-			Title = "二次确认 (MhyunBox)",
+			Title = "二次确认 (MhyUnBox)",
 			Content = "再确认一次：威胁清理会修改系统（解除杀软禁用、清理旧版驱动、劫持隐藏进程、禁用可疑服务）。\n\n若当前电脑没有任何可用的防护软件（Defender/360/火绒均已失效，安装防护软件也会失败），强烈建议：\n1. 先断开网络，避免木马继续下载、对抗或外传数据；\n2. 清理完成后立即安装/开启火绒或 360，并做全盘扫描；\n3. 防护软件仍无法安装时，查看「布防日志」中的 IFEO 劫持与 DisallowRun 告警，先清理这些拦截项。\n\n确定要继续执行威胁清理吗？",
 			PrimaryButtonText = "我已了解，继续清理",
 			CloseButtonText = "取消",

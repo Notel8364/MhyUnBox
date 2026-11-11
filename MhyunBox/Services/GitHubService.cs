@@ -50,7 +50,7 @@ public static class GitHubService
 		{
 			Timeout = TimeSpan.FromSeconds(20.0)
 		};
-		client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("MhyunBox", TrimVersion(AppVersion.Display)));
+		client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("MhyUnBox", TrimVersion(AppVersion.Display)));
 		client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
 		client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
 		return client;
@@ -341,7 +341,7 @@ public static class GitHubService
 		{
 			Content = new StringContent(JsonSerializer.Serialize(new
 			{
-				message = "chore: 提交合并请求（来自 MhyunBox）",
+				message = "chore: 提交合并请求（来自 MhyUnBox）",
 				content = Convert.ToBase64String(Encoding.UTF8.GetBytes(content)),
 				branch
 			}), Encoding.UTF8, "application/json")
@@ -423,7 +423,7 @@ public static class GitHubService
 		sb.AppendLine();
 		sb.AppendLine("---");
 		sb.AppendLine();
-		sb.AppendLine("> 本请求由 MhyunBox " + AppVersion.Display + " 提交");
+		sb.AppendLine("> 本请求由 MhyUnBox " + AppVersion.Display + " 提交");
 		sb.AppendLine("> ");
 		sb.AppendLine("> - 系统：" + Environment.OSVersion.VersionString);
 		sb.AppendLine("> - 运行时：.NET " + Environment.Version);

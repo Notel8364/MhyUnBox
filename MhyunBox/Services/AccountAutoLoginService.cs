@@ -11,19 +11,14 @@ public static class AccountAutoLoginService
 {
 	private static readonly Dictionary<string, int> RetryCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-	// 设计原则（2026-11-07 修订）：网易按环境拒绝（code=32 / login abnormally）后进入全局冷静期，
-	// 冷静期内所有自动链路（Cookie 保活 / 账密保活 / 兜底重登 / 自动重登）一律停发请求；
-	// 手动登录不受限，成功后 RiskNotice.Clear 立即解除。此前「不设冷静期、被拦截也照常发请求」
-	// 导致登录风暴，把本机出口 IP 与设备标记，连官方启动器与其它账号一并触发异常登录环境风控。
-	// 用户定版保留：自动重登连续失败 3 次 → 暂停自动登录 30 分钟（手动不受限）。
+	// 设计原则（2026-11-11 修订）：登录环境异常问题已不复存在，按用户要求移除风控冷静期、
+	// 自动链路禁发闸门与「连续失败 3 次暂停 30 分钟」等全部自设门槛；会话失效照常重登。
 
 	// 同一账号同一时间只允许一个重登任务，避免 S003/S004 两路连接同时失败时各登一次、重复请求。
 	private static readonly Dictionary<string, Task<bool>> InFlight = new Dictionary<string, Task<bool>>(StringComparer.OrdinalIgnoreCase);
 
-	// 用户定版（2026-10-29）：自动重登连续失败达到 3 次时，暂停该账号的自动登录 30 分钟
-	//（防止会话彻底坏掉时无限循环打扰网易）；手动登录/手动会话拉取不受任何限制，
-	// 且手动登录成功后立即解除暂停。计数只统计「自动路径」的整体连续失败，
-	// 不受 ResetRetryFor（后台兜底新一轮清零）影响。
+	// 兼容字段：连续失败暂停机制已移除（2026-11-11），以下常量/字典保留供旧代码引用，
+	// 但不再产生任何暂停行为。
 	private const int MaxConsecutiveAutoFailures = 3;
 
 	private static readonly TimeSpan AutoSuspendDuration = TimeSpan.FromMinutes(30.0);
@@ -75,12 +70,6 @@ public static class AccountAutoLoginService
 				{
 				int credMinutes = Math.Max(60, SettingsManager.Instance.CredentialRefreshMinutes);
 				await Task.Delay(TimeSpan.FromMinutes(credMinutes)).ConfigureAwait(continueOnCapturedContext: false);
-				// 风控冷静期：账密登录是风险最高的请求，冷静期内绝对不发。
-				if (RiskNotice.ShouldBlockAutomaticRequests)
-				{
-					LogHelper.Log($"[自动登录] 处于网易风控冷静期（剩余 {RiskNotice.Remaining.TotalMinutes:F0} 分钟），跳过本轮账密保活");
-					continue;
-				}
 				// 官方启动器运行时绝不发起账密重登：换全新 Cookie 会顶掉它正在用的同账号会话。
 				if (GameProcessDetector.IsOfficialLauncherRunning())
 				{
@@ -98,11 +87,6 @@ public static class AccountAutoLoginService
 								if (ProxyCaptureService.IsAccountInGame(acc.Channel, acc.Account))
 								{
 									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 正在游戏内，跳过账密保活");
-									continue;
-								}
-								if (IsAutoLoginSuspended(acc.Channel, acc.Account))
-								{
-									LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 自动登录暂停期（连续重登失败 3 次），跳过账密保活");
 									continue;
 								}
 								bool flag = acc.Is4399
@@ -374,30 +358,9 @@ public static class AccountAutoLoginService
 			LogHelper.Log("[自动登录] 检测到官方启动器正在运行，跳过自动重登以避免顶号：" + Mask(account));
 			return Task.FromResult(false);
 		}
-		// 2026-11-07 修复：风控冷静期内禁止一切自动重登请求。
-		// 手动登录（账号绑定页 / 账号行「登录」按钮）直接调用 NeteaseLogin，不经过这里，不受限制。
-		if (RiskNotice.ShouldBlockAutomaticRequests)
-		{
-			LogHelper.Log($"[自动登录] 处于网易风控冷静期（剩余 {RiskNotice.Remaining.TotalMinutes:F0} 分钟），跳过自动重登：{Mask(account)}");
-			return Task.FromResult(false);
-		}
+		// 风控冷静期已移除（2026-11-11）：自动重登不再受任何自设门槛限制。
 		lock (InFlightSync)
 		{
-			// 用户定版限制：连续 3 次自动重登失败后暂停自动登录 30 分钟（手动登录走 ReloginAsync，不经过这里，不受限）
-			if (AutoSuspendedUntil.TryGetValue(key, out DateTimeOffset suspendedUntil) && suspendedUntil > DateTimeOffset.Now)
-			{
-				TimeSpan remaining = suspendedUntil - DateTimeOffset.Now;
-				SetStatus("自动登录已暂停（连续失败 3 次），约 " + (int)Math.Ceiling(remaining.TotalMinutes) + " 分钟后恢复：" + Mask(account));
-				LogHelper.Log("[自动登录] " + Mask(account) + " 处于自动重登暂停期（连续失败 3 次触发），剩余约 " + (int)Math.Ceiling(remaining.TotalMinutes) + " 分钟，本次自动重登跳过（手动登录不受影响）");
-				return Task.FromResult(false);
-			}
-			if (AutoSuspendedUntil.ContainsKey(key))
-			{
-				// 暂停已到期，恢复正常自动重登并重新计数
-				AutoSuspendedUntil.Remove(key);
-				ConsecutiveAutoFailures.Remove(key);
-				LogHelper.Log("[自动登录] " + Mask(account) + " 暂停期已过，恢复自动重登");
-			}
 			if (InFlight.TryGetValue(key, out Task<bool>? running) && !running.IsCompleted)
 			{
 				LogHelper.Log("[自动登录] " + Mask(account) + " 已有重登请求进行中，复用本次结果");
@@ -425,13 +388,7 @@ public static class AccountAutoLoginService
 					ConsecutiveAutoFailures.TryGetValue(key, out int failures);
 					failures++;
 					ConsecutiveAutoFailures[key] = failures;
-					if (failures >= MaxConsecutiveAutoFailures && !AutoSuspendedUntil.ContainsKey(key))
-					{
-						DateTimeOffset until = DateTimeOffset.Now.Add(AutoSuspendDuration);
-						AutoSuspendedUntil[key] = until;
-						LogHelper.Force("[自动登录] 账号 " + Mask(key.Split('|')[1]) + " 连续 " + failures + " 次自动重登失败，自动登录已暂停 30 分钟（至 " + until.ToLocalTime().ToString("HH:mm") + "）。手动登录/手动验证不受限制，手动成功后立即恢复");
-						SetStatus("自动登录已暂停 30 分钟（连续失败 3 次）：" + Mask(key.Split('|')[1]));
-					}
+					// 连续失败暂停机制已移除（2026-11-11）：只记次数，不再暂停自动链路。
 				}
 			}
 			return ok;
@@ -596,28 +553,8 @@ public static class AccountAutoLoginService
 		return 0;
 	}
 
-	/// <summary>
-	/// 该账号的自动登录是否处于暂停期（连续 3 次自动重登失败触发，30 分钟）。
-	/// 周期保活等自动链路用这个跳过暂停账号；手动登录不应检查此方法（手动不受限）。
-	/// </summary>
-	public static bool IsAutoLoginSuspended(string channel, string account)
-	{
-		string key = (channel ?? "") + "|" + (account ?? "").Trim();
-		lock (InFlightSync)
-		{
-			if (AutoSuspendedUntil.TryGetValue(key, out DateTimeOffset until))
-			{
-				if (until > DateTimeOffset.Now)
-				{
-					return true;
-				}
-				// 暂停到期：顺便清掉状态，下次自动重登从零计数
-				AutoSuspendedUntil.Remove(key);
-				ConsecutiveAutoFailures.Remove(key);
-			}
-		}
-		return false;
-	}
+	/// <summary>自动登录暂停机制已移除（2026-11-11），恒返回 false，保留 API 兼容旧调用点。</summary>
+	public static bool IsAutoLoginSuspended(string channel, string account) => false;
 
 	/// <summary>
 	/// 解除自动登录暂停并清零连续失败计数。手动登录/手动验证成功后调用——
@@ -638,8 +575,7 @@ public static class AccountAutoLoginService
 	}
 
 	/// <summary>
-	/// 供认证桥等外部链路记录一次网易拦截（例如 GameStart 阶段返回 login abnormally）。
-	/// 登记后进入全局冷静期，所有自动链路停发请求（设计原则见文件头注释）。
+	/// 供认证桥等外部链路记录一次网易拦截：仅写日志，不再进入冷静期/暂停自动链路（2026-11-11）。
 	/// </summary>
 	public static void ReportRiskControl(string channel, string account, string message)
 	{
@@ -651,21 +587,19 @@ public static class AccountAutoLoginService
 		{
 			return;
 		}
-		LogHelper.Force("[自动登录] " + Mask(account) + " 命中网易登录环境风控: " + msg + "；已进入 " + RiskNotice.RecoveryMinutes + " 分钟冷静期，自动链路暂停发请求（手动登录不受限）");
-		RiskNotice.Mark(Mask(account), "进服验证");
+		LogHelper.Force("[自动登录] " + Mask(account) + " 记录一次网易拦截: " + msg + "（仅记录，不设冷静期/不暂停自动链路）");
 	}
 
 	private static void SetRiskCooldown(AccountStore.LocalAccount acc, string message)
 	{
-		// 冷静期由 RiskNotice 全局闸门实现：Mark 后所有自动链路停发请求。
-		LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 命中网易拦截（" + (message ?? "") + "），已进入冷静期");
-		RiskNotice.Mark(Mask(acc.Account), "自动登录");
+		// 冷静期已移除（2026-11-11）：只留一条记录，不改任何自动链路行为。
+		LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 记录网易拦截（" + (message ?? "") + "）");
 	}
 
 	private static bool IsRiskCoolingDown(string channel, string account, out TimeSpan remaining)
 	{
-		remaining = RiskNotice.Remaining;
-		return RiskNotice.ShouldBlockAutomaticRequests;
+		remaining = TimeSpan.Zero;
+		return false;
 	}
 
 	private static void ClearRiskCooldown(AccountStore.LocalAccount acc)

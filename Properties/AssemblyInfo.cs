@@ -5,13 +5,13 @@ using System.Runtime.Versioning;
 using System.Security;
 using System.Security.Permissions;
 
-[assembly: AssemblyCompany("Mhyunbox")]
+[assembly: AssemblyCompany("MhyUnBox")]
 [assembly: AssemblyConfiguration("Release")]
 [assembly: AssemblyDescription("MhyUnBox")]
-[assembly: AssemblyFileVersion("8.1.0.0")]
-[assembly: AssemblyInformationalVersion("8.1.0")]
-[assembly: AssemblyProduct("Mhyunbox")]
+[assembly: AssemblyFileVersion("8.3.0.0")]
+[assembly: AssemblyInformationalVersion("8.3.0")]
+[assembly: AssemblyProduct("MhyUnBox")]
 [assembly: AssemblyTitle("MhyUnBox")]
 [assembly: TargetPlatform("Windows10.0.19041.0")]
 [assembly: SupportedOSPlatform("Windows10.0.17763.0")]
-[assembly: AssemblyVersion("8.1.0.0")]
+[assembly: AssemblyVersion("8.3.0.0")]

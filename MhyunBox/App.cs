@@ -51,8 +51,9 @@ public partial class App : Application
 			Environment.Exit(0);
 			return;
 		}
-		int value = SetCurrentProcessExplicitAppUserModelID(AppIdentity.ResolvedAumid);
-		LogHelper.Log($"[SMTC诊断] SetCurrentProcessExplicitAppUserModelID({AppIdentity.ResolvedAumid}) => {value}");
+		// 进程 AUMID 已在 ModuleInitializer 里最早设定（该函数一个进程只能成功一次）。
+		// 旧代码在这里又调了一次反编译遗留的 SetCurrentProcessExplicitAppUserModelID，
+		// 既用了未初始化的默认值，也必然二次调用失败。这里只做后续登记与回读校验。
 		RegisterAppUserModelIdIcon();
 		InitializeComponent();
 		base.UnhandledException += App_UnhandledException;
@@ -131,9 +132,6 @@ public partial class App : Application
 		{
 		}
 	}
-
-	[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-	private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 
 	internal static void RegisterAppUserModelIdIcon()
 	{
@@ -437,9 +435,10 @@ public partial class App : Application
 	/// <summary>
 	/// SMTC 媒体卡左上角「应用名 + 图标」的身份链（依据 SMTC 媒体卡精修文档）。
 	/// 非打包 Win32 程序默认没有显式 AUMID，媒体卡会显示「未知应用」。
-	/// 现在走：基础开始菜单 .lnk（AppID = exe 全路径）+ 进程 AUMID 也用 exe 全路径，
-	/// 两者精确匹配；注册表 DisplayName/IconUri 配套登记给 Toast/托盘气泡链。
+	/// 现在走：基础开始菜单 .lnk（AppID 与短名对齐）+ 进程 AUMID 固定用短名 MhyUnBox，
+	/// 注册表 HKCU\Software\Classes\AppUserModelId\MhyUnBox 配套登记 DisplayName/IconUri。
 	/// 不再给 .lnk 写 AppUserModel.ID 属性（本机写了反而让 AppsFolder 剔除条目）。
+	/// AUMID 必须在 ModuleInitializer 里、任何 COM 初始化之前设置，且整个进程只设一次。
 	/// </summary>
 	internal static class AppIdentity
 	{
@@ -448,9 +447,9 @@ public partial class App : Application
 		public const string DisplayName = "MhyUnBox";
 
 	/// <summary>
-	/// 进程实际使用的 AUMID。媒体卡按「开始菜单里 AppUserModel.ID 匹配进程 AUMID 的快捷方式」
-	/// 反查应用名：快捷方式属性写入成功时用短名，写不进去时开始菜单条目的 AppID 是 exe 全路径，
-	/// 此时改用 exe 路径当 AUMID 才能对上。Apply() 在 ModuleInitializer 里定好，之后只读。
+	/// 进程实际使用的 AUMID：固定短名 MhyUnBox，与开始菜单条目 AppID、注册表键三者一致。
+	/// 由 ModuleInitializer → SetAumidEarly() 在进程最早期设定，之后只读；
+	/// 不要用 exe 全路径当 AUMID，本机开始菜单条目并不以路径作为 AppID。
 	/// </summary>
 	public static string ResolvedAumid { get; private set; } = Aumid;
 
@@ -463,8 +462,14 @@ public partial class App : Application
 
 	private static bool _applied;
 
-	/// <summary>快捷方式身份版本：5 = 不再写 AppUserModel.ID 属性，
-	/// 升级时重建基础 .lnk 清掉旧属性，进程改用 exe 路径 AUMID。</summary>
+	private static bool _aumidSet;
+
+	private static int _aumidHr = int.MinValue;
+
+	private static string? _aumidEarlyError;
+
+	/// <summary>快捷方式身份版本：5 = 只建基础 .lnk（不写 AppUserModel.ID 属性）。
+	/// 进程 AUMID 固定用短名 MhyUnBox，与开始菜单 AppID、注册表键三者对齐。</summary>
 	private const int IdentityRev = 5;
 
 		/// <summary>版本号存在程序自己的键里，不往 shell 的 AppUserModelId 命名空间塞私有值。</summary>
@@ -473,8 +478,44 @@ public partial class App : Application
 		/// <summary>本次启动时注册表里记下的上次完成版本，用来决定要不要补写快捷方式属性。</summary>
 		private static int _identityRevAtStartup;
 
-		[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-		internal static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+		// shell32 导出的这两个函数没有 A/W 后缀，必须精确绑定；
+		// 否则 CharSet.Unicode 会先找 ...W 变体，找不到就抛 EntryPointNotFoundException。
+		[DllImport("shell32.dll", EntryPoint = "SetCurrentProcessExplicitAppUserModelID", CharSet = CharSet.Unicode, ExactSpelling = true)]
+		private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
+		[DllImport("shell32.dll", EntryPoint = "GetCurrentProcessExplicitAppUserModelID", CharSet = CharSet.Unicode, ExactSpelling = true)]
+		private static extern int GetCurrentProcessExplicitAppUserModelID(out nint appId);
+
+		[DllImport("ole32.dll")]
+		private static extern void CoTaskMemFree(nint ptr);
+
+		/// <summary>
+		/// 整个进程**只做这一件事**：设 AUMID。必须在 ModuleInitializer 里、任何 COM / 窗口 /
+		/// 注册表操作之前完成。SetCurrentProcessExplicitAppUserModelID 一个进程只能成功一次，
+		/// 且 COM 一旦初始化就会失败；旧版 Apply() 先跑 WScript.Shell 建 .lnk 再设置，
+		/// 结果设置失败、进程回落到默认 AUMID「MhyunBox.exe」，媒体卡显示「未知应用」。
+		/// </summary>
+		internal static void SetAumidEarly()
+		{
+			lock (Sync)
+			{
+				if (_aumidSet)
+				{
+					return;
+				}
+				_aumidSet = true;
+				ResolvedAumid = Aumid;
+				try
+				{
+					_aumidHr = SetCurrentProcessExplicitAppUserModelID(ResolvedAumid);
+				}
+				catch (Exception ex)
+				{
+					_aumidHr = int.MinValue;
+					_aumidEarlyError = ex.GetType().Name + ": " + ex.Message;
+				}
+			}
+		}
 
 		internal static void Apply()
 		{
@@ -485,29 +526,63 @@ public partial class App : Application
 					return;
 				}
 				_applied = true;
+				// 宿主 guard 没放行时（例如被以别的宿主名加载），这里兜底再设一次。
+				SetAumidEarly();
+				// App 构造阶段 DebugEnabled 已就绪，回读结果能落盘，排障不再靠猜。
 				try
 				{
-					LoadIdentityRev();
-					// 开始菜单只放「基础 .lnk」：本机实测给它写 System.AppUserModel.ID
-					// 之后 AppsFolder 反而把条目剔除（Get-StartApps 查不到），媒体卡无从反查。
-					// 基础 .lnk 的 AppID 就是 exe 全路径，进程用同一个值当 AUMID 即可精确对上，
-					// 这条链不依赖属性系统，健康/损坏的机器都成立。
-					EnsureStartMenuShortcut();
-					string? exe = Environment.ProcessPath;
-					bool usableExe = !string.IsNullOrWhiteSpace(exe) && File.Exists(exe);
-					ResolvedAumid = usableExe ? exe! : Aumid;
-					int hr = SetCurrentProcessExplicitAppUserModelID(ResolvedAumid);
-					LogHelper.Log($"[AUMID] SetCurrentProcessExplicitAppUserModelID({ResolvedAumid}) hr=0x{hr:X8}");
-					RegisterRegistryIdentity(ResolvedAumid);
-					if (!string.Equals(ResolvedAumid, Aumid, StringComparison.Ordinal))
+					string? actual = TryReadCurrentAumid();
+					LogHelper.Log($"[AUMID] 目标=[{ResolvedAumid}] hr=0x{_aumidHr:X8} 回读=[{actual ?? "读取失败"}] earlyError=[{_aumidEarlyError ?? ""}]");
+					if (!string.Equals(actual, ResolvedAumid, StringComparison.Ordinal))
 					{
-						// Toast 通知链按 AUMID 反查注册表，短名键也保留一份。
-						RegisterRegistryIdentity(Aumid);
+						int retry = SetCurrentProcessExplicitAppUserModelID(ResolvedAumid);
+						string? actual2 = TryReadCurrentAumid();
+						LogHelper.Log($"[AUMID] 补救设置 hr=0x{retry:X8} 回读=[{actual2 ?? "读取失败"}]");
 					}
 				}
 				catch (Exception ex)
 				{
-					LogHelper.LogError(ex, "[AUMID] 应用身份登记失败（媒体卡可能显示未知应用）");
+					LogHelper.LogError(ex, "[AUMID] 回读校验失败");
+				}
+				// 后续登记彼此隔离：.lnk 的 COM、注册表、shell 通知任何一步抛异常，
+				// 都绝不能影响已经设好的进程 AUMID。
+				try
+				{
+					LoadIdentityRev();
+					EnsureStartMenuShortcut();
+				}
+				catch (Exception ex)
+				{
+					LogHelper.LogError(ex, "[AUMID] 开始菜单登记失败");
+				}
+				try
+				{
+					RegisterRegistryIdentity(Aumid);
+				}
+				catch (Exception ex)
+				{
+					LogHelper.LogError(ex, "[AUMID] 注册表登记失败");
+				}
+			}
+		}
+
+		private static string? TryReadCurrentAumid()
+		{
+			nint ptr = IntPtr.Zero;
+			try
+			{
+				int hr = GetCurrentProcessExplicitAppUserModelID(out ptr);
+				return (hr == 0 && ptr != IntPtr.Zero) ? Marshal.PtrToStringUni(ptr) : null;
+			}
+			catch
+			{
+				return null;
+			}
+			finally
+			{
+				if (ptr != IntPtr.Zero)
+				{
+					CoTaskMemFree(ptr);
 				}
 			}
 		}
@@ -881,7 +956,12 @@ public partial class App : Application
 				if (string.Equals(host, "MhyunBox", StringComparison.OrdinalIgnoreCase)
 					|| string.Equals(host, "MhyUnBox", StringComparison.OrdinalIgnoreCase))
 				{
-					AppIdentity.Apply();
+					// 这里**只允许**调用 SetAumidEarly：它只做一次
+					// SetCurrentProcessExplicitAppUserModelID，绝不碰 COM / 注册表 / 文件。
+					// 一旦先初始化了 WScript.Shell 等 COM 组件，AUMID 设置就会失败，
+					// 进程回落到默认身份「MhyunBox.exe」，媒体卡显示「未知应用」。
+					// 后续 .lnk / 注册表登记由 App 构造函数里的 AppIdentity.Apply() 完成。
+					AppIdentity.SetAumidEarly();
 				}
 			}
 			catch (Exception ex)

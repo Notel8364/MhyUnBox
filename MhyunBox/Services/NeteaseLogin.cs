@@ -1069,7 +1069,7 @@ public sealed class NeteaseLogin : IDisposable
 			string? guid = SecureStore.Load("x19_guid");
 			string? deviceJson = SecureStore.Load("x19_device");
 			// 2026-11-07 修复：设备标识必须跨版本稳定。
-			// v3.8.0 把内置共享 GUID 持久化到 %LOCALAPPDATA%\MhyunBox\secure\x19_guid；
+			// v3.8.0 把内置共享 GUID 持久化到 %LOCALAPPDATA%\MhyUnBox\secure\x19_guid；
 			// 8.0.0 曾主动检测并替换该值，导致老用户升级后在网易侧变成「全新设备」，
 			// 叠加高频登录一起触发异常登录环境风控。现在只要本地已有值就原样复用。
 			if (!string.IsNullOrWhiteSpace(guid) && string.Equals(guid!.Trim(), BuiltinGuid, StringComparison.OrdinalIgnoreCase))
@@ -1336,12 +1336,11 @@ public sealed class NeteaseLogin : IDisposable
 					coreEndpoint = endpoint;
 					break;
 				}
-				// 网关按环境拒绝：登记全局冷静期并立即停止，绝不换点重试。
+				// 网关拒绝：仅记录并停止换点，不再登记冷静期/暂停自动链路（2026-11-11）。
 				if (IsGatewayReject(code, status, entityWrap?.Message))
 				{
 					gatewayRejected = true;
-					RiskNotice.Mark("(会话刷新)", "login-otp");
-					LogHelper.Force($"[网易登录] login-otp 命中网易登录环境拒绝 code={code} status={Safe(status)}，已进入 {RiskNotice.RecoveryMinutes} 分钟冷静期并停止换点重试");
+					LogHelper.Force($"[网易登录] login-otp 命中网关拒绝 code={code} status={Safe(status)}，仅记录并停止换点重试");
 					break;
 				}
 				// 其它业务错误（如 Cookie 无效）也不换点：单端点失败即返回，由上层按类型处理。

@@ -126,7 +126,7 @@ public static class ServerPresets
 
 	// ---------- 动态预设持久化 ----------
 
-	private static string DiscoveredPath => System.IO.Path.Combine(AppContext.BaseDirectory, "MhyunBox_Logs", "discovered_servers.json");
+	private static string DiscoveredPath => System.IO.Path.Combine(AppContext.BaseDirectory, "MhyUnBox_Logs", "discovered_servers.json");
 
 	private static void LoadDiscovered()
 	{

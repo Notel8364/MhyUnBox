@@ -179,7 +179,7 @@ public class AppSettings
 
 	public string LastGoodLauncherVersion { get; set; } = "";
 
-	// ===== 网易登录环境风控相关（2026-11-07 修复）=====
+	// ===== 旧版兼容字段（风控相关开关已移除，字段仅用于读取旧设置文件）=====
 
 	/// <summary>
 	/// 旧版「网易登录请求跟随系统代理」开关的持久化字段。

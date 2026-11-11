@@ -147,6 +147,15 @@ public sealed partial class AboutPage : Page
 						IsTextSelectionEnabled = true
 					});
 				}
+				// .xbf 里的 TextBlock 默认不可选中，QQ 号那行就是在 XAML 里写死的；
+				// 运行时把「反馈情况」整块的文字都开放选中，用户就能直接拖选 / Ctrl+C 复制。
+				foreach (object child in usage.Children)
+				{
+					if (child is TextBlock selectable)
+					{
+						selectable.IsTextSelectionEnabled = true;
+					}
+				}
 			}
 		}
 		catch (Exception ex3)

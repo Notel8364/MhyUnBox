@@ -9,7 +9,7 @@ namespace MhyunBox.Services;
 
 public static class CliArgs
 {
-	private static readonly string OutputFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MhyunBox", "cli-output.txt");
+	private static readonly string OutputFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MhyUnBox", "cli-output.txt");
 
 	private static readonly HashSet<string> Flags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "--list", "--help", "-h", "--reset" };
 
@@ -253,7 +253,7 @@ public static class CliArgs
 	private static string Describe(AppSettings s, int overrideCount)
 	{
 		StringBuilder stringBuilder = new StringBuilder();
-		stringBuilder.AppendLine("MhyunBox 有效配置 (cli-output，共应用 " + overrideCount + " 项参数覆盖)：");
+		stringBuilder.AppendLine("MhyUnBox 有效配置 (cli-output，共应用 " + overrideCount + " 项参数覆盖)：");
 		stringBuilder.AppendLine("  ThemeMode           = " + s.ThemeMode);
 		stringBuilder.AppendLine("  MusicSource         = " + s.MusicSource);
 		stringBuilder.AppendLine("  MusicPath           = " + s.MusicPath);
@@ -276,7 +276,7 @@ public static class CliArgs
 	private static string Usage()
 	{
 		StringBuilder stringBuilder = new StringBuilder();
-		stringBuilder.AppendLine("MhyunBox 命令行参数集：");
+		stringBuilder.AppendLine("MhyUnBox 命令行参数集：");
 		stringBuilder.AppendLine("  --source <audio|video>        当前音乐来源");
 		stringBuilder.AppendLine("  --music <path>                当前播放曲目（音乐或视频）");
 		stringBuilder.AppendLine("  --music-folder <dir>          音乐文件夹");

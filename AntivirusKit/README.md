@@ -1,6 +1,6 @@
-# MhyunBox 查杀毒工具箱（AntivirusKit）
+# MhyUnBox 查杀毒工具箱（AntivirusKit）
 
-把 MhyunBox「工具」页用到的**全部查杀毒脚本、规则库、杀软/开源工具地址**打包成一个独立目录，
+把 MhyUnBox「工具」页用到的**全部查杀毒脚本、规则库、杀软/开源工具地址**打包成一个独立目录，
 可脱离 App 单独使用，也可随 App 一起分发。
 
 ## 目录结构
@@ -24,7 +24,7 @@ AntivirusKit/
 ```
 
 ## 快速使用
-- **图形界面（App）**：打开 MhyunBox → 工具页，按按钮即可（脚本在 `KillTools/` 下被 App 调用）。
+- **图形界面（App）**：打开 MhyUnBox → 工具页，按按钮即可（脚本在 `KillTools/` 下被 App 调用）。
 - **命令行（独立使用）**：用管理员 PowerShell 运行总入口：
   ```powershell
   powershell -NoProfile -ExecutionPolicy Bypass -File 查杀毒工具箱.ps1 -Action emergency-stop
@@ -39,7 +39,7 @@ AntivirusKit/
 - 脚本默认**静默**：只回传关键行到控制台（被 App 捕获进日志面板），不弹窗；
   仅显式传 `-LogFile 路径` 时才落盘日志文件（满足“隐藏不写日志”）。
 - 退出码：0=无威胁 / 2=发现威胁 / 1=出错。
-- App 侧 `MhyunBox\Services\SilverFoxTool.cs` 通过**固定文件名**引用上述脚本；
+- App 侧 `MhyUnBox\Services\SilverFoxTool.cs` 通过**固定文件名**引用上述脚本；
   若改文件名或新增脚本，必须**同时**更新 SilverFoxTool.cs 与本文档，运行
   `一致性自检.ps1` 可一键核对两边是否对齐。
 

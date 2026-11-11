@@ -3,7 +3,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:MhyunBox"
     x:Class="MhyunBox.MainWindow"
-    UnknownProperty0x89A1="MhyUnbox">
+    UnknownProperty0x89A1="MhyUnBox">
     <Window.UnknownProperty0x8968>
         <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
             <Grid.RowDefinitions>
@@ -46,7 +46,7 @@
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
                             <StackPanel.Children>
                                 <Image x:Name="AppTitleIcon" Width="26" Height="26" Stretch="UniformToFill" Margin="12,0,0,0" />
-                                <TextBlock x:Name="AppTitleTextBlock" Text="MhyUnbox" FontSize="14" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                <TextBlock x:Name="AppTitleTextBlock" Text="MhyUnBox" FontSize="14" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                             </StackPanel.Children>
                         </StackPanel>
                     </Grid.Children>

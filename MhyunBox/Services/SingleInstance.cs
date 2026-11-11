@@ -49,7 +49,7 @@ public static class SingleInstance
 			_listener = new Thread(Listen)
 			{
 				IsBackground = true,
-				Name = "MhyunBoxSingleInstance"
+				Name = "MhyUnBoxSingleInstance"
 			};
 			_listener.Start();
 			return true;

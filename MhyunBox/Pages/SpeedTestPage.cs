@@ -581,7 +581,7 @@ public sealed class SpeedTestPage : Page
 		{
 			using HttpClient http = new HttpClient();
 			http.Timeout = TimeSpan.FromSeconds(30.0);
-			http.DefaultRequestHeaders.UserAgent.ParseAdd("MhyunBox/7.7.0 SpeedTest");
+			http.DefaultRequestHeaders.UserAgent.ParseAdd("MhyUnBox/7.7.0 SpeedTest");
 			AppendLog("== 开始测速（节点：" + (preset == 0 ? "腾讯软件源" : preset == 2 ? "网易CDN" : url) + "）==");
 			ResetChart();
 			// 1) 延迟

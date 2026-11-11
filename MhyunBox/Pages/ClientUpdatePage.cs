@@ -281,7 +281,7 @@ public sealed class ClientUpdatePage : Page
 		};
 		_openLogBtn.Click += delegate
 		{
-			OpenDir(Path.Combine(AppContext.BaseDirectory, "MhyunBox_Logs"));
+			OpenDir(Path.Combine(AppContext.BaseDirectory, "MhyUnBox_Logs"));
 		};
 		_openTargetBtn = new Button
 		{
@@ -293,12 +293,39 @@ public sealed class ClientUpdatePage : Page
 		};
 		stackPanel3.Children.Add(_updateBtn);
 		stackPanel3.Children.Add(_cancelBtn);
-		stackPanel3.Children.Add(_checkBtn);
-		stackPanel3.Children.Add(_pullAllBtn);
-		stackPanel3.Children.Add(_scanBtn);
-		stackPanel3.Children.Add(_openLogBtn);
-		stackPanel3.Children.Add(_openTargetBtn);
 		stackPanel.Children.Add(stackPanel3);
+		// 高级选项：除「更新资源包 / 取消」外的按钮全部收进默认折叠区，主界面只留一键更新。
+		Button advancedToggle = new Button
+		{
+			Content = "高级选项  ▾",
+			HorizontalAlignment = HorizontalAlignment.Left,
+			Margin = new Thickness(0.0, 2.0, 0.0, 0.0)
+		};
+		StackPanel advancedPanel = new StackPanel
+		{
+			Spacing = 8.0,
+			Visibility = Visibility.Collapsed,
+			Margin = new Thickness(0.0, 8.0, 0.0, 0.0)
+		};
+		advancedToggle.Click += delegate
+		{
+			bool open = advancedPanel.Visibility != Visibility.Visible;
+			advancedPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+			advancedToggle.Content = (open ? "高级选项  ▴" : "高级选项  ▾");
+		};
+		stackPanel.Children.Add(advancedToggle);
+		stackPanel.Children.Add(advancedPanel);
+		StackPanel advancedRow = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 10.0
+		};
+		advancedRow.Children.Add(_checkBtn);
+		advancedRow.Children.Add(_pullAllBtn);
+		advancedRow.Children.Add(_scanBtn);
+		advancedRow.Children.Add(_openLogBtn);
+		advancedRow.Children.Add(_openTargetBtn);
+		advancedPanel.Children.Add(advancedRow);
 		StackPanel dragonPanel = new StackPanel
 		{
 			Orientation = Orientation.Horizontal,
@@ -316,7 +343,7 @@ public sealed class ClientUpdatePage : Page
 		_dragonMergeBtn.Click += DragonCoreMerge_Click;
 		dragonPanel.Children.Add(_dragonTrimBtn);
 		dragonPanel.Children.Add(_dragonMergeBtn);
-		stackPanel.Children.Add(dragonPanel);
+		advancedPanel.Children.Add(dragonPanel);
 		// —— 本地资源包（检测/选择已有包，跳过下载直接裁剪合并）——
 		StackPanel pkgRow = new StackPanel
 		{
@@ -352,7 +379,7 @@ public sealed class ClientUpdatePage : Page
 		pkgRow.Children.Add(_scanPkgBtn);
 		pkgRow.Children.Add(_usePkgBtn);
 		pkgRow.Children.Add(_delPkgBtn);
-		stackPanel.Children.Add(pkgRow);
+		advancedPanel.Children.Add(pkgRow);
 		_pkgList = new ListBox
 		{
 			Height = 120.0,
@@ -366,7 +393,7 @@ public sealed class ClientUpdatePage : Page
 			_usePkgBtn.IsEnabled = has;
 			_delPkgBtn.IsEnabled = has;
 		};
-		stackPanel.Children.Add(_pkgList);
+		advancedPanel.Children.Add(_pkgList);
 		_progress = new ProgressBar
 		{
 			IsIndeterminate = true,
@@ -1145,7 +1172,7 @@ public sealed class ClientUpdatePage : Page
 		{
 			paths.Add(text);
 		}
-		string text2 = Path.Combine(baseDirectory, "MhyunBox_Logs");
+		string text2 = Path.Combine(baseDirectory, "MhyUnBox_Logs");
 		if (Directory.Exists(text2))
 		{
 			paths.Add(text2);

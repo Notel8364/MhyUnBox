@@ -41,7 +41,7 @@ public static class LogCleanup
 		long num2 = 0L;
 		string[] array = new string[2]
 		{
-			Path.Combine(AppContext.BaseDirectory, "MhyUnbox_Logs"),
+			Path.Combine(AppContext.BaseDirectory, "MhyUnBox_Logs"),
 			ProxyCaptureService.CaptureDir
 		};
 		string[] array2 = array;
@@ -105,7 +105,7 @@ public static class LogCleanup
 		string today = DateTime.Now.ToString("yyyyMMdd");
 		try
 		{
-			foreach (string item2 in from f in Directory.EnumerateFiles(Path.Combine(AppContext.BaseDirectory, "MhyUnbox_Logs"), "MhyUnBox-*.log", SearchOption.TopDirectoryOnly)
+			foreach (string item2 in from f in Directory.EnumerateFiles(Path.Combine(AppContext.BaseDirectory, "MhyUnBox_Logs"), "MhyUnBox-*.log", SearchOption.TopDirectoryOnly)
 				where !string.Equals(Path.GetFileName(f), "MhyUnBox-" + today + ".log", StringComparison.Ordinal)
 				select f)
 			{

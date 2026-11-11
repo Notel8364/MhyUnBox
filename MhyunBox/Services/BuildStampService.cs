@@ -88,7 +88,7 @@ public static class BuildStampService
 		};
 		try
 		{
-			client.DefaultRequestHeaders.UserAgent.ParseAdd("MhyunBox/" + AppVersion.Display.TrimStart('v', 'V'));
+			client.DefaultRequestHeaders.UserAgent.ParseAdd("MhyUnBox/" + AppVersion.Display.TrimStart('v', 'V'));
 		}
 		catch
 		{

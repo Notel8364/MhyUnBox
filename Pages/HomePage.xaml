@@ -9,7 +9,7 @@
             <ScrollViewer.Content>
                 <StackPanel x:Name="HomeRoot" Padding="40,28" Spacing="12" MaxWidth="1000" HorizontalAlignment="Left">
                     <StackPanel.Children>
-                        <TextBlock Text="MhyunBox" FontSize="28" FontWeight="Bold" />
+                        <TextBlock Text="MhyUnBox" FontSize="28" FontWeight="Bold" />
                         <Grid x:Name="HomeCardGrid" Margin="0,8,0,0" ColumnSpacing="12" RowSpacing="12">
                             <Grid.Children>
                                 <Border x:Name="ActivationCard" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="20">

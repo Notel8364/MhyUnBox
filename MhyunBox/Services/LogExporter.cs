@@ -14,7 +14,7 @@ public static class LogExporter
 {
 	public static string ExportToDesktop()
 	{
-		string logDir = System.IO.Path.Combine(AppContext.BaseDirectory, "MhyUnbox_Logs");
+		string logDir = System.IO.Path.Combine(AppContext.BaseDirectory, "MhyUnBox_Logs");
 		string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
 		if (string.IsNullOrEmpty(desktop))
 		{
@@ -22,7 +22,7 @@ public static class LogExporter
 		}
 		Directory.CreateDirectory(desktop);
 		string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-		string zipPath = System.IO.Path.Combine(desktop, "MhyunBox_日志_" + stamp + ".zip");
+		string zipPath = System.IO.Path.Combine(desktop, "MhyUnBox_日志_" + stamp + ".zip");
 
 		DateTime cutoff = DateTime.Now.AddDays(-3.0);
 		using (ZipArchive zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))

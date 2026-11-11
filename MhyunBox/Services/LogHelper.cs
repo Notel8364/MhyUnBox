@@ -12,7 +12,7 @@ public static class LogHelper
 
 	private static string _writerDate = "";
 
-	private static string LogDir => Path.Combine(AppContext.BaseDirectory, "MhyUnbox_Logs");
+	private static string LogDir => Path.Combine(AppContext.BaseDirectory, "MhyUnBox_Logs");
 
 	private static string LogPath => Path.Combine(LogDir, $"MhyUnBox-{DateTime.Now:yyyyMMdd}.log");
 
@@ -149,7 +149,7 @@ public static class LogHelper
 		Write($"{message} | {ex}");
 	}
 
-	/// <summary>关键事件日志：同样受调试模式门控（用户要求恒写日志全部接入调试模式，关调试时不写；错误日志 LogError 仍保留恒写）。</summary>
+	/// <summary>关键事件日志：同样受调试模式门控（所有日志统一接入调试模式，关调试时整个日志系统不产出任何文件）。</summary>
 	public static void Force(string message)
 	{
 		if (!DebugEnabled)

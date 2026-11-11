@@ -260,7 +260,7 @@ public static class NeteaseServerListService
 
 	// ---------- 缓存 ----------
 
-	private static string CachePath => System.IO.Path.Combine(AppContext.BaseDirectory, "MhyunBox_Logs", "server_list_cache.json");
+	private static string CachePath => System.IO.Path.Combine(AppContext.BaseDirectory, "MhyUnBox_Logs", "server_list_cache.json");
 
 	public static List<NetGameSummary> LoadCache()
 	{

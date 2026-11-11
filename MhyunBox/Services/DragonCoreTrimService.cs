@@ -221,7 +221,7 @@ public static class DragonCoreTrimService
 					added = trimResult.Added,
 					changed = trimResult.Changed,
 					bytes = trimResult.AddedBytes,
-					usage = "用法一：解压本 zip 得到 DragonCore 文件夹，直接拖进资源包文件夹（resourcepacks）里；用法二：用 MhyunBox 的「合并增量包」功能解压覆盖进已有 DragonCore 目录"
+					usage = "用法一：解压本 zip 得到 DragonCore 文件夹，直接拖进资源包文件夹（resourcepacks）里；用法二：用 MhyUnBox 的「合并增量包」功能解压覆盖进已有 DragonCore 目录"
 				}, new JsonSerializerOptions
 				{
 					WriteIndented = true

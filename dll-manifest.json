@@ -1,8 +1,8 @@
 {
   "file": "MhyunBox.dll",
-  "version": "8.1.0",
-  "size": 1813504,
-  "sha256": "a614b41fbcc652fa71b51067203a4565a673621ea954783cf4cd49fbaad2c5f3",
-  "updated": "2026-11-11T01:09:46Z",
+  "version": "8.3.0",
+  "size": 1812480,
+  "sha256": "a561eb737787094d2765960d5f3132b749ddbf4e57c79c5c0e4717738dbf9df6",
+  "updated": "2026-11-11T02:31:24Z",
   "note": "官方发布包中 MhyunBox.dll 的大小与 SHA256。每次发布新 DLL 后请同步更新本文件。"
 }

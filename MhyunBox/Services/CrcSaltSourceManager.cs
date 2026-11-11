@@ -357,7 +357,7 @@ public static class CrcSaltSourceManager
 			{
 				Timeout = TimeSpan.FromSeconds(8.0)
 			};
-			http.DefaultRequestHeaders.UserAgent.ParseAdd("MhyunBox/7.7.0");
+			http.DefaultRequestHeaders.UserAgent.ParseAdd("MhyUnBox/7.7.0");
 			using HttpResponseMessage resp = await http.GetAsync(u, ct).ConfigureAwait(false);
 			string text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 			if (!resp.IsSuccessStatusCode)

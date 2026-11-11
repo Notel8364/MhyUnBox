@@ -202,6 +202,26 @@ public sealed partial class MainWindow : Window
 
 	private static readonly uint _taskbarCreatedMsg = RegisterWindowMessage("TaskbarCreated");
 
+	/// <summary>
+	/// 托盘回调消息改用全局唯一号，不再占用 WM_APP(=0x8000)：
+	/// WinUI3 框架自身也在 WM_APP 段发内部消息，手写 SetWindowLongPtr 子类化时
+	/// 两边容易互相吞消息，表现就是「图标和悬停都正常、左右键没反应」。
+	/// </summary>
+	private static readonly uint _trayCallbackMsg = RegisterTrayCallbackMessage();
+
+	private static uint RegisterTrayCallbackMessage()
+	{
+		try
+		{
+			uint value = RegisterWindowMessage("MhyUnBox_TrayCallback_V1");
+			return (value != 0) ? value : WmAppTray;
+		}
+		catch
+		{
+			return WmAppTray;
+		}
+	}
+
 	private const uint WmDestroy = 2u;
 
 	private const uint WmLButtonUp = 514u;
@@ -223,6 +243,13 @@ public sealed partial class MainWindow : Window
 	private const uint NifIcon = 2u;
 
 	private const uint NifTip = 4u;
+
+	/// <summary>
+	/// NIF_SHOWTIP(0x80)：程序用 Shell_NotifyIcon(NIM_SETVERSION, uVersion=4) 打开了
+	/// NOTIFYICON_VERSION_4，而该版本默认**抑制标准悬停提示**（留给应用自绘浮层）。
+	/// 不带这一位时图标、左右键都正常，唯独鼠标悬停什么都不显示。
+	/// </summary>
+	private const uint NifShowTip = 128u;
 
 	private const uint MfString = 0u;
 
@@ -1578,6 +1605,12 @@ public sealed partial class MainWindow : Window
 
 	private static nint WndProc(nint hWnd, uint msg, nint wParam, nint lParam)
 	{
+		// 托盘回调走独立消息号，先于 switch 处理，避免被框架内部消息挤掉。
+		if (msg == _trayCallbackMsg)
+		{
+			_instance?.HandleTrayMessage(lParam);
+			return IntPtr.Zero;
+		}
 		switch (msg)
 		{
 		case 36u:
@@ -1612,9 +1645,6 @@ public sealed partial class MainWindow : Window
 				}
 			}
 			break;
-		case 32768u:
-			_instance?.HandleTrayMessage(lParam);
-			return IntPtr.Zero;
 		default:
 			if (msg == _taskbarCreatedMsg && _instance != null && SettingsManager.Instance.ShowTrayIcon)
 			{
@@ -1798,7 +1828,7 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>
-	/// 托盘悬浮提示（用户定版）：第一行 MhyUnBox，第二行「正在播放:音乐文件名」。
+	/// 托盘悬浮提示（用户定版）：第一行 MhyUnBox-Notel，第二行「正在播放:音乐文件名」。
 	/// szTip 是 WCHAR[128]，留一个字符给结尾 \0；曲目名沿用媒体卡的去后缀/去画质标记规则。
 	/// </summary>
 	private static string BuildTrayTip()
@@ -1822,7 +1852,7 @@ public sealed partial class MainWindow : Window
 		{
 			title = "无";
 		}
-		string tip = "MhyUnBox\n正在播放:" + title;
+		string tip = "MhyUnBox-Notel\n正在播放:" + title;
 		return tip.Length > 127 ? tip.Substring(0, 127) : tip;
 	}
 
@@ -1846,10 +1876,14 @@ public sealed partial class MainWindow : Window
 				cbSize = (uint)Marshal.SizeOf<NotifyIconData>(),
 				hWnd = WindowNative.GetWindowHandle(this),
 				uID = TrayIconId,
-				uFlags = NifTip,
+				// NIM_MODIFY 必须把 NIF_MESSAGE / NIF_SHOWTIP 一起带上：
+				// 少了前者会把回调冲掉（左右键失灵），少了后者会把标准悬停提示关掉。
+				uFlags = NifMessage | NifTip | NifShowTip,
+				uCallbackMessage = _trayCallbackMsg,
 				szTip = tip
 			};
-			Shell_NotifyIcon(NimModify, ref data);
+			bool ok = Shell_NotifyIcon(NimModify, ref data);
+			LogHelper.Force("[托盘] 提示已刷新 ok=" + ok + " [" + tip.Replace("\n", " | ") + "]");
 		}
 		catch (Exception ex)
 		{
@@ -1874,9 +1908,9 @@ public sealed partial class MainWindow : Window
 			{
 				cbSize = (uint)Marshal.SizeOf<NotifyIconData>(),
 				hWnd = hwnd,
-				uID = 1u,
-				uFlags = 7u,
-				uCallbackMessage = 32768u,
+				uID = TrayIconId,
+				uFlags = NifMessage | NifIcon | NifTip | NifShowTip,
+				uCallbackMessage = _trayCallbackMsg,
 				hIcon = num,
 				szTip = BuildTrayTip()
 			};
@@ -1885,6 +1919,9 @@ public sealed partial class MainWindow : Window
 			Shell_NotifyIcon(2u, ref lpdata2);
 			_trayIcon = num;
 			bool flag = Shell_NotifyIcon(0u, ref lpdata);
+			LogHelper.Force("[托盘] NIM_ADD added=" + flag + " cbSize=" + lpdata.cbSize
+				+ " flags=0x" + lpdata.uFlags.ToString("X") + " callback=" + lpdata.uCallbackMessage
+				+ " tip=[" + lpdata.szTip.Replace("\n", " | ") + "]");
 			string[] array = new string[6]
 			{
 				"托盘图标初始化: added=",
@@ -1917,14 +1954,20 @@ public sealed partial class MainWindow : Window
 					timer.Start();
 				});
 			}
+			// NIM_SETVERSION 同样传完整结构：部分 shell 实现会按这次的 uFlags 重设登记项，
+			// 若这里 uFlags=0 可能把刚加上的 NIF_SHOWTIP / 回调消息抹掉。
 			NotifyIconData lpdata3 = new NotifyIconData
 			{
 				cbSize = (uint)Marshal.SizeOf<NotifyIconData>(),
 				hWnd = hwnd,
-				uID = 1u,
+				uID = TrayIconId,
+				uFlags = NifMessage | NifTip | NifShowTip,
+				uCallbackMessage = _trayCallbackMsg,
+				szTip = lpdata.szTip,
 				uTimeoutOrVersion = 4u
 			};
-			Shell_NotifyIcon(4u, ref lpdata3);
+			LogHelper.Force("[托盘] NIM_SETVERSION ok=" + Shell_NotifyIcon(4u, ref lpdata3)
+				+ " flags=0x" + lpdata3.uFlags.ToString("X"));
 		}
 		catch (Exception ex)
 		{
@@ -1989,32 +2032,35 @@ public sealed partial class MainWindow : Window
 
 	private void HandleTrayMessage(nint lParam)
 	{
-		nint num = lParam;
-		switch ((uint)((IntPtr)num).ToInt64())
+		// lParam 低位是鼠标消息（WM_LBUTTONUP / WM_RBUTTONUP …），高位是图标 ID。
+		long raw = ((nint)lParam).ToInt64();
+		uint mouseMsg = (uint)(raw & 0xFFFFL);
+		// VERSION_4 下 shell 在光标停留期间会每几毫秒发一条 WM_MOUSEMOVE(512)，
+		// 全量记会把日志刷爆（实测一秒上百条），只记会触发动作的消息。
+		if (mouseMsg != 512u)
 		{
-		case 514u:
-		case 515u:
+			LogHelper.Force("[托盘] 回调 msg=" + mouseMsg + " lParam=0x" + raw.ToString("X")
+				+ " 距隐藏=" + (DateTime.UtcNow - _lastHideUtc).TotalMilliseconds.ToString("F0") + "ms");
+		}
+		switch (mouseMsg)
+		{
+		case WmLButtonUp:
+		case WmLButtonDblClk:
 		{
 			DateTime utcNow = DateTime.UtcNow;
-			uint num2 = Math.Max(GetDoubleClickTime(), 650u);
-			if (!((utcNow - _lastTrayClickTime).TotalMilliseconds < (double)num2))
+			// 旧实现有两道闸门会让点击「静默失效」：
+			//  ① GetDoubleClickTime() 下限 650ms 的节流，单击后双击被整段吞掉；
+			//  ② IsCursorOverTrayIcon() 用 Shell_NotifyIconGetRect 的矩形做 PtInRect，
+			//     本机该矩形 y=1598~1670 落在 1600 高的屏幕之外，光标永远判 false。
+			// 与 Miku Music 的 NotifyIcon.MouseUp / DoubleClick 对齐：左键只管把窗口叫回来。
+			if ((utcNow - _lastTrayClickTime).TotalMilliseconds >= 220.0)
 			{
-				if (_trayHidden && (utcNow - _lastHideUtc).TotalMilliseconds < 800.0)
-				{
-					LogHelper.Log("托盘点击已忽略（距隐藏过近）: " + (utcNow - _lastHideUtc).TotalMilliseconds.ToString("F0") + "ms");
-					break;
-				}
-				if (!IsCursorOverTrayIcon())
-				{
-					LogHelper.Log("托盘点击已忽略（光标不在托盘图标上）");
-					break;
-				}
 				_lastTrayClickTime = utcNow;
-				ToggleTrayWindow();
+				BringToFront("trayClick");
 			}
 			break;
 		}
-		case 517u:
+		case WmRButtonUp:
 			ShowTrayMenu();
 			break;
 		}
@@ -2080,9 +2126,12 @@ public sealed partial class MainWindow : Window
 		AppendMenuW(hMenu, 0u, 2u, "打开");
 		AppendMenuW(hMenu, 0u, 3u, "设置");
 		AppendMenuW(hMenu, 0u, 4u, "退出");
+		// Win11 托盘菜单标准流程：先把回调窗口推到前台（否则菜单会瞬间消失，
+		// 看起来就是「右键没反应」），弹完再补一条 WM_NULL 让 shell 正常收尾。
 		SetForegroundWindow(windowHandle);
 		GetCursorPos(out var pt);
 		int num = (int)TrackPopupMenu(hMenu, 386u, pt.X, pt.Y, 0, windowHandle, IntPtr.Zero);
+		PostMessage(windowHandle, 0u, IntPtr.Zero, IntPtr.Zero);
 		DestroyMenu(hMenu);
 		switch ((TrayCommand)num)
 		{
@@ -2319,6 +2368,10 @@ public sealed partial class MainWindow : Window
 	[DllImport("user32.dll")]
 	private static extern bool ShowWindow(nint hWnd, int nCmdShow);
 
+	/// <summary>托盘右键菜单收尾：向回调窗口投递 WM_NULL，避免 Win11 菜单焦点悬挂。</summary>
+	[DllImport("user32.dll")]
+	private static extern bool PostMessage(nint hWnd, uint msg, nint wParam, nint lParam);
+
 	[DllImport("user32.dll")]
 	private static extern bool IsWindowVisible(nint hWnd);
 
@@ -2474,9 +2527,9 @@ public sealed partial class MainWindow : Window
 		timer.Tick += delegate
 		{
 			timer.Stop();
-			AppTitleTextBlock.Text = "MhyUnbox";
-			_appWindow.Title = "MhyUnbox";
-			ToolTipService.SetToolTip(AppTitleIcon, "MhyUnbox");
+			AppTitleTextBlock.Text = "MhyUnBox";
+			_appWindow.Title = "MhyUnBox";
+			ToolTipService.SetToolTip(AppTitleIcon, "MhyUnBox");
 		};
 		_titleRevertTimer = timer;
 		timer.Start();

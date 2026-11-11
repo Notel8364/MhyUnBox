@@ -236,13 +236,6 @@ public sealed class ProxyStartDialog : ContentDialog
 		{
 			return;
 		}
-		// 2026-11-07 修复：打开对话框时的自动角色刷新会附带一次 login-otp，
-		// 属于自动链路，风控冷静期内必须跳过，避免继续向网易发登录请求。
-		if (RiskNotice.ShouldBlockAutomaticRequests)
-		{
-			SetStatus("网易风控冷静期内，已跳过自动角色刷新（剩余 " + (int)Math.Ceiling(RiskNotice.Remaining.TotalMinutes) + " 分钟）", ok: false);
-			return;
-		}
 		// 角色刷新会附带一次 login-otp，官方启动器运行时跳过，避免顶掉它的同账号会话。
 		if (GameProcessDetector.IsOfficialLauncherRunning())
 		{
