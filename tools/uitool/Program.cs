@@ -57,6 +57,8 @@ internal static class Program
     [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr hdc);
     [DllImport("gdi32.dll")] private static extern int GetDIBits(IntPtr hdc, IntPtr bmp, uint start, uint lines, byte[] bits, ref BITMAPINFOHEADER info, uint usage);
 
+    [DllImport("user32.dll")] private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr param);
 
     private static int Main(string[] args)
@@ -74,8 +76,33 @@ internal static class Program
             case "focus": return Focus(args);
             case "rect": return Rect(args);
             case "list": return List();
+            case "qs": return QuickSettings();
+            case "move": return Move(args);
             default: Console.WriteLine("unknown command"); return 2;
         }
+    }
+
+    // 只移动鼠标（用于唤出自动隐藏的任务栏 / 触发托盘悬浮提示）。
+    private static int Move(string[] args)
+    {
+        int x = int.Parse(args[1]);
+        int y = int.Parse(args[2]);
+        SetCursorPos(x, y);
+        Console.WriteLine("moved " + x + "," + y);
+        return 0;
+    }
+
+    // Win+A：打开/关闭 Windows 11 快速设置（媒体浮层就在它的顶部）。
+    private static int QuickSettings()
+    {
+        const byte LWin = 0x5B, A = 0x41, KeyUp = 0x0002;
+        keybd_event(LWin, 0, 0, UIntPtr.Zero);
+        keybd_event(A, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(80);
+        keybd_event(A, 0, KeyUp, UIntPtr.Zero);
+        keybd_event(LWin, 0, KeyUp, UIntPtr.Zero);
+        Console.WriteLine("Win+A sent");
+        return 0;
     }
 
     private static int Cap(string[] args)

@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,15 +12,15 @@ namespace MhyunBox.Services;
 
 public enum BuildStampStatus
 {
-	/// <summary>本地与仓库基本一致。</summary>
+	/// <summary>本地 DLL 与仓库清单的大小和 SHA256 完全一致。</summary>
 	Current,
-	/// <summary>本地比仓库旧（该更新了）。</summary>
+	/// <summary>与仓库 DLL 不一致（大小或 SHA256 有差异，需要换 DLL）。</summary>
 	Behind,
-	/// <summary>本地比仓库新（本地修改版 / 尚未推送）。</summary>
+	/// <summary>保留枚举值（大小+SHA 对比下无法判断先后）。</summary>
 	Ahead,
-	/// <summary>DLL 与主程序不是同一次构建（常见于只替换了 DLL）。</summary>
+	/// <summary>本地 DLL 读不到 / 损坏。</summary>
 	Mixed,
-	/// <summary>拿不到仓库时间或读不到本地文件。</summary>
+	/// <summary>拿不到仓库校验清单。</summary>
 	Unknown
 }
 
@@ -27,14 +28,21 @@ public sealed class BuildStampInfo
 {
 	public string DllPath { get; init; } = "";
 
-	public DateTime LocalDllUtc { get; init; }
+	/// <summary>本地 DLL 字节数；0 = 读取失败。</summary>
+	public long LocalSize { get; init; }
 
-	public DateTime LocalExeUtc { get; init; }
+	/// <summary>本地 DLL 的 SHA256（小写十六进制）；读取失败为空串。</summary>
+	public string LocalSha256 { get; init; } = "";
 
-	public DateTime? RemoteCommitUtc { get; init; }
+	/// <summary>仓库清单里的 DLL 字节数。</summary>
+	public long? RemoteSize { get; init; }
 
-	/// <summary>本地 DLL 时间的来源：PE 时间戳 / 文件写入时间。</summary>
-	public string LocalSource { get; init; } = "";
+	/// <summary>仓库清单里的 SHA256。</summary>
+	public string? RemoteSha256 { get; init; }
+
+	public string? RemoteVersion { get; init; }
+
+	public DateTime? RemoteUpdatedUtc { get; init; }
 
 	public BuildStampStatus Status { get; init; }
 
@@ -42,37 +50,35 @@ public sealed class BuildStampInfo
 
 	public string? RemoteError { get; init; }
 
-	public bool HasLocal => LocalDllUtc > DateTime.MinValue;
+	public bool HasLocal => LocalSize > 0 && LocalSha256.Length == 64;
 }
 
 /// <summary>
-/// 程序 DLL 构建时间校验：
-/// 读取本机 MhyunBox.dll 的构建时间，与 GitHub 仓库最新提交时间对比，
-/// 判断「本地落后 / 本地较新 / DLL 与主程序不是同一次构建」，并引导用户加群换 DLL。
+/// DLL 一致性校验：对比本地 MhyunBox.dll 与仓库公布的官方 DLL 的
+/// **文件大小 + SHA256**，不再用构建时间/提交时间。
 ///
-/// 关于「PE 时间戳」：.NET SDK 默认开启确定性构建（Deterministic），
-/// 编译进 PE 头的 TimeDateStamp 是内容哈希而不是真实时间（常见为 0x8xxxxxxx 的怪值）。
-/// 因此这里先尝试 PE 时间戳，落在合理区间才采用；否则退回文件最后写入时间
-/// （解压/复制会保留该时间，足以判断构建批次）。
+/// 为什么改：时间戳会被解压、复制、不同机器时区、用户手动更新 DLL 打乱，
+/// 对部分用户会误判「落后 / 较新」。大小与哈希是内容本身的指纹，结论唯一。
+/// 仓库里不放 DLL 二进制（构建产物本来被 .gitignore 排除），只放一份
+/// dll-manifest.json（size/sha256/version/updated），程序按 raw 地址拉取。
 /// </summary>
 public static class BuildStampService
 {
 	public const string DllFileName = "MhyunBox.dll";
 
-	private const string CommitsApi = "https://api.github.com/repos/" + GitHubService.RepoOwner + "/" + GitHubService.RepoName + "/commits?per_page=1";
+	private const string ManifestUrl = "https://raw.githubusercontent.com/" + GitHubService.RepoOwner + "/" + GitHubService.RepoName + "/" + GitHubService.DefaultBranch + "/dll-manifest.json";
 
 	private static readonly HttpClient Http = CreateClient();
 
 	private static readonly SemaphoreSlim RemoteLock = new SemaphoreSlim(1, 1);
 
-	private static DateTime? _remoteCommitUtc;
+	private static BuildManifest? _remoteManifest;
+
+	private static string? _remoteError;
 
 	private static DateTime _remoteFetchedAtUtc = DateTime.MinValue;
 
 	private static readonly TimeSpan RemoteCache = TimeSpan.FromMinutes(30);
-
-	/// <summary>一致性容差：同一次构建内的文件时间差、时区/提交时间差都落在半天以内。</summary>
-	private static readonly TimeSpan Tolerance = TimeSpan.FromHours(12);
 
 	private static HttpClient CreateClient()
 	{
@@ -87,125 +93,95 @@ public static class BuildStampService
 		catch
 		{
 		}
-		client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
 		return client;
 	}
 
-	/// <summary>本地 DLL / EXE 的构建时间（不发网络请求）。</summary>
+	private sealed class BuildManifest
+	{
+		public long Size { get; init; }
+		public string Sha256 { get; init; } = "";
+		public string Version { get; init; } = "";
+		public DateTime? UpdatedUtc { get; init; }
+	}
+
+	/// <summary>读取本地 DLL 的大小与 SHA256（不发网络请求）。</summary>
 	public static BuildStampInfo CheckLocal()
 	{
-		string dir = AppContext.BaseDirectory;
-		string dll = Path.Combine(dir, DllFileName);
-		string exe = Environment.ProcessPath ?? Path.Combine(dir, "MhyunBox.exe");
-		DateTime dllUtc = DateTime.MinValue;
-		string source = "未知";
+		string dll = Path.Combine(AppContext.BaseDirectory, DllFileName);
+		long size = 0L;
+		string sha = "";
 		try
 		{
 			if (File.Exists(dll))
 			{
-				DateTime? pe = TryReadPeTimestamp(dll);
-				if (pe.HasValue)
-				{
-					dllUtc = pe.Value;
-					source = "PE 时间戳";
-				}
-				else
-				{
-					dllUtc = File.GetLastWriteTimeUtc(dll);
-					source = "文件写入时间";
-				}
+				using FileStream fs = new FileStream(dll, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+				size = fs.Length;
+				sha = Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
 			}
 		}
 		catch (Exception ex)
 		{
-			LogHelper.LogError(ex, "[构建校验] 读取本地 DLL 时间失败");
+			LogHelper.LogError(ex, "[DLL校验] 读取本地 DLL 失败");
 		}
-		DateTime exeUtc = DateTime.MinValue;
-		try
-		{
-			if (File.Exists(exe))
-			{
-				exeUtc = File.GetLastWriteTimeUtc(exe);
-			}
-		}
-		catch
-		{
-		}
-		BuildStampStatus localStatus = BuildStampStatus.Unknown;
-		string localText = "未能读取本地 " + DllFileName;
-		if (dllUtc > DateTime.MinValue)
-		{
-			localStatus = BuildStampStatus.Current;
-			localText = "本地版本可用";
-			if (exeUtc > DateTime.MinValue && (dllUtc - exeUtc).Duration() > Tolerance)
-			{
-				localStatus = BuildStampStatus.Mixed;
-				localText = "DLL 与主程序不是同一次构建";
-			}
-		}
+		bool hasLocal = size > 0L && sha.Length == 64;
 		return new BuildStampInfo
 		{
 			DllPath = dll,
-			LocalDllUtc = dllUtc,
-			LocalExeUtc = exeUtc,
-			LocalSource = source,
-			Status = localStatus,
-			StatusText = localText
+			LocalSize = size,
+			LocalSha256 = sha,
+			Status = hasLocal ? BuildStampStatus.Current : BuildStampStatus.Mixed,
+			StatusText = hasLocal ? "本地 DLL 已读取" : "本地 " + DllFileName + " 读取失败（文件缺失或被占用）"
 		};
 	}
 
-	/// <summary>本地 + 仓库对比。forceRefresh=true 时忽略 30 分钟缓存。</summary>
+	/// <summary>本地 + 仓库清单对比。forceRefresh=true 时忽略 30 分钟缓存。</summary>
 	public static async Task<BuildStampInfo> CheckAsync(bool forceRefresh = false)
 	{
 		BuildStampInfo local = CheckLocal();
-		DateTime? remote = await GetRemoteCommitUtcAsync(forceRefresh).ConfigureAwait(false);
-		string? error = remote.HasValue ? null : "未能获取仓库最新提交（网络或接口不可用）";
-		BuildStampStatus status = local.Status;
-		string text = local.StatusText;
-		if (local.HasLocal && remote.HasValue)
+		BuildManifest? remote = await GetRemoteManifestAsync(forceRefresh).ConfigureAwait(false);
+		BuildStampStatus status;
+		string text;
+		if (!local.HasLocal)
 		{
-			TimeSpan gap = local.LocalDllUtc - remote.Value;
-			if (status != BuildStampStatus.Mixed)
-			{
-				if (gap > Tolerance)
-				{
-					status = BuildStampStatus.Ahead;
-					text = "本地比仓库新 " + Humanize(gap) + "（本地修改版或尚未推送）";
-				}
-				else if (-gap > Tolerance)
-				{
-					status = BuildStampStatus.Behind;
-					text = "本地比仓库旧 " + Humanize(-gap) + "，建议更新 DLL";
-				}
-				else
-				{
-					status = BuildStampStatus.Current;
-					text = "本地与仓库基本一致";
-				}
-			}
-			else
-			{
-				text = "DLL 与主程序不是同一次构建（常见于只替换了 DLL），建议重新获取完整包";
-			}
+			status = BuildStampStatus.Mixed;
+			text = "无法读取本地 DLL，建议重新获取完整包";
 		}
-		else if (status == BuildStampStatus.Current)
+		else if (remote == null)
 		{
 			status = BuildStampStatus.Unknown;
+			text = "无法获取仓库 DLL 校验清单（网络或文件不可用）";
+		}
+		else if (local.LocalSize != remote.Size)
+		{
+			status = BuildStampStatus.Behind;
+			text = "DLL 大小与仓库不一致：本地 " + FormatSize(local.LocalSize) + " / 仓库 " + FormatSize(remote.Size);
+		}
+		else if (!string.Equals(local.LocalSha256, remote.Sha256, StringComparison.OrdinalIgnoreCase))
+		{
+			status = BuildStampStatus.Behind;
+			text = "DLL 内容与仓库不一致（SHA256 不同），建议更新 DLL";
+		}
+		else
+		{
+			status = BuildStampStatus.Current;
+			text = "与仓库 DLL 完全一致" + (string.IsNullOrWhiteSpace(remote.Version) ? "" : "（v" + remote.Version + "）");
 		}
 		return new BuildStampInfo
 		{
 			DllPath = local.DllPath,
-			LocalDllUtc = local.LocalDllUtc,
-			LocalExeUtc = local.LocalExeUtc,
-			LocalSource = local.LocalSource,
-			RemoteCommitUtc = remote,
-			RemoteError = error,
+			LocalSize = local.LocalSize,
+			LocalSha256 = local.LocalSha256,
+			RemoteSize = remote?.Size,
+			RemoteSha256 = remote?.Sha256,
+			RemoteVersion = remote?.Version,
+			RemoteUpdatedUtc = remote?.UpdatedUtc,
+			RemoteError = remote == null ? (_remoteError ?? "未能获取仓库校验清单") : null,
 			Status = status,
 			StatusText = text
 		};
 	}
 
-	/// <summary>启动后台校验：落后或 DLL 不匹配时提示加群（每天最多一次）。</summary>
+	/// <summary>启动后台校验：与仓库不一致或本地 DLL 读不到时提示加群（每天最多一次）。</summary>
 	public static void StartStartupCheck()
 	{
 		Task.Run(async delegate
@@ -214,9 +190,9 @@ public static class BuildStampService
 			{
 				await Task.Delay(TimeSpan.FromSeconds(10.0)).ConfigureAwait(continueOnCapturedContext: false);
 				BuildStampInfo info = await CheckAsync().ConfigureAwait(continueOnCapturedContext: false);
-				LogHelper.Log("[构建校验] 本地 DLL=" + FormatUtc(info.LocalDllUtc) + "（" + info.LocalSource + "）"
-					+ " EXE=" + FormatUtc(info.LocalExeUtc)
-					+ " 仓库=" + (info.RemoteCommitUtc.HasValue ? FormatUtc(info.RemoteCommitUtc.Value) : "获取失败")
+				LogHelper.Log("[DLL校验] 本地 size=" + FormatSize(info.LocalSize) + " sha=" + ShortHash(info.LocalSha256)
+					+ " 仓库 size=" + (info.RemoteSize.HasValue ? FormatSize(info.RemoteSize.Value) : "获取失败")
+					+ " sha=" + (info.RemoteSha256 ?? "获取失败")
 					+ " => " + info.Status + "：" + info.StatusText);
 				if (info.Status != BuildStampStatus.Behind && info.Status != BuildStampStatus.Mixed)
 				{
@@ -248,128 +224,96 @@ public static class BuildStampService
 			}
 			catch (Exception ex)
 			{
-				LogHelper.LogError(ex, "[构建校验] 启动校验失败");
+				LogHelper.LogError(ex, "[DLL校验] 启动校验失败");
 			}
 		});
 	}
 
 	public static string BuildPromptText(BuildStampInfo info, bool preview = false)
 	{
-		string local = info.HasLocal ? FormatUtc(info.LocalDllUtc) : "读取失败";
-		string remote = info.RemoteCommitUtc.HasValue ? FormatUtc(info.RemoteCommitUtc.Value) : "获取失败";
+		string local = info.HasLocal ? FormatSize(info.LocalSize) + " / " + ShortHash(info.LocalSha256) : "读取失败";
+		string remote = info.RemoteSize.HasValue
+			? FormatSize(info.RemoteSize.Value) + " / " + ShortHash(info.RemoteSha256 ?? "")
+			: (info.RemoteError ?? "获取失败");
 		string advice = info.Status switch
 		{
-			BuildStampStatus.Mixed => "检测到你本地的 MhyunBox.dll 与主程序不是同一次构建（常见于只替换了 DLL）。\n请加群下载完整包后整体替换，或从仓库拉取源码重新构建再合并。",
-			BuildStampStatus.Behind => "你本地的 MhyunBox.dll 比仓库最新提交旧，请加群下载最新 DLL 替换，或从仓库拉取源码重新构建后合并。",
-			BuildStampStatus.Ahead => "本地 DLL 比仓库提交更新（本地修改版或仓库尚未同步）。若你只是普通使用，建议以群内发布的完整包为准。",
-			_ => "当前本地文件与仓库基本一致；这条提示用于预览提醒样式。"
+			BuildStampStatus.Mixed => "本地 MhyunBox.dll 读不到（文件缺失、被占用或损坏），请加群下载完整包后整体替换。",
+			BuildStampStatus.Behind => "你本地的 MhyunBox.dll 与仓库发布的 DLL 不一致（大小或 SHA256 不同），请加群下载最新 DLL 替换，或从仓库拉取源码重新构建后合并。",
+			BuildStampStatus.Unknown => "暂时拿不到仓库的 DLL 校验清单，无法判断一致性；可稍后点「重新检测」。",
+			_ => "当前本地 DLL 与仓库清单完全一致；这条提示用于预览提醒样式。"
 		};
-		string head = preview ? "（预览）真实使用时只会在 DLL 落后或与主程序不匹配时弹出。\n\n" : "";
-		return head + "本地 DLL 构建时间：" + local + "\n仓库最新提交时间：" + remote + "\n\n" + advice
+		string head = preview ? "（预览）真实使用时只会在 DLL 与仓库不一致或读取失败时弹出。\n\n" : "";
+		return head + "本地 DLL：" + local + "\n仓库 DLL：" + remote + "\n\n" + advice
 			+ "\n\nQQ 群：" + CommunityChannel.QqGroupNumber + "（更新 DLL / 反馈问题 / 崩溃日志）";
 	}
 
-	public static string FormatUtc(DateTime utc)
+	public static string FormatSize(long bytes)
 	{
-		if (utc <= DateTime.MinValue)
+		return bytes.ToString("N0", CultureInfo.InvariantCulture) + " 字节";
+	}
+
+	public static string ShortHash(string? sha)
+	{
+		if (string.IsNullOrWhiteSpace(sha))
 		{
 			return "—";
 		}
-		return utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+		return sha.Length <= 12 ? sha : sha.Substring(0, 12) + "…";
 	}
 
-	private static string Humanize(TimeSpan span)
+	private static async Task<BuildManifest?> GetRemoteManifestAsync(bool forceRefresh)
 	{
-		if (span.TotalDays >= 1.0)
+		if (!forceRefresh && _remoteManifest != null && DateTime.UtcNow - _remoteFetchedAtUtc < RemoteCache)
 		{
-			return ((int)span.TotalDays) + " 天";
-		}
-		return Math.Max(1, (int)span.TotalHours) + " 小时";
-	}
-
-	/// <summary>读取 PE 头 TimeDateStamp；确定性构建下是哈希，判定为不可用时返回 null。</summary>
-	private static DateTime? TryReadPeTimestamp(string path)
-	{
-		try
-		{
-			using FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-			using BinaryReader reader = new BinaryReader(fs);
-			if (fs.Length < 0x100)
-			{
-				return null;
-			}
-			fs.Position = 0x3C;
-			int peOffset = reader.ReadInt32();
-			if (peOffset <= 0 || peOffset + 12 > fs.Length)
-			{
-				return null;
-			}
-			fs.Position = peOffset;
-			if (reader.ReadUInt32() != 0x00004550u)
-			{
-				return null;
-			}
-			uint stamp = reader.ReadUInt32();
-			if (stamp == 0 || stamp == uint.MaxValue)
-			{
-				return null;
-			}
-			// 确定性构建会把高位做成哈希：超过 2038 年或早于 2000 年都视为不可用
-			DateTime utc = DateTimeOffset.FromUnixTimeSeconds(stamp).UtcDateTime;
-			if (utc.Year < 2000 || utc > DateTime.UtcNow.AddDays(2.0))
-			{
-				return null;
-			}
-			return utc;
-		}
-		catch
-		{
-			return null;
-		}
-	}
-
-	private static async Task<DateTime?> GetRemoteCommitUtcAsync(bool forceRefresh)
-	{
-		if (!forceRefresh && _remoteCommitUtc.HasValue && DateTime.UtcNow - _remoteFetchedAtUtc < RemoteCache)
-		{
-			return _remoteCommitUtc;
+			return _remoteManifest;
 		}
 		if (!await RemoteLock.WaitAsync(TimeSpan.FromSeconds(5.0)).ConfigureAwait(continueOnCapturedContext: false))
 		{
-			return _remoteCommitUtc;
+			return _remoteManifest;
 		}
 		try
 		{
-			if (!forceRefresh && _remoteCommitUtc.HasValue && DateTime.UtcNow - _remoteFetchedAtUtc < RemoteCache)
+			if (!forceRefresh && _remoteManifest != null && DateTime.UtcNow - _remoteFetchedAtUtc < RemoteCache)
 			{
-				return _remoteCommitUtc;
+				return _remoteManifest;
 			}
-			using JsonDocument doc = JsonDocument.Parse(await Http.GetStringAsync(CommitsApi).ConfigureAwait(continueOnCapturedContext: false));
+			string url = ManifestUrl + (forceRefresh ? "?t=" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture) : "");
+			string json = await Http.GetStringAsync(url).ConfigureAwait(continueOnCapturedContext: false);
+			using JsonDocument doc = JsonDocument.Parse(json);
 			JsonElement root = doc.RootElement;
-			if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0)
+			long size = root.TryGetProperty("size", out JsonElement sizeNode) && sizeNode.TryGetInt64(out long parsedSize) ? parsedSize : 0L;
+			string sha = root.TryGetProperty("sha256", out JsonElement shaNode) ? (shaNode.GetString() ?? "").Trim().ToLowerInvariant() : "";
+			string version = root.TryGetProperty("version", out JsonElement versionNode) ? (versionNode.GetString() ?? "") : "";
+			DateTime? updated = null;
+			if (root.TryGetProperty("updated", out JsonElement dateNode)
+				&& DateTime.TryParse(dateNode.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out DateTime parsedDate))
 			{
-				JsonElement commit = root[0];
-				JsonElement node = default(JsonElement);
-				if (commit.TryGetProperty("commit", out JsonElement commitNode)
-					&& commitNode.TryGetProperty("committer", out node)
-					&& node.TryGetProperty("date", out JsonElement dateNode)
-					&& DateTime.TryParse(dateNode.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out DateTime parsed))
-				{
-					_remoteCommitUtc = parsed;
-					_remoteFetchedAtUtc = DateTime.UtcNow;
-					return _remoteCommitUtc;
-				}
+				updated = parsedDate;
 			}
-			LogHelper.Log("[构建校验] 仓库提交接口返回内容无法解析");
+			if (size <= 0L || sha.Length != 64)
+			{
+				throw new FormatException("清单缺少有效的 size / sha256");
+			}
+			_remoteManifest = new BuildManifest
+			{
+				Size = size,
+				Sha256 = sha,
+				Version = version,
+				UpdatedUtc = updated
+			};
+			_remoteError = null;
+			_remoteFetchedAtUtc = DateTime.UtcNow;
+			return _remoteManifest;
 		}
 		catch (Exception ex)
 		{
-			LogHelper.Log("[构建校验] 获取仓库最新提交失败：" + ex.Message);
+			_remoteError = "清单获取失败：" + ex.Message;
+			LogHelper.Log("[DLL校验] " + _remoteError);
 		}
 		finally
 		{
 			RemoteLock.Release();
 		}
-		return _remoteCommitUtc;
+		return _remoteManifest;
 	}
 }

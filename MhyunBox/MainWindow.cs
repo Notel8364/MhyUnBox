@@ -254,6 +254,12 @@ public sealed partial class MainWindow : Window
 
 	private Microsoft.UI.Dispatching.DispatcherQueueTimer? _toastTimer;
 
+	// 顶层 Toast：C# 新建、追加到 RootGrid 末尾的元素（预编译 xbf 里的 ToastHost
+	// 排在 ContentCard 之前，黑底深色的不透明卡片会按绘制顺序把它盖住）。
+	private Border? _toastOverlay;
+	private TextBlock? _toastOverlayText;
+	private bool _toastOverlayAdded;
+
 	private Microsoft.UI.Dispatching.DispatcherQueueTimer? _titleRevertTimer;
 
 	private string? _backgroundVideoPath;
@@ -408,24 +414,19 @@ public sealed partial class MainWindow : Window
 	{
 		InitializeComponent();
 		_instance = this;
-		// Toast 提到最上层：只调整 ZIndex，绝不移动 XAML 元素。
-		// 原 XAML 里 ToastHost 声明在 ContentCard 之前，黑底深色把 ContentCard 改成不透明纯黑后会整片盖住。
-		// 自检实证：运行时加载的是预编译 .xbf，对这类元素做 Children.Remove/Add（或新建 Popup）
-		// 一律抛 COMException 0x800F1000，反而让 Toast 退回被遮挡的位置。
-		// 这里把 ToastHost 所在的行容器与 ToastHost 自身都提到最高 ZIndex（两者是 RootGrid 的兄弟子树）。
+		// Toast 顶层化：预编译 xbf 里的 ToastHost 排在 ContentCard 之前，
+		// 黑底深色把 ContentCard 换成不透明纯黑后，只调 Canvas.ZIndex 仍会被
+		// Grid 的绘制顺序压住（实测 ZIndex 方案无效）。改用 C# 新建的提示层，
+		// 每次显示都重新追加到 RootGrid 末尾 —— 末尾元素天然最后绘制。
+		// 自己 new 的元素可以安全 Remove/Add，不会像 xbf 元素那样抛 COMException。
 		try
 		{
-			Panel? toastParent = ToastHost.Parent as Panel;
-			if (toastParent != null)
-			{
-				Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(toastParent, 32767);
-			}
-			Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(ToastHost, 32767);
-			LogHelper.Log("[界面] Toast 已提升 ZIndex 到最上层（不移动元素，原父级=" + (toastParent?.GetType().Name ?? "无") + "）");
+			EnsureToastOverlay();
+			LogHelper.Log("[界面] Toast 顶层提示层已建立（RootGrid 末尾，不依赖 ZIndex）");
 		}
 		catch (Exception ex)
 		{
-			LogHelper.LogError(ex, "[界面] Toast 提升失败，保留原位置");
+			LogHelper.LogError(ex, "[界面] Toast 顶层提示层建立失败，退回 XAML ToastHost");
 		}
 		base.ExtendsContentIntoTitleBar = true;
 		SetTitleBar(AppTitleBar);
@@ -1796,6 +1797,68 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
+	/// <summary>
+	/// 托盘悬浮提示（用户定版）：第一行 MhyUnBox，第二行「正在播放:音乐文件名」。
+	/// szTip 是 WCHAR[128]，留一个字符给结尾 \0；曲目名沿用媒体卡的去后缀/去画质标记规则。
+	/// </summary>
+	private static string BuildTrayTip()
+	{
+		string title;
+		try
+		{
+			string? path = MusicService.CurrentPath;
+			if (string.IsNullOrWhiteSpace(path))
+			{
+				title = "无";
+			}
+			else
+			{
+				string raw = Path.GetFileNameWithoutExtension(path);
+				string name = MusicService.CleanQualityTags(raw);
+				title = string.IsNullOrWhiteSpace(name) ? raw : name;
+			}
+		}
+		catch
+		{
+			title = "无";
+		}
+		string tip = "MhyUnBox\n正在播放:" + title;
+		return tip.Length > 127 ? tip.Substring(0, 127) : tip;
+	}
+
+	/// <summary>曲目/播放状态变化时刷新托盘悬浮提示（内容没变就不打扰 shell）。</summary>
+	private void UpdateTrayTip()
+	{
+		if (_trayIcon == IntPtr.Zero)
+		{
+			return;
+		}
+		try
+		{
+			string tip = BuildTrayTip();
+			if (string.Equals(tip, _lastTrayTip, StringComparison.Ordinal))
+			{
+				return;
+			}
+			_lastTrayTip = tip;
+			NotifyIconData data = new NotifyIconData
+			{
+				cbSize = (uint)Marshal.SizeOf<NotifyIconData>(),
+				hWnd = WindowNative.GetWindowHandle(this),
+				uID = TrayIconId,
+				uFlags = NifTip,
+				szTip = tip
+			};
+			Shell_NotifyIcon(NimModify, ref data);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "更新托盘悬浮提示失败");
+		}
+	}
+
+	private string _lastTrayTip = "";
+
 	private void InitTrayIcon(nint hwnd)
 	{
 		try
@@ -1815,8 +1878,9 @@ public sealed partial class MainWindow : Window
 				uFlags = 7u,
 				uCallbackMessage = 32768u,
 				hIcon = num,
-				szTip = "N"
+				szTip = BuildTrayTip()
 			};
+			_lastTrayTip = lpdata.szTip;
 			NotifyIconData lpdata2 = lpdata;
 			Shell_NotifyIcon(2u, ref lpdata2);
 			_trayIcon = num;
@@ -2225,7 +2289,10 @@ public sealed partial class MainWindow : Window
 		return timer;
 	}
 
-	[DllImport("shell32.dll")]
+	// 结构体是 CharSet.Unicode（szTip 为 WCHAR[128]），这里必须显式走 W 版：
+	// 默认 CharSet.Ansi 会解析到 Shell_NotifyIconA，UTF-16 的提示文本被当成 ANSI 读，
+	// 第一个字符后面就是 \0 —— 悬浮提示只剩一个「N」。
+	[DllImport("shell32.dll", CharSet = CharSet.Unicode, EntryPoint = "Shell_NotifyIconW")]
 	private static extern bool Shell_NotifyIcon(uint dwMessage, ref NotifyIconData lpdata);
 
 	[DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -2309,18 +2376,78 @@ public sealed partial class MainWindow : Window
 			(fgR, fgG, fgB) = (10, 10, 10);
 			(bdA, bdR, bdG, bdB) = (80, 0, 0, 0);
 		}
-		ToastHost.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(bgA, bgR, bgG, bgB));
-		ToastHost.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(bdA, bdR, bdG, bdB));
-		ToastText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, fgR, fgG, fgB));
-		ToastText.Text = message;
-		ToastHost.Visibility = Visibility.Visible;
-		// ToastHost 已挂在 RootGrid 末尾并由 Canvas.ZIndex 保证最上层，无需 Popup / XamlRoot。
+		// 用 C# 新建的顶层提示层；建立/挂载失败才退回预编译 xbf 的 ToastHost。
+		Border host;
+		TextBlock textBlock;
+		try
+		{
+			host = EnsureToastOverlay();
+			textBlock = _toastOverlayText!;
+			// 每次显示重新追加到末尾：期间新建的内容/弹层再多，也压不住最后绘制的这一层。
+			if (_toastOverlayAdded)
+			{
+				try
+				{
+					RootGrid.Children.Remove(host);
+				}
+				catch
+				{
+					// 元素已经不在树里，直接重新 Add
+				}
+			}
+			RootGrid.Children.Add(host);
+			_toastOverlayAdded = true;
+			Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(host, 32767);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[界面] Toast 顶层挂载失败，退回 XAML ToastHost");
+			host = ToastHost;
+			textBlock = ToastText;
+		}
+		host.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(bgA, bgR, bgG, bgB));
+		host.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(bdA, bdR, bdG, bdB));
+		textBlock.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, fgR, fgG, fgB));
+		textBlock.Text = message;
+		host.Visibility = Visibility.Visible;
 		if ((object)_toastTimer == null)
 		{
 			_toastTimer = CreateToastTimer();
 		}
 		_toastTimer.Stop();
 		_toastTimer.Start();
+	}
+
+	/// <summary>建立 Toast 顶层元素（只建一次，显示时反复追加到 RootGrid 末尾）。</summary>
+	private Border EnsureToastOverlay()
+	{
+		if (_toastOverlay != null)
+		{
+			return _toastOverlay;
+		}
+		TextBlock text = new TextBlock
+		{
+			FontSize = 14.0,
+			TextWrapping = TextWrapping.Wrap,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		Border overlay = new Border
+		{
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Top,
+			Margin = new Thickness(0.0, 46.0, 0.0, 0.0),
+			MaxWidth = 600.0,
+			MinWidth = 220.0,
+			CornerRadius = new CornerRadius(8.0),
+			BorderThickness = new Thickness(1.0),
+			Padding = new Thickness(16.0, 8.0, 16.0, 8.0),
+			IsHitTestVisible = false,
+			Visibility = Visibility.Collapsed,
+			Child = text
+		};
+		_toastOverlay = overlay;
+		_toastOverlayText = text;
+		return overlay;
 	}
 
 	private Microsoft.UI.Dispatching.DispatcherQueueTimer CreateToastTimer()
@@ -2331,6 +2458,10 @@ public sealed partial class MainWindow : Window
 		{
 			timer.Stop();
 			ToastHost.Visibility = Visibility.Collapsed;
+			if (_toastOverlay != null)
+			{
+				_toastOverlay.Visibility = Visibility.Collapsed;
+			}
 		};
 		return timer;
 	}
@@ -2358,6 +2489,7 @@ public sealed partial class MainWindow : Window
 			base.DispatcherQueue.TryEnqueue(delegate
 			{
 				UpdateMiniPlayer();
+				UpdateTrayTip();
 				SyncBackgroundVideo();
 				SyncBackgroundVideoTransport();
 			});

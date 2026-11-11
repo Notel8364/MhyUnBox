@@ -54,7 +54,7 @@ public sealed partial class HomePage : Page
 		InitializeComponent();
 		TrimNoticeCard();
 		ApplyOpenSourceTweaks();
-		// 反馈与更新（QQ 群 + 构建时间校验，代理流模式开关也放这张卡里）
+		// 反馈与更新（QQ 群 + DLL 大小/SHA256 校验，代理流模式开关也放这张卡里）
 		try
 		{
 			HomeRoot.Children.Add(BuildCommunityCard());
@@ -203,7 +203,7 @@ public sealed partial class HomePage : Page
 		card.Children.Add(SettingsPage.CreateProxyModeSelector());
 		card.Children.Add(new TextBlock
 		{
-			Text = "构建时间校验",
+			Text = "DLL 校验（大小 + SHA256）",
 			FontSize = 15.0,
 			FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
 			Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
@@ -222,8 +222,8 @@ public sealed partial class HomePage : Page
 			Width = new GridLength(1.0, GridUnitType.Star)
 		});
 		_stampDllText = AddStampRow(grid, "本地 DLL", 0);
-		_stampExeText = AddStampRow(grid, "本地主程序", 1);
-		_stampRemoteText = AddStampRow(grid, "仓库最新提交", 2);
+		_stampExeText = AddStampRow(grid, "本地 SHA256", 1);
+		_stampRemoteText = AddStampRow(grid, "仓库 DLL", 2);
 		_stampStatusText = AddStampRow(grid, "状态", 3);
 		_stampStatusText.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
 		card.Children.Add(grid);
@@ -324,17 +324,17 @@ public sealed partial class HomePage : Page
 			if (_stampDllText != null)
 			{
 				_stampDllText.Text = info.HasLocal
-					? (BuildStampService.FormatUtc(info.LocalDllUtc) + "（" + info.LocalSource + "）")
+					? BuildStampService.FormatSize(info.LocalSize)
 					: "读取失败";
 			}
 			if (_stampExeText != null)
 			{
-				_stampExeText.Text = BuildStampService.FormatUtc(info.LocalExeUtc);
+				_stampExeText.Text = BuildStampService.ShortHash(info.LocalSha256);
 			}
 			if (_stampRemoteText != null)
 			{
-				_stampRemoteText.Text = info.RemoteCommitUtc.HasValue
-					? BuildStampService.FormatUtc(info.RemoteCommitUtc.Value)
+				_stampRemoteText.Text = info.RemoteSize.HasValue
+					? (BuildStampService.FormatSize(info.RemoteSize.Value) + " · SHA " + BuildStampService.ShortHash(info.RemoteSha256))
 					: (info.RemoteError ?? "获取失败");
 			}
 			TextBlock statusBlock = _stampStatusText;
