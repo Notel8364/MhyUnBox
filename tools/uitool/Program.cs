@@ -78,8 +78,45 @@ internal static class Program
             case "list": return List();
             case "qs": return QuickSettings();
             case "move": return Move(args);
+            case "trayrect": return TrayRect();
             default: Console.WriteLine("unknown command"); return 2;
         }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NOTIFYICONIDENTIFIER { public uint cbSize; public IntPtr hWnd; public uint uID; public Guid guidItem; }
+
+    [DllImport("shell32.dll")] private static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER id, out RECT rect);
+
+    // 只读检查：确认本进程托盘图标确实注册成功（不移动鼠标、不点击）。
+    private static int TrayRect()
+    {
+        IntPtr target = IntPtr.Zero;
+        EnumWindows((h, _) => {
+            GetWindowThreadProcessId(h, out int pid);
+            try
+            {
+                if (Process.GetProcessById(pid).ProcessName.Equals("MhyunBox", StringComparison.OrdinalIgnoreCase)
+                    && IsWindowVisible(h))
+                {
+                    target = h;
+                    return false;
+                }
+            }
+            catch { }
+            return true;
+        }, IntPtr.Zero);
+        if (target == IntPtr.Zero) { Console.WriteLine("no visible MhyunBox window"); return 3; }
+        var id = new NOTIFYICONIDENTIFIER
+        {
+            cbSize = (uint)Marshal.SizeOf<NOTIFYICONIDENTIFIER>(),
+            hWnd = target,
+            uID = 1,
+            guidItem = Guid.Empty
+        };
+        int hr = Shell_NotifyIconGetRect(ref id, out RECT r);
+        Console.WriteLine($"hr=0x{hr:X8} rect={r.Left},{r.Top},{r.Right},{r.Bottom} hwnd={target}");
+        return hr == 0 ? 0 : 4;
     }
 
     // 只移动鼠标（用于唤出自动隐藏的任务栏 / 触发托盘悬浮提示）。
