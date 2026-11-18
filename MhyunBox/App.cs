@@ -8,6 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using MhyunBox.Services;
 using MhyunBox.Settings;
@@ -34,6 +35,10 @@ public partial class App : Application
 	
 	
 	public static Window? MainWindow { get; private set; }
+
+	// 单实例锁：两个脱盒进程会互相抢端口、反复改写客户端账号和 CPTD 的 roles.json，
+	// 表现为角色端口横跳、内存暴涨。
+	private static Mutex? _singleInstanceMutex;
 
 	
 	public App()
@@ -144,6 +149,10 @@ public partial class App : Application
 		ThemeHelper.ApplySolidComboPopup();
 		if (!CliArgs.Process(Environment.GetCommandLineArgs()))
 		{
+			if (!AcquireSingleInstance())
+			{
+				return;
+			}
 			MainWindow = new MainWindow();
 			MainWindow.Activate();
 			ApplyDebugModeOnStartup();
@@ -152,6 +161,7 @@ public partial class App : Application
 			TryAutoStartProxy();
 			TryAutoStartTools();
 			MarketTokenService.StartBackgroundSync();
+			MemoryDiagnosticsService.Start();
 			MhyunBox.MainWindow.Instance?.ScheduleGameProcessDetection();
 			if (Environment.GetCommandLineArgs().Any((string a) => string.Equals(a, "--hidden", StringComparison.OrdinalIgnoreCase)))
 			{
@@ -160,11 +170,53 @@ public partial class App : Application
 		}
 	}
 
+	/// <summary>
+	/// 保证同时只有一个脱盒进程：多开会互相抢监听端口、交替改写客户端账号和
+	/// CPTD 的 roles.json（角色端口横跳），也会让设置保存风暴导致内存暴涨。
+	/// </summary>
+	private static bool AcquireSingleInstance()
+	{
+		try
+		{
+			_singleInstanceMutex = new Mutex(true, "MhyUnBox.SingleInstance", out bool createdNew);
+			if (createdNew)
+			{
+				return true;
+			}
+			try
+			{
+				foreach (Process p in Process.GetProcessesByName("MhyUnBox"))
+				{
+					if (p.Id == Environment.ProcessId || p.MainWindowHandle == IntPtr.Zero)
+					{
+						continue;
+					}
+					SetForegroundWindow(p.MainWindowHandle);
+					break;
+				}
+			}
+			catch
+			{
+			}
+			LogHelper.Log("[程序] 已有一个脱盒进程在运行，本次启动自动退出");
+			Environment.Exit(0);
+			return false;
+		}
+		catch
+		{
+			return true;
+		}
+	}
+
+	[DllImport("user32.dll")]
+	private static extern bool SetForegroundWindow(IntPtr hWnd);
+
 	private static void ApplyDebugModeOnStartup()
 	{
 		try
 		{
 			ProxyCaptureService.SetCaptureLogEnabled(SettingsManager.Instance.DebugMode);
+			NexusEndpointService.SyncModDebugFlag(SettingsManager.Instance.DebugMode);
 			LogHelper.Log("[调试模式] 启动时状态=" + (SettingsManager.Instance.DebugMode ? "开（产出程序日志与抓包日志）" : "关（不产出冗余日志，仅保留错误日志）"));
 		}
 		catch (Exception ex)
@@ -305,15 +357,67 @@ public partial class App : Application
 	private static void TryAutoStartProxy()
 	{
 		AppSettings instance = SettingsManager.Instance;
-		if (!instance.AutoStartProxyOnStartup || ProxyCaptureService.IsRunning)
-		{
-			return;
-		}
 		if (!ActivationService.IsActivated)
 		{
 			LogHelper.Log("[自启] 程序自启代理未生效：未激活");
 			return;
 		}
+		// 机器人代理自启（会话多开）：总开关 AutoStartBotOnStartup + 每张卡片的「自启动」勾选。
+		// 与服务器代理完全独立：关掉机器人自启只会清理客户端机器人账号，不动服务器代理。
+		bool botsStarted = NexusEndpointService.TryAutoStartBotsOnLaunch();
+		// 服务器代理自启（快速启动 / 代理启动页）：AutoStartProxyOnStartup 独立控制。
+		bool serverStarted = false;
+		if (!instance.AutoStartProxyOnStartup)
+		{
+			LogHelper.Log("[自启] 服务器代理自启开关 = 关，不自动恢复服务器代理");
+		}
+		else if (ProxyCaptureService.HasServerProxies())
+		{
+			LogHelper.Log("[自启] 服务器代理已在运行，跳过恢复");
+			serverStarted = true;
+		}
+		else
+		{
+			serverStarted = TryRestoreServerProxy(instance);
+		}
+		if ((botsStarted || serverStarted) && instance.AutoStartPcl)
+		{
+			TryAutoLaunchPcl(instance);
+		}
+		// 后台巡检：同一「角色 + 目标服务器」只允许一条代理。
+		// 快速启动与「会话多开」是两套入口，任一侧后来重启/端口对准都可能再建一条，
+		// 所以不只在启动后查一次，而是每 30 秒兜一次（同账号双登会互相顶号）。
+		if (!_roleDedupeLoopStarted)
+		{
+			_roleDedupeLoopStarted = true;
+			_ = Task.Run(async delegate
+			{
+				while (true)
+				{
+					try
+					{
+						await Task.Delay(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+						int removed = NexusEndpointService.DedupeRoleProxiesAndRetarget(NexusEndpointService.ResolveGameDir());
+						if (removed > 0)
+						{
+							LogHelper.Log("[代理抓取] 巡检去重：已停掉 " + removed + " 条重复的角色代理");
+						}
+					}
+					catch
+					{
+						// 巡检失败不影响主流程，下一轮继续
+					}
+				}
+			});
+		}
+	}
+
+	/// <summary>角色去重巡检是否已启动（只启动一次）。</summary>
+	private static bool _roleDedupeLoopStarted;
+
+	/// <summary>按上次启动方式 / 预设恢复脱盒侧服务器代理。返回是否启动了监听。</summary>
+	private static bool TryRestoreServerProxy(AppSettings instance)
+	{
 		ProxyCaptureService.TargetFromHandshake = true;
 		List<ProxyCaptureService.ProxyBinding> list = ProxyStarter.BuildLastLaunchBindings(out var source, out var summary, out var skippedReasons);
 		if (list.Count > 0)
@@ -323,16 +427,12 @@ public partial class App : Application
 			string text = string.Join("、", list.Select((ProxyCaptureService.ProxyBinding b) => b.ListenPort.ToString()));
 			ProxyCaptureService.AutoStartPresetName = serverPreset?.Name ?? "";
 			ProxyCaptureService.AutoStartPorts = text;
-			LogHelper.Log($"[自启] 按上次启动方式恢复（{source} {summary}）：共 {list.Count} 个角色端口，端口: {text}");
+			LogHelper.Log($"[自启] 按上次启动方式恢复服务器代理（{source} {summary}）：共 {list.Count} 个角色端口，端口: {text}");
 			foreach (string item in skippedReasons)
 			{
 				LogHelper.Log("[自启] 跳过：" + item);
 			}
-			if (instance.AutoStartPcl)
-			{
-				TryAutoLaunchPcl(instance);
-			}
-			return;
+			return true;
 		}
 		string text2 = instance.ProxyPresetName?.Trim() ?? "";
 		ServerPreset serverPreset2 = (string.IsNullOrWhiteSpace(text2) ? null : ServerPresets.Find(text2));
@@ -340,7 +440,7 @@ public partial class App : Application
 		{
 			LogHelper.Log("[自启] 程序自启代理未生效：无上次启动记录，且预设不存在 (" + text2 + ")");
 			MhyunBox.MainWindow.Instance?.ShowToast("[自启] 没有上次启动记录可恢复，请先在快速启动或代理启动页手动启动一次代理。");
-			return;
+			return false;
 		}
 		int basePort = ((instance.ProxyListenPort > 0) ? instance.ProxyListenPort : 25565);
 		List<ProxyCaptureService.ProxyBinding> list2 = ProxyStarter.BuildSavedBindings(instance, serverPreset2, basePort, out var usedSaved);
@@ -356,9 +456,9 @@ public partial class App : Application
 		}
 		if (list2.Count == 0)
 		{
-			LogHelper.Log("[自启] 没有可用角色，代理未启动（不回退直连）");
+			LogHelper.Log("[自启] 没有可用角色，服务器代理未启动（不回退直连）");
 			MhyunBox.MainWindow.Instance?.ShowToast("[自启] 没有可用角色，代理未启动（不回退直连）。请先在「账号绑定」页刷新角色。");
-			return;
+			return false;
 		}
 		ProxyCaptureService.StartBatch(list2, serverPreset2.Host, serverPreset2.Port);
 		string text3 = string.Join("、", list2.Select((ProxyCaptureService.ProxyBinding b) => b.ListenPort.ToString()));
@@ -372,11 +472,8 @@ public partial class App : Application
 		{
 			LogHelper.Log("[自启] 已有最早自启记录（" + instance.LastProxyPresetName + "），本次不覆盖其配置与端口");
 		}
-		LogHelper.Log($"[自启] 代理已自动启动: 预设 {serverPreset2.Name} ({serverPreset2.Host}:{serverPreset2.Port}) {value}，端口: {text3}");
-		if (instance.AutoStartPcl)
-		{
-			TryAutoLaunchPcl(instance);
-		}
+		LogHelper.Log($"[自启] 服务器代理已自动启动: 预设 {serverPreset2.Name} ({serverPreset2.Host}:{serverPreset2.Port}) {value}，端口: {text3}");
+		return true;
 	}
 
 	private static void TryAutoLaunchPcl(AppSettings settings)
@@ -402,6 +499,8 @@ public partial class App : Application
 					string text2 = "127.0.0.1:" + num;
 					string text3 = PclLauncherService.WriteServerAddress(text, text2, out var written);
 					LogHelper.Log("[PCL] 自启直连地址写入: " + text3);
+					string jvmMsg = PclLauncherService.WriteJvmArgs(text, out var jvmWritten);
+					LogHelper.Log("[PCL] " + jvmMsg);
 					string item = ModInjectService.Inject(text).Message;
 					LogHelper.Log("[模组注入] " + item);
 					if (written && PclLauncherService.Launch(text))

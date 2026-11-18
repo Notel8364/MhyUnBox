@@ -226,6 +226,24 @@ public sealed class NeteaseAuthBridge
 						LastFailReason = text2 + "。已进入风控冷静期，暂停自动重登；可稍后手动重试或更换网络环境";
 						LogHelper.Force($"[认证] 账号「{account.Nickname}」login-otp 命中网易登录环境风控（{text2}），仅记录并进入冷静期，不触发任何自动重登");
 						AccountAutoLoginService.ReportRiskControl(_failChannel, _failAccount, text2);
+						// 2026-11-15 用户定版：login-otp 登录环境异常（code=32）例外——
+						// 自动用保存的明文账密请求一次登录（每次程序启动仅一次）；换到新会话后本次认证直接继续。
+						if (AccountAutoLoginService.IsLoginEnvironmentBlockText(text2))
+						{
+							bool envOk = await AccountAutoLoginService.TryPlaintextLoginOnceOnEnvironmentBlockAsync(account.Channel, account.Account, text2, ct).ConfigureAwait(continueOnCapturedContext: false);
+							if (envOk)
+							{
+								AccountStore.LocalAccount? envFresh = ResolveFreshAccount(_failChannel, _failAccount, accountIndex);
+								if (envFresh != null && !string.IsNullOrWhiteSpace(envFresh.EntityId) && !string.IsNullOrWhiteSpace(envFresh.Token))
+								{
+									entityId = envFresh.EntityId;
+									token = envFresh.Token;
+									account = envFresh;
+									LogHelper.Log("[认证] 登录环境异常明文登录成功，本次认证换用新会话继续");
+									goto GotSession;
+								}
+							}
+						}
 						return false;
 					}
 					// 确定性会话失效信号（token expired / 会话为空 / 会话校验失败，已排除"网络异常"抖动）：
@@ -290,6 +308,12 @@ public sealed class NeteaseAuthBridge
 					LastFailReason = "网易返回登录环境异常：游戏会话启动失败，" + gsMsg + "。已进入冷静期，暂停自动重登";
 					LogHelper.Force($"[认证] 账号「{account.Nickname}」GameStart 阶段网易登录环境异常（{gsMsg}），仅记录并进入冷静期");
 					AccountAutoLoginService.ReportRiskControl(account.Channel, account.Account, gsMsg);
+					// 2026-11-15 用户定版：login-otp 登录环境异常（code=32）时自动明文登录一次（进程级一次），
+					// 为下一次进服换一张新会话。
+					if (AccountAutoLoginService.IsLoginEnvironmentBlockText(gsMsg))
+					{
+						await AccountAutoLoginService.TryPlaintextLoginOnceOnEnvironmentBlockAsync(account.Channel, account.Account, gsMsg, ct).ConfigureAwait(continueOnCapturedContext: false);
+					}
 					return false;
 				}
 				LastFailReason = "服务器会话启动失败：" + gsMsg;

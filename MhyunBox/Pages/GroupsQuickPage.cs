@@ -461,7 +461,7 @@ public sealed class GroupsQuickPage : Page
 			AppSettings instance = SettingsManager.Instance;
 			instance.AutoStartProxyOnStartup = _autoStartProxySwitch.IsOn;
 			SettingsManager.Save(instance);
-			MainWindow.Instance?.ShowToast(instance.AutoStartProxyOnStartup ? "已开启：启动程序后按上次启动方式自动启动代理" : "已关闭：启动程序后自动启动代理");
+			MainWindow.Instance?.ShowToast(instance.AutoStartProxyOnStartup ? "已开启：启动程序后按上次启动方式自动启动服务器代理（机器人代理在会话多开页单独设置）" : "已关闭：启动程序后不自动启动服务器代理");
 			UpdateLastLaunchText();
 		}
 		catch (Exception ex)
@@ -688,6 +688,13 @@ public sealed class GroupsQuickPage : Page
 			return false;
 		}
 		if (!string.Equals(b.LoginName, role.RoleName, StringComparison.Ordinal))
+		{
+			return false;
+		}
+		// 同一个角色可以同时存在于多个分组（每组端口号段不同，20200/20400…）。
+		// 运行态必须按「这一组这一条」独立判定：端口不同就是另一个实例，
+		// 否则启动 A 组会把 B 组里的同名角色卡片一起点亮（用户看到的“跟着亮”）。
+		if (role.ListenPort > 0 && b.ListenPort > 0 && role.ListenPort != b.ListenPort)
 		{
 			return false;
 		}
@@ -1169,7 +1176,7 @@ public sealed class GroupsQuickPage : Page
 		stackPanel2.Children.Add(stackPanel4);
 		ToggleSwitch autoStartSwitch = new ToggleSwitch
 		{
-			Header = "自启动代理（与设置页同一个开关）",
+			Header = "自启动代理（服务器代理；机器人代理在会话多开页单独设置）",
 			OnContent = "开",
 			OffContent = "关",
 			IsOn = SettingsManager.Instance.AutoStartProxyOnStartup,
@@ -1474,11 +1481,23 @@ public sealed class GroupsQuickPage : Page
 		}
 		if (!list[index].HasCookie)
 		{
+			// 未登录也要触发一次重登：以前这里直接返回 false，卡片永远停在“未登录”，
+			// 只有「会话失效/进服失败」两条路径会自动重登，未登录这条是断的。
 			if (!silent)
 			{
-				AppendTail("状态: 「" + role.RoleName + "」未保存登录凭证（请到账号管理重新登录）\n");
+				AppendTail($"状态: 「{role.RoleName}」未保存登录凭证，正在用保存的账密重登…\n");
 			}
-			return false;
+			bool relogged = await AccountAutoLoginService.ReloginAsync(list[index]).ConfigureAwait(true);
+			list = AccountStore.All.ToList();
+			index = ProxyStarter.ResolveAccountIndex(role, list, out _);
+			if (!relogged || index < 0 || !list[index].HasCookie)
+			{
+				if (!silent)
+				{
+					AppendTail($"状态: 「{role.RoleName}」重登失败，请到账号管理重新登录（{AccountAutoLoginService.LastReloginMessage}）\n");
+				}
+				return false;
+			}
 		}
 		if (remapped)
 		{
@@ -1506,8 +1525,14 @@ public sealed class GroupsQuickPage : Page
 			TargetPort = server.Port,
 			AuthAccountIndex = index
 		};
+		// 同一账号下的同名角色（例如同一个 Notel 同时存在于元素之诗与失落世界）
+		// 是两条独立会话；去重必须带上目标服务器，否则第二张卡永远起不来——
+		// 表现就是「启动」点了没反应（以前只按 账号+角色名 去重）。
 		List<ProxyCaptureService.ActiveBindingInfo> list2 = (from x in ProxyCaptureService.ActiveBindingsSnapshot()
-			where x.AuthAccountIndex == index && string.Equals(x.LoginName, role.RoleName, StringComparison.Ordinal)
+			where x.AuthAccountIndex == index
+				&& string.Equals(x.LoginName, role.RoleName, StringComparison.Ordinal)
+				&& string.Equals(x.TargetHost ?? "", server.Host, StringComparison.OrdinalIgnoreCase)
+				&& x.TargetPort == server.Port
 			select x).ToList();
 		if (list2.Any((ProxyCaptureService.ActiveBindingInfo x) => x.ListenPort == role.ListenPort))
 		{
@@ -1518,7 +1543,11 @@ public sealed class GroupsQuickPage : Page
 		{
 			if (!silent)
 			{
-				AppendTail($"状态: {role.RoleName} 已用端口 {list2[0].ListenPort} 在连，本组端口 {role.ListenPort} 去重跳过（重复连接会持续连接中止）\n");
+				MainWindow.Instance?.ShowToast(
+					"「" + role.RoleName + "」在 " + role.ServerName + " 已用端口 "
+					+ list2[0].ListenPort + " 在连，本组端口 " + role.ListenPort + " 已跳过", false);
+				AppendTail($"状态: {role.RoleName} 已用端口 {list2[0].ListenPort} 在本服务器在连，"
+					+ $"本组端口 {role.ListenPort} 去重跳过（同一服务器重复连接会持续连接中止）\n");
 			}
 			return false;
 		}
@@ -1577,8 +1606,20 @@ public sealed class GroupsQuickPage : Page
 			}
 			if (port > 0)
 			{
-				ProxyCaptureService.StopPort(port);
-				AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已停止分组「{g.Name}」角色「{role.RoleName}」代理（端口 {port}）\n");
+				// 快速启动页以服务器代理为主；但同一个端口可能已被「会话多开」的
+				// 机器人代理占用（两边都用 20000+ 号段）。此前这种情况一律被拒绝，
+				// 表现就是「停止」按钮点了没反应，所以这里按角色名精确核对后再放行。
+				bool stoppedServer = ProxyCaptureService.StopBindingForRole(port, role.RoleName);
+				AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] "
+					+ (stoppedServer
+						? $"已停止分组「{g.Name}」角色「{role.RoleName}」代理（端口 {port}）"
+						: $"分组「{g.Name}」角色「{role.RoleName}」端口 {port} 没有可停止的监听")
+					+ "\n");
+				if (!stoppedServer)
+				{
+					MainWindow.Instance?.ShowToast(
+						$"端口 {port} 没有监听中的代理（可能已经停了，或被别的角色占用）", false);
+				}
 			}
 			if (refreshUi)
 			{
@@ -1644,7 +1685,7 @@ public sealed class GroupsQuickPage : Page
 		};
 		TextBox groupPortBox = new TextBox
 		{
-			Text = ((captured.BasePort > 0) ? captured.BasePort : SettingsManager.Instance.GroupPortBase).ToString(),
+			Text = ((captured.BasePort > 0) ? captured.BasePort : DefaultBasePortFor(captured)).ToString(),
 			Width = 92.0,
 			FontSize = 13.0,
 			FontFamily = new FontFamily("Consolas"),
@@ -1696,29 +1737,59 @@ public sealed class GroupsQuickPage : Page
 		_runningStateRefreshers.Add(updateSelectAll);
 		Action commitGroupPort = delegate
 		{
-			if (!_committingGroupPort && !(groupPortBox == null) && captured != null)
-			{
-				string text2 = groupPortBox.Text.Trim();
-				if (text2.Length != 0 && int.TryParse(text2, out var result) && result >= 1 && result <= 65535)
-				{
-					captured.BasePort = result;
-					ReallocateGroupRolePorts(captured, result);
-					SettingsManager.Save(SettingsManager.Instance);
-					MainWindow.Instance?.ShowToast("分组「" + captured.Name + "」端口已设为 " + result + "，组内角色端口已按低到高重新分配", true);
-					_committingGroupPort = true;
-					try
-					{
-						RefreshGroups();
-						return;
-					}
-					finally
-					{
-						_committingGroupPort = false;
-					}
-				}
-				groupPortBox.Text = ((captured.BasePort > 0) ? captured.BasePort : SettingsManager.Instance.GroupPortBase).ToString();
-			}
+			_ = CommitGroupPortAsync();
 		};
+		async Task CommitGroupPortAsync()
+		{
+			if (_committingGroupPort || groupPortBox == null || captured == null)
+			{
+				return;
+			}
+			string text2 = groupPortBox.Text.Trim();
+			if (!(text2.Length != 0 && int.TryParse(text2, out var result) && result >= 1 && result <= 65535))
+			{
+				groupPortBox.Text = ((captured.BasePort > 0) ? captured.BasePort : DefaultBasePortFor(captured)).ToString();
+				return;
+			}
+			captured.BasePort = result;
+			ReallocateGroupRolePorts(captured, result);
+			SettingsManager.Save(SettingsManager.Instance);
+			// 快速启动的组端口优先级最高：同步到「会话多开」的机器人代理卡片与客户端账号
+			List<(string RoleName, int OldPort, int NewPort)> moved = NexusEndpointService.SyncGroupRolePorts(captured);
+			_committingGroupPort = true;
+			try
+			{
+				RefreshGroups();
+			}
+			finally
+			{
+				_committingGroupPort = false;
+			}
+			MainWindow.Instance?.ShowToast("分组「" + captured.Name + "」端口已设为 " + result
+				+ "，组内角色与机器人代理端口已按组基址重排", true);
+			if (moved.Count == 0)
+			{
+				return;
+			}
+			// 在跑的代理要跟着搬家：停旧端口 → 按新端口重建监听（后台执行，不冻结界面）
+			string gameDir = NexusEndpointService.ResolveGameDir();
+			await Task.Run(delegate
+			{
+				foreach ((string roleName, int oldPort, int newPort) in moved)
+				{
+					NexusEndpointService.MoveRoleProxy(gameDir, roleName, oldPort, newPort);
+				}
+			});
+			_committingGroupPort = true;
+			try
+			{
+				RefreshGroups();
+			}
+			finally
+			{
+				_committingGroupPort = false;
+			}
+		}
 		groupPortBox.LostFocus += delegate
 		{
 			commitGroupPort();
@@ -2026,7 +2097,8 @@ public sealed class GroupsQuickPage : Page
 				{
 					if (capturedRoleDel.ListenPort > 0)
 					{
-						ProxyCaptureService.StopPort(capturedRoleDel.ListenPort);
+						// 删除角色只停服务器代理监听；机器人代理监听归「会话多开」管。
+						ProxyCaptureService.StopServerBinding(capturedRoleDel.ListenPort);
 					}
 					_undo.Push(new UndoRepo
 					{
@@ -2270,13 +2342,6 @@ public sealed class GroupsQuickPage : Page
 			}
 			if (!used.Contains(candidate) && !IsPortReallyUsed(candidate, activePorts, hashSet))
 			{
-				ProxyGroupRole proxyGroupRole = FindGroupRole(instance, preset, acc, roleName, out string _);
-				if (proxyGroupRole != null && proxyGroupRole.ListenPort > 0)
-				{
-					used.Remove(proxyGroupRole.ListenPort);
-					source = "分组";
-					return proxyGroupRole.ListenPort;
-				}
 				SavedProxyBinding savedProxyBinding = list.FirstOrDefault((SavedProxyBinding m) => m.ListenPort == candidate);
 				if (savedProxyBinding != null && !string.Equals(savedProxyBinding.RoleName, roleName, StringComparison.Ordinal))
 				{
@@ -2308,44 +2373,81 @@ public sealed class GroupsQuickPage : Page
 		return SettingsManager.Instance.GroupPortBase;
 	}
 
+	/// <summary>
+	/// 分组默认起始端口：基础端口（默认 20000）起，每组占 200 号段 ——
+	/// 第 1 组 20000、第 2 组 20200、第 3 组 20400 ……，组内角色再从组基址
+	/// 依次 +1（20000/20001/…）。这样两组可以放同一批角色而端口天然不冲突。
+	/// 分组对象已存过 BasePort 时以它为准（用户手动改过就尊重用户）。
+	/// </summary>
+	private int DefaultBasePortFor(ProxyGroup? g)
+	{
+		int globalBase = CurrentGroupBasePort();
+		List<ProxyGroup> groups = SettingsManager.Instance.ProxyGroups ?? new List<ProxyGroup>();
+		int index = (g == null) ? groups.Count : groups.IndexOf(g);
+		if (index < 0)
+		{
+			index = groups.Count;
+		}
+		return globalBase + 200 * Math.Max(0, index);
+	}
+
 	private void ReallocateGroupRolePorts(ProxyGroup g, int basePort)
 	{
 		if (g?.Roles == null || g.Roles.Count == 0)
 		{
 			return;
 		}
-		List<ProxyCaptureService.ActiveBindingInfo> source = ProxyCaptureService.ActiveBindingsSnapshot().ToList();
-		HashSet<int> hashSet = new HashSet<int>(CollectAllUsedPorts());
-		foreach (ProxyGroupRole role in g.Roles)
+		// 旧实现的致命问题：只要该端口上有「同角色」的监听就 continue，等于
+		// 「跑着的角色永远不参与重排」。结果就是组端口写着 20000、角色却停在
+		// 20213/20225/20226，改多少次都「更新不了」。
+		// 现在快速启动的组端口优先级最高：无条件从 basePort+1 起顺序重排。
+		HashSet<int> used = new HashSet<int>();
+		HashSet<string> ownRoles = new HashSet<string>(
+			g.Roles.Where(r => !string.IsNullOrWhiteSpace(r.RoleName)).Select(r => r.RoleName),
+			StringComparer.OrdinalIgnoreCase);
+		// 1) 其它分组的静态端口
+		foreach (ProxyGroup other in SettingsManager.Instance.ProxyGroups ?? new List<ProxyGroup>())
 		{
-			if (role.ListenPort > 0)
+			if (other == null || ReferenceEquals(other, g) || other.Roles == null)
 			{
-				hashSet.Remove(role.ListenPort);
+				continue;
+			}
+			foreach (ProxyGroupRole r in other.Roles)
+			{
+				if (r != null && r.ListenPort > 0)
+				{
+					used.Add(r.ListenPort);
+				}
 			}
 		}
-		int num = basePort;
+		// 2) 当前在跑的监听里，不属于本组角色的端口
+		foreach (ProxyCaptureService.ActiveBindingInfo b in ProxyCaptureService.ActiveBindingsSnapshot())
+		{
+			if (!ownRoles.Contains((b.LoginName ?? "").Trim()))
+			{
+				used.Add(b.ListenPort);
+			}
+		}
+		// 组基址本身留给真人/行情角色，角色从 +1 开始
+		int next = basePort + 1;
 		for (int i = 0; i < g.Roles.Count; i++)
 		{
-			ProxyGroupRole r = g.Roles[i];
-			if (r.ListenPort > 0 && source.Any((ProxyCaptureService.ActiveBindingInfo b) => b.ListenPort == r.ListenPort && string.Equals(b.LoginName, r.RoleName, StringComparison.Ordinal)))
+			while (next <= 65535 && used.Contains(next))
 			{
-				if (r.ListenPort > 0)
-				{
-					hashSet.Add(r.ListenPort);
-				}
-				continue;
+				next++;
 			}
-			for (; num <= 65535 && hashSet.Contains(num); num++)
+			if (next > 65535)
 			{
+				break;
 			}
-			if (num <= 65535)
-			{
-				r.ListenPort = num;
-				hashSet.Add(num);
-				num++;
-				continue;
-			}
-			break;
+			g.Roles[i].ListenPort = next;
+			used.Add(next);
+			next++;
+		}
+		if (g.Roles.Count > 0)
+		{
+			LogHelper.Log("[快速启动] 分组「" + g.Name + "」端口重排：基址 " + basePort + " → "
+				+ string.Join(" / ", g.Roles.Select(r => (string.IsNullOrWhiteSpace(r.RoleName) ? r.Account : r.RoleName) + ":" + r.ListenPort)));
 		}
 	}
 
@@ -2401,6 +2503,11 @@ public sealed class GroupsQuickPage : Page
 		}
 		foreach (ProxyGroup item10 in settings.ProxyGroups ?? new List<ProxyGroup>())
 		{
+			// 不同分组允许端口重复：其他分组的角色端口不再算作“被占用”。
+			if (!ReferenceEquals(item10, existing))
+			{
+				continue;
+			}
 			foreach (ProxyGroupRole item11 in item10.Roles ?? new List<ProxyGroupRole>())
 			{
 				AddOwner(item11.ListenPort, (!string.IsNullOrWhiteSpace(item11.ServerName)) ? item11.ServerName : item10.ServerName, item11.Channel ?? "", item11.Account ?? "", item11.RoleName ?? "");
@@ -2441,7 +2548,7 @@ public sealed class GroupsQuickPage : Page
 		List<(ServerPreset Server, int AccIdx, AccountStore.LocalAccount Acc, string Role, CheckBox Check, TextBox Port, int DefPort)> rows = new List<(ServerPreset, int, AccountStore.LocalAccount, string, CheckBox, TextBox, int)>();
 		bool updatingChecks = false;
 		Dictionary<(ServerPreset Server, AccountStore.LocalAccount Acc), CheckBox> accountHeads = new Dictionary<(ServerPreset, AccountStore.LocalAccount), CheckBox>();
-		int baseOrigin = ((existing != null && existing.BasePort >= 1 && existing.BasePort <= 65535) ? existing.BasePort : CurrentGroupBasePort());
+		int baseOrigin = ((existing != null && existing.BasePort >= 1 && existing.BasePort <= 65535) ? existing.BasePort : DefaultBasePortFor(existing));
 		foreach (ServerPreset sp in list)
 		{
 			StackPanel stackPanel2 = new StackPanel
@@ -2559,7 +2666,8 @@ public sealed class GroupsQuickPage : Page
 				foreach (string item17 in list5)
 				{
 					int num = Math.Max(0, list2.IndexOf(item16));
-					ProxyGroupRole proxyGroupRole = FindGroupRole(settings, sp, item16, item17, out string sourceGroup);
+					// 不同分组允许端口相同：同角色优先沿用任意分组里已保存的端口。
+					ProxyGroupRole? proxyGroupRole = FindGroupRole(settings, sp, item16, item17, out string? sourceGroup);
 					int num2;
 					string source;
 					if (proxyGroupRole != null && proxyGroupRole.ListenPort > 0)
@@ -2762,7 +2870,8 @@ public sealed class GroupsQuickPage : Page
 		ScrollViewer scroller = new ScrollViewer
 		{
 			Content = stackPanel6,
-			Height = 300.0,
+			MinHeight = 120.0,
+			MaxHeight = 260.0,
 			Padding = new Thickness(0.0, 0.0, 0.0, 0.0),
 			VerticalScrollBarVisibility = ScrollBarVisibility.Auto
 		};
@@ -2802,7 +2911,7 @@ public sealed class GroupsQuickPage : Page
 		stackPanel8.Children.Add(portWarning);
 		stackPanel8.Children.Add(new TextBlock
 		{
-			Text = "勾选角色并设置端口，保存后加入分组。默认端口按基础端口叠加分配，重复或已占用端口会被阻止保存；\n分组可混合加入两个服务器的角色。",
+			Text = "勾选角色并设置端口，保存后加入分组。默认端口按基础端口叠加分配，仅同一个分组内端口重复才会阻止保存\n（不同分组之间可以复用同一端口）；分组可混合加入两个服务器的角色。",
 			FontSize = 11.0,
 			Opacity = 0.7,
 			TextWrapping = TextWrapping.Wrap
@@ -2852,6 +2961,8 @@ public sealed class GroupsQuickPage : Page
 			else
 			{
 				proxyGroup = new ProxyGroup();
+				// 新分组的起始端口按「每组 200 号段」顺延：第 2 组 20200、第 3 组 20400…
+				proxyGroup.BasePort = DefaultBasePortFor(null);
 				flag2 = true;
 			}
 			List<ProxyGroupRole> list6 = new List<ProxyGroupRole>();
@@ -2948,6 +3059,27 @@ public sealed class GroupsQuickPage : Page
 					settings.ProxyGroups.Add(proxyGroup);
 				}
 				SettingsManager.Save(settings);
+				// 重新加回分组的角色要取消「删除卡片」留下的隐藏，让实例多开立刻重新出现卡片。
+				// 隐藏条目既可能是裸 Key（旧数据），也可能是卡片键（Key#角色名），两种都要能匹配。
+				if (settings.NexusHiddenCards != null && settings.NexusHiddenCards.Count > 0)
+				{
+					HashSet<string> visibleKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+					foreach (ProxyGroupRole r in list9.Where(r => !string.IsNullOrWhiteSpace(r.Account)))
+					{
+						string baseKey = NexusEndpointService.KeyOf(r, proxyGroup);
+						visibleKeys.Add(baseKey);
+						if (!string.IsNullOrWhiteSpace(r.RoleName))
+						{
+							visibleKeys.Add(baseKey + "#" + r.RoleName);
+						}
+					}
+					int restored = settings.NexusHiddenCards.RemoveAll(k => visibleKeys.Contains(k));
+					if (restored > 0)
+					{
+						SettingsManager.Save(settings);
+						LogHelper.Log("[快速启动] 已恢复 " + restored + " 个被删除卡片的角色显示");
+					}
+				}
 				didSave = true;
 				string message = (flag2 ? "已创建分组「" : "已更新分组「") + text + "」，共 " + list9.Count + " 个角色端口";
 				MainWindow.Instance?.ShowToast(message, true);
@@ -3150,7 +3282,7 @@ public sealed class GroupsQuickPage : Page
 				List<string> list9 = new List<string>();
 				if (num3 > 0)
 				{
-					list9.Add(num3 + " 个角色端口有问题，无法保存");
+					list9.Add(num3 + " 个角色端口冲突（仅同一分组内重复会阻止保存）");
 				}
 				if (list9.Count > 0)
 				{

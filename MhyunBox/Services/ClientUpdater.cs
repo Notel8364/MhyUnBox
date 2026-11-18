@@ -145,7 +145,7 @@ public static class ClientUpdater
 				ct.ThrowIfCancellationRequested();
 				if (totalLen > 0 && new FileInfo(partPath).Length != totalLen)
 				{
-					throw new InvalidOperationException($"下载不完整（期望 {totalLen:N0} 字节，实际 {new FileInfo(partPath).Length:N0} 字节）。重新点击「更新资源包」会先清掉 .part 再完整下载，请检查网络/CDN 稳定性。");
+					throw new InvalidOperationException($"下载不完整（期望 {totalLen:N0} 字节，实际 {new FileInfo(partPath).Length:N0} 字节）。重新点击「下载最新资源包」会先清掉 .part 再完整下载，请检查网络/CDN 稳定性。");
 				}
 				File.Move(partPath, pkg, overwrite: true);
 				sw.Stop();
@@ -163,7 +163,7 @@ public static class ClientUpdater
 				catch
 				{
 				}
-				throw new InvalidOperationException("本地已有包校验失败已删除，请再点一次「更新资源包」重新下载");
+				throw new InvalidOperationException("本地已有包校验失败已删除，请再点一次「下载最新资源包」重新下载");
 			}
 		}
 		L(log, "md5=" + md5);
@@ -490,7 +490,7 @@ public static class ClientUpdater
 			await p.WaitForExitAsync(ct);
 			if (p.ExitCode != 0)
 			{
-				throw new InvalidOperationException("资源包完整性测试失败（7z t 返回 " + p.ExitCode + "）——这个包极可能是下载中断的残留文件，请在「扫描本地资源包」里删掉它后重新点「更新资源包」下载。日志尾部：" + string.Join(" | ", (output + "\n" + testError).Split('\n').Select((string s) => s.Trim()).Where((string s) => s.Length > 0).TakeLast(3)));
+				throw new InvalidOperationException("资源包完整性测试失败（7z t 返回 " + p.ExitCode + "）——这个包极可能是下载中断的残留文件，请在「扫描本地资源包」里删掉它后重新点「下载最新资源包」下载。日志尾部：" + string.Join(" | ", (output + "\n" + testError).Split('\n').Select((string s) => s.Trim()).Where((string s) => s.Length > 0).TakeLast(3)));
 			}
 			L(log, "7z 完整性测试通过");
 		}

@@ -1011,7 +1011,7 @@ public sealed partial class SettingsPage : Page
 			AppSettings instance = SettingsManager.Instance;
 			instance.AutoStartProxyOnStartup = AutoStartProxySwitch.IsOn;
 			SettingsManager.Save(instance);
-			MainWindow.Instance?.ShowToast(instance.AutoStartProxyOnStartup ? "已开启：启动程序后按上次启动方式自动启动代理" : "已关闭：启动程序后自动启动代理");
+			MainWindow.Instance?.ShowToast(instance.AutoStartProxyOnStartup ? "已开启：启动程序后按上次启动方式自动启动服务器代理（机器人代理在会话多开页单独设置）" : "已关闭：启动程序后不自动启动服务器代理");
 		}
 	}
 

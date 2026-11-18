@@ -83,8 +83,9 @@ public static class ProxyStarter
 						LoginName = saved.RoleName,
 						TargetHost = preset.Host,
 						TargetPort = preset.Port,
-						AuthAccountIndex = num
-					});
+						AuthAccountIndex = num,
+					AuthAccountKey = AuthKeyAt(num)
+				});
 				}
 			}
 		}
@@ -149,11 +150,29 @@ public static class ProxyStarter
 				LoginName = role.RoleName,
 				TargetHost = serverPreset.Host,
 				TargetPort = serverPreset.Port,
-				AuthAccountIndex = num
-			});
+				AuthAccountIndex = num,
+			AuthAccountKey = AuthKeyAt(num)
+				});
 			usedAny = true;
 		}
 		return list;
+	}
+
+	/// <summary>把账号索引固化成 Channel|Account 键：会话认证时用它重新对准，索引漂移不会拿错登录态。</summary>
+	private static string AuthKeyAt(int index)
+	{
+		try
+		{
+			System.Collections.Generic.IReadOnlyList<AccountStore.LocalAccount> all = AccountStore.All;
+			if (index >= 0 && index < all.Count)
+			{
+				return (all[index].Channel ?? "") + "|" + (all[index].Account ?? "");
+			}
+		}
+		catch
+		{
+		}
+		return "";
 	}
 
 	public static int ResolveAccountIndex(ProxyGroupRole role, List<AccountStore.LocalAccount> accounts, out bool remapped)
@@ -329,8 +348,9 @@ public static class ProxyStarter
 				LoginName = saved.RoleName,
 				TargetHost = serverPreset.Host,
 				TargetPort = serverPreset.Port,
-				AuthAccountIndex = num
-			});
+				AuthAccountIndex = num,
+			AuthAccountKey = AuthKeyAt(num)
+				});
 		}
 		return list;
 	}
@@ -366,7 +386,8 @@ public static class ProxyStarter
 			LoginName = roleName,
 			TargetHost = host,
 			TargetPort = port,
-			AuthAccountIndex = accountIndex
-		});
+			AuthAccountIndex = accountIndex,
+		AuthAccountKey = AuthKeyAt(accountIndex)
+				});
 	}
 }

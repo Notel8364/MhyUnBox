@@ -20,9 +20,9 @@
     <ApplicationIcon>..\Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
-    <Version>8.3.0</Version>
-    <FileVersion>8.3.0.0</FileVersion>
-    <AssemblyVersion>8.3.0.0</AssemblyVersion>
+    <Version>9.1.0</Version>
+    <FileVersion>9.1.0.0</FileVersion>
+    <AssemblyVersion>9.1.0.0</AssemblyVersion>
     <Product>MhyUnBox</Product>
     <Company>Notel</Company>
     <Copyright>Copyright © Notel</Copyright>

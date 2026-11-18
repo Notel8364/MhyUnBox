@@ -124,7 +124,7 @@ public sealed class ClientUpdatePage : Page
 		_serverCombo.SelectionChanged += delegate
 		{
 			RefreshServerWarn();
-			// 切换预设时清空其它服务器的旧地址，防止「更新资源包」直接复用对不上的 URL
+			// 切换预设时清空其它服务器的旧地址，防止「下载最新资源包」直接复用对不上的 URL
 			ClearUrlIfPresetMismatch();
 		};
 		// 注意：RebuildServerCombo 会触发 SelectionChanged → RefreshServerWarn，
@@ -234,7 +234,7 @@ public sealed class ClientUpdatePage : Page
 		};
 		_updateBtn = new Button
 		{
-			Content = "更新资源包"
+			Content = "下载最新资源包\n（如近期服务器有更新时可点击此按钮下载官方最新资源合并）"
 		};
 		_updateBtn.Click += delegate
 		{
@@ -606,7 +606,7 @@ public sealed class ClientUpdatePage : Page
 		return !url.Contains(gameId.ToString(), StringComparison.Ordinal);
 	}
 
-	/// <summary>预设变化检测：切换服务器后原地址对不上 → 清空，避免「更新资源包」直接复用别家的包。</summary>
+	/// <summary>预设变化检测：切换服务器后原地址对不上 → 清空，避免「下载最新资源包」直接复用别家的包。</summary>
 	private void ClearUrlIfPresetMismatch()
 	{
 		try
@@ -617,7 +617,7 @@ public sealed class ClientUpdatePage : Page
 			}
 			_urlBox.Text = "";
 			_urlGameId = null;
-			_statusText.Text = "已切换服务器：原资源包地址与当前所选不匹配，已清空（点「更新资源包」将自动获取当前服务器的最新地址）";
+			_statusText.Text = "已切换服务器：原资源包地址与当前所选不匹配，已清空（点「下载最新资源包」将自动获取当前服务器的最新地址）";
 		}
 		catch
 		{
@@ -742,7 +742,7 @@ public sealed class ClientUpdatePage : Page
 				_pkgList.Items.Add($"{item.PackageName}   {item.Size / 1048576.0:N0} MB   {item.Modified:yyyy-MM-dd HH:mm}   MD5 {(!item.Md5Checkable ? "- 无法校验（非MD5命名）" : (item.Md5Ok ? "✓通过" : "✗不符"))}");
 			}
 			_pkgList.Visibility = ((list.Count > 0) ? Visibility.Visible : Visibility.Collapsed);
-			_statusText.Text = ((list.Count == 0) ? "下载目录里没有资源包，点「更新资源包」先下一次" : $"共 {list.Count} 个本地资源包。选中一个点右边按钮可跳过下载直接安装/裁剪；「更新资源包」也会自动复用同版本包。");
+			_statusText.Text = ((list.Count == 0) ? "下载目录里没有资源包，点「下载最新资源包」先下一次" : $"共 {list.Count} 个本地资源包。选中一个点右边按钮可跳过下载直接安装/裁剪；「下载最新资源包」也会自动复用同版本包。");
 		}
 		catch (Exception ex2)
 		{
@@ -1103,7 +1103,7 @@ public sealed class ClientUpdatePage : Page
 		}
 	}
 
-	// 一键「更新资源包」：输入框为空 → 自动向网易取最新地址；然后下载 → 校验 →
+	// 一键「下载最新资源包」：输入框为空 → 自动向网易取最新地址；然后下载 → 校验 →
 	// 元素之诗走 DragonCore 裁剪（对比/去重/清冗余/桌面导出增量包），失落世界等直接覆盖合并。
 	private async Task RunResourcePackAsync()
 	{
@@ -1195,7 +1195,7 @@ public sealed class ClientUpdatePage : Page
 				{
 					_urlBox.Text = text4;
 					_urlGameId = null;
-					_statusText.Text = "已自动填入找到的 URL，点「更新资源包」即可";
+					_statusText.Text = "已自动填入找到的 URL，点「下载最新资源包」即可";
 				}
 				else if (text3.Contains("http"))
 				{

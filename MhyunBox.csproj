@@ -25,9 +25,14 @@
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
     <CheckForOverflowUnderflow>False</CheckForOverflowUnderflow>
+    <!-- 常驻代理服务省内存优先：GC 尽量回收并缩小堆（System.GC.Conserve，0-9，越大越省）。
+         工作集大头在 WinUI 本机内存，托管堆平时只有几十 MB，此项防多会话时堆膨胀。 -->
+    <GCConserveMemory>7</GCConserveMemory>
+    <!-- 维持后台并发 GC：回收不停 UI 线程，配合 Conserve 把堆压小。 -->
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
   <PropertyGroup>
-    
+
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>

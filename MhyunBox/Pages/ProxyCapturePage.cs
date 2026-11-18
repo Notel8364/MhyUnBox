@@ -1015,15 +1015,16 @@ public sealed partial class ProxyCapturePage : Page
 
 	private void StopButton_Click(object sender, RoutedEventArgs e)
 	{
-		// 「停止」= 停掉全部账号下全部角色的代理（与快速启动页的分组级停止区分开）。
-		ProxyCaptureService.Stop();
-		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已停止全部账号下全部角色的代理\n");
+		// 「停止」= 只停脱盒侧服务器代理（机器人代理归「会话多开」页管，不受影响）。
+		int stopped = ProxyCaptureService.StopServerProxies();
+		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已停止服务器代理（{stopped} 个监听；机器人代理不受影响）\n");
 		SyncUiState();
 	}
 
 	private void StopAllButton_Click(object sender, RoutedEventArgs e)
 	{
-		ProxyCaptureService.Stop();
+		int stopped = ProxyCaptureService.StopServerProxies();
+		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已停止全部服务器代理（{stopped} 个监听；机器人代理不受影响）\n");
 		SyncUiState();
 	}
 
@@ -1370,8 +1371,11 @@ public sealed partial class ProxyCapturePage : Page
 			{
 				return;
 			}
-			ProxyCaptureService.StopPort(binding.ListenPort);
-			MainWindow.Instance?.ShowToast("已停止 127.0.0.1:" + binding.ListenPort, false);
+			// 代理启动页只停服务器代理；机器人代理监听归「会话多开」页管。
+			bool ok = ProxyCaptureService.StopServerBinding(binding.ListenPort);
+			MainWindow.Instance?.ShowToast(ok
+				? "已停止 127.0.0.1:" + binding.ListenPort
+				: "127.0.0.1:" + binding.ListenPort + " 无服务器代理可停（机器人代理请在会话多开页停止）", ok);
 			SyncUiState();
 			RefreshStatusCards();
 		}
@@ -2183,6 +2187,8 @@ public sealed partial class ProxyCapturePage : Page
 	private void LaunchPclProcess()
 	{
 		string text = PclPathBox.Text.Trim();
+		string jvmMsg = PclLauncherService.WriteJvmArgs(text, out var jvmWritten);
+		LogHelper.Log("[PCL] " + jvmMsg);
 		if (!PclLauncherService.Launch(text))
 		{
 			MainWindow.Instance?.ShowToast("启动 PCL 失败：" + text);

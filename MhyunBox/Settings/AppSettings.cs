@@ -46,7 +46,14 @@ public class AppSettings
 
 	public bool AutoStartHiddenWindow { get; set; }
 
+	/// <summary>服务器代理（快速启动 / 代理启动页）自启动开关。与机器人代理自启完全独立。</summary>
 	public bool AutoStartProxyOnStartup { get; set; }
+
+	/// <summary>机器人代理（会话多开页）自启动总开关：开启后按每张卡片的「自启动」勾选恢复机器人监听。</summary>
+	public bool AutoStartBotOnStartup { get; set; }
+
+	/// <summary>首次启动是否已把内置 MythosNexus 模组复制到桌面。</summary>
+	public bool ModCopiedToDesktop { get; set; }
 
 	public string ClientUuidOverride { get; set; } = "";
 
@@ -73,6 +80,54 @@ public class AppSettings
 	public List<SavedProxyBinding> RemovedAccountPortMemory { get; set; } = new List<SavedProxyBinding>();
 
 	public List<ProxyGroup> ProxyGroups { get; set; } = new List<ProxyGroup>();
+
+	/// <summary>
+	/// 实例多开的本地端口分配：每个 Nexus 账号（角色）一个 127.0.0.1 监听端口，
+	/// 游戏连本地端口 → 启动器中继到对应服务器。键为 user@host:port。
+	/// </summary>
+	public List<NexusEndpointSetting> NexusEndpoints { get; set; } = new List<NexusEndpointSetting>();
+
+	/// <summary>
+	/// 「行情角色」：元素之诗交易行行情模组只对这一个账号生效（单实例里由真人登录，
+	/// 程序不再为它创建机器人会话，并把行情重连地址写成它自己的本地端口）。
+	/// 值为角色键 user@host:port，空 = 未指定。
+	/// </summary>
+	public string MarketAccountKey { get; set; } = "";
+
+	/// <summary>
+	/// 「行情角色」按快速启动组分别记忆：键 = 组名（不含「全部组」），值 = 角色键。
+	/// 切换显示组时自动恢复该组上次指定的行情角色；没有记录则自动用组内第一个角色。
+	/// 这样行情角色不会再永远钉在第一个组上。
+	/// </summary>
+	public Dictionary<string, string> MarketAccountKeyByGroup { get; set; } = new Dictionary<string, string>();
+
+	/// <summary>
+	/// 「画面显示角色」：程序把该账号写进对应客户端 mythosnexus.json 的 viewAccount，
+	/// 游戏启动后 MythosNexus 会把该机器人的视角直接挂到游戏主画面。
+	/// 值为角色键 user@host:port，空 = 不指定。
+	/// </summary>
+	public string ViewAccountKey { get; set; } = "";
+
+	/// <summary>
+	/// 实例多开的风险确认：勾选后表示用户已知晓并同意「后果与责任自负」，才允许创建机器人号代理。
+	/// </summary>
+	public bool NexusRiskAccepted { get; set; }
+
+	/// <summary>
+	/// 实例多开页与管理界面共同显示的「快速启动组」名称；空 = 显示全部组。
+	/// </summary>
+	public string DisplayGroupName { get; set; } = "";
+
+	/// <summary>
+	/// 实例多开管理窗口是否已经自动弹出过一次：只自动弹一次，之后由用户从页面按钮自行打开。
+	/// </summary>
+	public bool InstancesManagerOpenedOnce { get; set; }
+
+	/// <summary>
+	/// 实例多开主页里点「删除卡片」隐藏掉的角色键（user@host:port）。
+	/// 只隐藏显示、不删除 Nexus 账号；重新在管理页启用该角色会把它从列表里移除。
+	/// </summary>
+	public List<string> NexusHiddenCards { get; set; } = new List<string>();
 
 	public string ConfigUrl { get; set; } = "";
 
@@ -206,4 +261,22 @@ public class AppSettings
 	/// 同一天只提醒一次，避免每次启动都弹。
 	/// </summary>
 	public string BuildCheckPromptDate { get; set; } = "";
+
+	/// <summary>
+	/// 元素之诗「第 6 个及以后机器人代理」提醒已弹次数。最多弹 3 次，之后静默
+	/// （2026-11-17：原先直接在第 5 个之后静默跳过，用户要求改成提醒但不拦）。
+	/// </summary>
+	public int ElementPoetryWarnCount { get; set; }
+
+	/// <summary>
+	/// 会话多开页是否显示「高级信息」（监听数、上下行包、各服务器进服数）。
+	/// 默认关闭：主界面只留「已进服数/总数」。
+	/// </summary>
+	public bool ShowAdvancedSessionInfo { get; set; }
+
+	/// <summary>
+	/// 启动时把「首次打开说明」和「元素之诗超限提醒」各弹一遍（验看文案用）。
+	/// 弹完立即置回 false，正常使用时不会打扰。
+	/// </summary>
+	public bool ShowNexusNoticesOnStartup { get; set; }
 }

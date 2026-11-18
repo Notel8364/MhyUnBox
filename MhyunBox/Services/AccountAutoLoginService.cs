@@ -29,6 +29,88 @@ public static class AccountAutoLoginService
 
 	private static readonly object InFlightSync = new object();
 
+	/// <summary>
+	/// 本次进程内「Cookie 已确认不可用」的账号（channel|account）。
+	/// 命中后直接走明文账密换新 token，不再每轮拿过期 Cookie 白撞一次——
+	/// 旧 Cookie 反复拉 token 正是 login-otp 登录环境异常（code=32）的常见诱因。
+	/// 明文重登成功即移除（已换到新 Cookie）。
+	/// </summary>
+	private static readonly HashSet<string> CookieExpired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// 手动登录窗口（channel|account → 截止时间）。用户在账号绑定页用新账密点登录期间，
+	/// 该账号的自动重登必须让路：两条登录链路并发会被网易判成「登录环境异常」（code=32），
+	/// 表现就是「明明输对了新账密，却报环境异常登不上」。
+	/// </summary>
+	private static readonly Dictionary<string, DateTimeOffset> ManualLoginUntil = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
+
+	private static readonly TimeSpan ManualLoginWindow = TimeSpan.FromMinutes(3);
+
+	/// <summary>手动登录开始：置窗口 + 让旧 Cookie 失效，避免自动链路拿旧凭据同时再登一次。</summary>
+	public static void BeginManualLogin(string? channel, string? account)
+	{
+		try
+		{
+			string key = (channel ?? "") + "|" + (account ?? "").Trim();
+			lock (InFlightSync)
+			{
+				ManualLoginUntil[key] = DateTimeOffset.UtcNow + ManualLoginWindow;
+				CookieExpired.Add(key);
+				// 正在进行中的自动重登直接丢弃引用，让 AwaitAndClear 之后不会复用它
+				InFlight.Remove(key);
+			}
+			LogHelper.Log("[账号绑定] 手动登录开始，已挂起该账号的自动重登：" + Mask(account));
+		}
+		catch
+		{
+		}
+	}
+
+	/// <summary>手动登录结束：成功则完全放行（Cookie 已换新），失败则再挡 30 秒避免立刻被自动链路顶号。</summary>
+	public static void EndManualLogin(string? channel, string? account, bool success)
+	{
+		try
+		{
+			string key = (channel ?? "") + "|" + (account ?? "").Trim();
+			lock (InFlightSync)
+			{
+				if (success)
+				{
+					ManualLoginUntil.Remove(key);
+					CookieExpired.Remove(key);
+				}
+				else
+				{
+					ManualLoginUntil[key] = DateTimeOffset.UtcNow.AddSeconds(30);
+				}
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	private static bool IsManualLoginInProgress(string key)
+	{
+		lock (InFlightSync)
+		{
+			if (!ManualLoginUntil.TryGetValue(key, out DateTimeOffset until))
+			{
+				return false;
+			}
+			if (until > DateTimeOffset.UtcNow)
+			{
+				return true;
+			}
+			ManualLoginUntil.Remove(key);
+			return false;
+		}
+	}
+
+	// 2026-11-15 用户定版：自动登录链路命中 login-otp 登录环境异常（code=32 / login abnormally）时，
+	// 自动用保存的明文账密发起一次登录请求；每次程序启动期间只允许触发一次（进程级标志）。
+	private static int _environmentBlockPlaintextFired;
+
 	private static readonly Random DelayRandom = new Random();
 
 	private static CancellationTokenSource? _cts;
@@ -186,28 +268,58 @@ public static class AccountAutoLoginService
 	{
 		try
 		{
+			string cookieKey = (acc.Channel ?? "") + "|" + (acc.Account ?? "");
+			// Cookie 已判定过期（或上轮拉取失败）：直接走明文账密换新 token。
+			// 旧凭据反复拉 token 既是无效请求，也会被网易判成异常登录环境（code=32）。
+			bool skipCookie = acc.HasCredentials && CookieExpired.Contains(cookieKey);
 			// 先用本地 Cookie 拉一次会话；成功路径与 ReloginViaCookieAsync 完全一致，直接复用不重复实现
-			if (await ReloginViaCookieAsync(acc, token).ConfigureAwait(continueOnCapturedContext: false))
+			if (!skipCookie && await ReloginViaCookieAsync(acc, token).ConfigureAwait(continueOnCapturedContext: false))
 			{
+				CookieExpired.Remove(cookieKey);
 				return true;
 			}
 			// 拉取失败只记日志：不自动取消登录态、不标记失效（账号可能仍可用，由实际进入会话失败时按需重登兜底）
 			LogHelper.Log("[自动登录] 拉取失败: " + acc.Channel + " " + Mask(acc.Account) + " => " + LastReloginMessage);
-			// 2026-11-07 修复：命中网易登录环境风控时绝不继续账密重登。
-			// 旧逻辑「被拦截也照常重登」会把一次拒绝放大成一轮完整账密登录，形成登录风暴。
+			// 2026-11-07 修复：命中网易登录环境风控时不再把一次拒绝放大成一轮登录风暴。
+			// 2026-11-15 用户定版：唯独 login-otp 登录环境异常（code=32 / login abnormally）例外——
+			// 出现该报错时自动用保存的明文账密请求一次登录，每次程序启动只触发一次。
 			if (NeteaseLogin.IsRiskControlText(LastReloginMessage))
 			{
 				ReportRiskControl(acc.Channel, acc.Account, LastReloginMessage);
-				LogHelper.Force("[自动登录] " + Mask(acc.Account) + " Cookie 拉取命中网易登录环境风控，进入冷静期并跳过账密重登");
+				if (IsLoginEnvironmentBlockText(LastReloginMessage))
+				{
+					bool okOnBlock = await TryPlaintextLoginOnceOnEnvironmentBlockAsync(acc.Channel, acc.Account, LastReloginMessage, token).ConfigureAwait(continueOnCapturedContext: false);
+					if (okOnBlock)
+					{
+						CookieExpired.Remove(cookieKey);
+					}
+					else
+					{
+						CookieExpired.Add(cookieKey);
+					}
+					return okOnBlock;
+				}
+				LogHelper.Force("[自动登录] " + Mask(acc.Account) + " Cookie 拉取命中网易登录环境风控，跳过账密重登");
+				if (acc.HasCredentials)
+				{
+					CookieExpired.Add(cookieKey);
+				}
 				return false;
 			}
 			// 保存了明文账密的账号：Cookie 级拉取失败才用账密重登换新会话
 			//（4399=重登 4399 换新 Cookie；网易云=账密重新登录网易）。
 			if (acc.HasCredentials)
 			{
-				return await (acc.Is4399
+				// 本轮 Cookie 已确认不可用：后续重登直接走明文，不再每轮白撞一次。
+				CookieExpired.Add(cookieKey);
+				bool ok = await (acc.Is4399
 					? ReloginVia4399Async(acc, token)
 					: ReloginViaNeteasePasswordAsync(acc, token)).ConfigureAwait(continueOnCapturedContext: false);
+				if (ok)
+				{
+					CookieExpired.Remove(cookieKey);
+				}
+				return ok;
 			}
 			return false;
 		}
@@ -219,6 +331,82 @@ public static class AccountAutoLoginService
 		{
 			Exception ex3 = ex2;
 			LogHelper.LogError(ex3, "[自动登录] 拉取异常: " + acc.Channel + " " + Mask(acc.Account));
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// 是否为 login-otp 登录环境异常（网易按网络出口/环境拒绝的伪装回执）：
+	/// 典型文案「login-otp 登录环境异常（网易按环境拒绝，code=32）」或 login abnormally。
+	/// </summary>
+	public static bool IsLoginEnvironmentBlockText(string? message)
+	{
+		if (string.IsNullOrWhiteSpace(message))
+		{
+			return false;
+		}
+		string text = message!;
+		bool isLoginStage = text.Contains("login-otp", StringComparison.OrdinalIgnoreCase)
+			|| text.Contains("登录环境异常", StringComparison.Ordinal)
+			|| text.Contains("login abnormally", StringComparison.OrdinalIgnoreCase);
+		if (!isLoginStage)
+		{
+			return false;
+		}
+		return text.Contains("code=32", StringComparison.OrdinalIgnoreCase)
+			|| text.Contains("登录环境异常", StringComparison.Ordinal)
+			|| text.Contains("login abnormally", StringComparison.OrdinalIgnoreCase);
+	}
+
+	/// <summary>
+	/// 登录环境异常（code=32）明文兜底：只在本次程序启动内触发一次，
+	/// 用保存的明文账密重新登录换取新会话。返回是否换到可用会话。
+	/// </summary>
+	public static async Task<bool> TryPlaintextLoginOnceOnEnvironmentBlockAsync(string channel, string account, string message, CancellationToken token = default(CancellationToken))
+	{
+		if (!IsLoginEnvironmentBlockText(message))
+		{
+			return false;
+		}
+		AccountStore.LocalAccount? acc = AccountStore.All.FirstOrDefault((AccountStore.LocalAccount a) => string.Equals(a.Channel, channel, StringComparison.Ordinal) && string.Equals(a.Account, account, StringComparison.OrdinalIgnoreCase));
+		if (acc == null)
+		{
+			return false;
+		}
+		if (!acc.HasCredentials)
+		{
+			LogHelper.Force("[自动登录] " + Mask(account) + " 命中 login-otp 登录环境异常（" + message + "），但未保存明文账密，无法发起明文登录");
+			return false;
+		}
+		if (Interlocked.CompareExchange(ref _environmentBlockPlaintextFired, 1, 0) != 0)
+		{
+			LogHelper.Log("[自动登录] " + Mask(account) + " 命中 login-otp 登录环境异常，但本次启动已触发过明文登录兜底，跳过");
+			return false;
+		}
+		LogHelper.Force("[自动登录] " + Mask(account) + " 命中 login-otp 登录环境异常（" + message + "），自动用明文账密登录一次");
+		try
+		{
+			bool ok = (acc.Is4399
+				? await ReloginVia4399Async(acc, token).ConfigureAwait(continueOnCapturedContext: false)
+				: await ReloginViaNeteasePasswordAsync(acc, token).ConfigureAwait(continueOnCapturedContext: false));
+			if (ok)
+			{
+				SetStatus("登录环境异常，明文登录成功：" + Mask(acc.Account));
+				LogHelper.Force("[自动登录] " + Mask(acc.Account) + " 环境异常明文兜底成功，已换新会话");
+			}
+			else
+			{
+				LogHelper.Force("[自动登录] " + Mask(acc.Account) + " 环境异常明文兜底未成功：" + LastReloginMessage);
+			}
+			return ok;
+		}
+		catch (OperationCanceledException)
+		{
+			return false;
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[自动登录] 环境异常明文兜底异常: " + Mask(account));
 			return false;
 		}
 	}
@@ -352,6 +540,13 @@ public static class AccountAutoLoginService
 	public static Task<bool> EnsureLoginForAsync(string channel, string account, CancellationToken token = default(CancellationToken))
 	{
 		string key = (channel ?? "") + "|" + (account ?? "").Trim();
+		// 用户正在账号绑定页手动登录同一账号：自动链路必须让路，否则两条登录并发
+		// 会被网易判成登录环境异常（code=32），且先成功的一方会被后一方顶掉。
+		if (IsManualLoginInProgress(key))
+		{
+			LogHelper.Log("[自动登录] " + Mask(account) + " 手动登录进行中，跳过本次自动重登");
+			return Task.FromResult(false);
+		}
 		// 官方启动器运行时跳过自动重登：避免把同账号下官方启动器正在用的会话顶掉。
 		if (GameProcessDetector.IsOfficialLauncherRunning())
 		{

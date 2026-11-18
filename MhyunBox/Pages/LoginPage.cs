@@ -936,6 +936,9 @@ public sealed partial class LoginPage : Page
 			return;
 		}
 		SetBusy(busy: true);
+		// 手动登录优先：挂起该账号的自动重登（否则旧 Cookie 的自动链路会与新账密登录并发，
+		// 网易侧表现为「登录环境异常 code=32」，用户看到的就是新账密也登不上）。
+		AccountAutoLoginService.BeginManualLogin(selectedChannel, account);
 		StatusBar.IsOpen = false;
 		try
 		{

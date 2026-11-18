@@ -116,6 +116,15 @@ public sealed partial class MainWindow : Window
 
 	private static MainWindow? _instance;
 
+	// 实例多开沉浸模式：隐藏左侧主导航，把功能移到页面右侧栏；标题栏给出「回到程序界面」入口
+	private bool _instancesMode;
+
+	private Button? _instancesBackButton;
+
+	// 页面切换动画：ContentCard 整体位移/缩放/透明度过渡（进入实例多开从右飞入，返回时反向）
+	private CompositeTransform? _contentTransition;
+
+
 	private AppWindow? _appWindow;
 
 	private readonly List<FrameworkElement> _overlays = new List<FrameworkElement>();
@@ -143,6 +152,7 @@ public sealed partial class MainWindow : Window
 		["LoginPage"] = (typeof(LoginPage), "账号绑定"),
 		["ProxyCapturePage"] = (typeof(ProxyCapturePage), "代理启动"),
 		["GroupsQuickPage"] = (typeof(GroupsQuickPage), "快速启动"),
+		["InstancesPage"] = (typeof(InstancesViewPage), "会话多开"),
 		["ServerListPage"] = (typeof(ServerListPage), "服务器列表"),
 		["ShopPage"] = (typeof(ShopPage), "商城"),
 		["ClientUpdatePage"] = (typeof(ClientUpdatePage), "更新客户端"),
@@ -441,6 +451,24 @@ public sealed partial class MainWindow : Window
 	{
 		InitializeComponent();
 		_instance = this;
+		// 游戏实例监听：读各客户端 logs/latest.log 判断「游戏起来了 / 已经对上服务器」，
+		// 进服后自动把勾了自启动的机器人代理重启一遍、并把机器人代理卡片补写回客户端。
+		try
+		{
+			GameSessionWatcher.Start();
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[游戏监听] 启动失败：" + ex.Message);
+		}
+		// 首次启动把内置 MythosNexus 模组复制到桌面（之后可用实例多开页按钮手动复制）。
+		try
+		{
+			MhyunBox.Services.ModExporter.EnsureCopiedOnFirstRun();
+		}
+		catch
+		{
+		}
 		// Toast 顶层化：预编译 xbf 里的 ToastHost 排在 ContentCard 之前，
 		// 黑底深色把 ContentCard 换成不透明纯黑后，只调 Canvas.ZIndex 仍会被
 		// Grid 的绘制顺序压住（实测 ZIndex 方案无效）。改用 C# 新建的提示层，
@@ -457,6 +485,40 @@ public sealed partial class MainWindow : Window
 		}
 		base.ExtendsContentIntoTitleBar = true;
 		SetTitleBar(AppTitleBar);
+		// 页面切换动画用的变换（XAML 里是 TranslateTransform，这里替换成 CompositeTransform 以支持缩放）
+		try
+		{
+			_contentTransition = new CompositeTransform();
+			ContentCard.RenderTransform = _contentTransition;
+			ContentCard.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+			// 标题栏在 ContentCard 之上，沉浸模式下「回到程序界面」按钮才不会被内容盖住
+			Canvas.SetZIndex(AppTitleBar, 100);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[界面] 页面切换动画初始化失败");
+		}
+		// 实例多开模式：标题栏（程序左上角）显示「回到程序界面」
+		try
+		{
+			_instancesBackButton = new Button
+			{
+				Content = "← 回到程序界面",
+				FontSize = 12,
+				Height = 30,
+				Padding = new Thickness(10, 0, 10, 0),
+				VerticalAlignment = VerticalAlignment.Center,
+				HorizontalAlignment = HorizontalAlignment.Left,
+				Margin = new Thickness(190, 0, 0, 0),
+				Visibility = Visibility.Collapsed
+			};
+			_instancesBackButton.Click += (_, _) => ExitInstancesMode();
+			AppTitleBar.Children.Add(_instancesBackButton);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[界面] 标题栏返回按钮创建失败");
+		}
 		_appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(WindowNative.GetWindowHandle(this)));
 		_appWindow.Title = "BakaBox";
 		AppTitleTextBlock.Text = "BakaBox";
@@ -518,8 +580,66 @@ public sealed partial class MainWindow : Window
 			ServerAutoDiscovery.Start(8);
 			// DLL 构建时间校验：落后仓库或 DLL 与主程序不同批次时，提示加群换 DLL（每天最多一次）
 			BuildStampService.StartStartupCheck();
+			TryShowPendingNexusNotices();
 			// 用户定版（2026-11-01）：本机锁（程序账号/解锁弹窗）机制整体移除，启动不再要求解锁
 		});
+	}
+
+	/// <summary>
+	/// 启动时把会话多开的两条提示各弹一遍（验看文案用）。设置里的一次性开关，
+	/// 弹完立刻置回 false，正常使用不会重复打扰。
+	/// </summary>
+	private void TryShowPendingNexusNotices()
+	{
+		try
+		{
+			AppSettings cfg = SettingsManager.Instance;
+			if (!cfg.ShowNexusNoticesOnStartup)
+			{
+				return;
+			}
+			cfg.ShowNexusNoticesOnStartup = false;
+			SettingsManager.Save(cfg);
+			_ = DispatcherQueue.TryEnqueue(async () =>
+			{
+				try
+				{
+					await Task.Delay(900);
+					if (Content?.XamlRoot == null)
+					{
+						return;
+					}
+					var agreement = new ContentDialog
+					{
+						Title = "使用会话多开 / 机器人号代理",
+						Content = MhyunBox.Pages.NexusNotice.BuildAgreementContent(),
+						PrimaryButtonText = "我已了解，继续",
+						CloseButtonText = "暂不使用",
+						DefaultButton = ContentDialogButton.Primary,
+						XamlRoot = Content.XamlRoot
+					};
+					await DialogGate.ShowAsync(agreement);
+					var poetry = new ContentDialog
+					{
+						Title = "元素之诗 · 机器人代理数量提醒",
+						Content = MhyunBox.Pages.NexusNotice.BuildElementPoetryContent(6),
+						PrimaryButtonText = "知道了",
+						CloseButtonText = "继续启动",
+						DefaultButton = ContentDialogButton.Primary,
+						XamlRoot = Content.XamlRoot
+					};
+					await DialogGate.ShowAsync(poetry);
+				}
+				catch (Exception ex)
+				{
+					LogHelper.Log("[界面] 文案预览弹窗失败：" + ex.Message);
+				}
+			});
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[界面] 文案预览开关读取失败：" + ex.Message);
+		}
 	}
 
 	private void OnFirstRender(object? sender, object e)
@@ -1204,6 +1324,12 @@ public sealed partial class MainWindow : Window
 
 	private void ShowPage(Type pageType)
 	{
+		// 「实例多开管理」独立弹窗已移除（2026-11-18），页面切换不再需要任何沉浸模式分支。
+		ApplyPageContent(pageType);
+	}
+
+	private void ApplyPageContent(Type pageType)
+	{
 		if (!_pageCache.TryGetValue(pageType, out var value))
 		{
 			value = (Page)Activator.CreateInstance(pageType);
@@ -1212,6 +1338,101 @@ public sealed partial class MainWindow : Window
 		if (!ReferenceEquals(ContentFrame.Content, value))
 		{
 			ContentFrame.Content = value;
+		}
+	}
+
+	private Task AnimateContentCardAsync(double translateX, double scale, double opacity, int durationMs, double? paneOpacity = null)
+	{
+		var completion = new TaskCompletionSource<bool>();
+		try
+		{
+			var storyboard = new Storyboard();
+			var duration = new Duration(TimeSpan.FromMilliseconds(durationMs));
+			if (_contentTransition != null)
+			{
+				AddTransitionAnimation(storyboard, _contentTransition, "TranslateX", translateX, duration);
+				AddTransitionAnimation(storyboard, _contentTransition, "ScaleX", scale, duration);
+				AddTransitionAnimation(storyboard, _contentTransition, "ScaleY", scale, duration);
+			}
+			AddTransitionAnimation(storyboard, ContentCard, "Opacity", opacity, duration);
+			if (paneOpacity.HasValue && PaneBackdrop != null)
+			{
+				AddTransitionAnimation(storyboard, PaneBackdrop, "Opacity", paneOpacity.Value, duration);
+			}
+			storyboard.Completed += (_, _) => completion.TrySetResult(true);
+			storyboard.Begin();
+		}
+		catch
+		{
+			completion.TrySetResult(true);
+		}
+		return completion.Task;
+	}
+
+	private static void AddTransitionAnimation(Storyboard storyboard, DependencyObject target, string property, double to, Duration duration)
+	{
+		var animation = new DoubleAnimation
+		{
+			To = to,
+			Duration = duration,
+			EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+			EnableDependentAnimation = true
+		};
+		Storyboard.SetTarget(animation, target);
+		Storyboard.SetTargetProperty(animation, property);
+		storyboard.Children.Add(animation);
+	}
+
+	/// <summary>进入实例多开沉浸模式：隐藏左侧主导航，页面右侧栏接管功能入口。</summary>
+	public void EnterInstancesMode()
+	{
+		base.DispatcherQueue.TryEnqueue(delegate
+		{
+			SetInstancesMode(true);
+		});
+	}
+
+	/// <summary>回到程序界面：恢复左侧主导航并切回首页（带反向过渡动画）。</summary>
+	public void ExitInstancesMode()
+	{
+		NavigateTo("HomePage");
+	}
+
+	private void SetInstancesMode(bool on)
+	{
+		try
+		{
+			_instancesMode = on;
+			NavView.IsPaneVisible = !on;
+			NavView.IsPaneToggleButtonVisible = !on;
+			ApplyPaneLayout(on);
+			if (_instancesBackButton != null)
+			{
+				_instancesBackButton.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[界面] 实例多开模式切换失败");
+		}
+	}
+
+	/// <summary>沉浸模式把左侧导航的背景面板与内容左边距一起收掉，恢复时还原。</summary>
+	private void ApplyPaneLayout(bool instances)
+	{
+		double pane = NavView.OpenPaneLength;
+		double left = instances ? 0.0 : Math.Max(0.0, pane - 3.0);
+		if (PaneBackdrop != null)
+		{
+			PaneBackdrop.Width = instances ? 0.0 : pane;
+		}
+		if (ContentCard != null)
+		{
+			ContentCard.Margin = new Thickness(left, -2.0, -1.0, -3.0);
+		}
+		if (ContentBackgroundClipper != null)
+		{
+			ContentBackgroundClipper.Margin = new Thickness(left, -2.0, -1.0, -3.0);
 		}
 	}
 
@@ -1258,6 +1479,7 @@ public sealed partial class MainWindow : Window
 		AddNavItem(Symbol.People, "LoginPage");
 		AddNavItem(Symbol.Sync, "ProxyCapturePage");
 		AddNavItem(Symbol.AllApps, "GroupsQuickPage");
+		AddNavItem(Symbol.View, "InstancesPage");
 		AddNavItem(Symbol.Library, "ServerListPage");
 		AddNavItem(Symbol.Shop, "ShopPage");
 		AddNavItem(Symbol.Download, "ClientUpdatePage");
@@ -1670,6 +1892,10 @@ public sealed partial class MainWindow : Window
 
 	private void UpdateContentCardMargin(double paneLength)
 	{
+		if (_instancesMode)
+		{
+			paneLength = 0.0;
+		}
 		double left = Math.Max(0.0, paneLength - 3.0);
 		SetTranslateX(ContentCard, 0.0);
 		ContentCard.Margin = new Thickness(left, -2.0, -1.0, -3.0);
@@ -1684,7 +1910,7 @@ public sealed partial class MainWindow : Window
 		{
 			double left = paneLength - 3.0;
 			ContentBackgroundClipper.Margin = new Thickness(left, -2.0, -1.0, -3.0);
-			PaneBackdrop.Width = paneLength;
+			PaneBackdrop.Width = _instancesMode ? 0.0 : paneLength;
 		}
 	}
 
@@ -1695,9 +1921,14 @@ public sealed partial class MainWindow : Window
 
 	private static void SetTranslateX(FrameworkElement element, double x)
 	{
-		if (element.RenderTransform is TranslateTransform translateTransform)
+		switch (element.RenderTransform)
 		{
+		case TranslateTransform translateTransform:
 			translateTransform.X = x;
+			break;
+		case CompositeTransform compositeTransform:
+			compositeTransform.TranslateX = x;
+			break;
 		}
 	}
 

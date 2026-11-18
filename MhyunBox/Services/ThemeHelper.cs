@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Windows.UI;
 
@@ -209,10 +210,86 @@ internal static class ThemeHelper
 			box.Resources["ComboBoxItemBackgroundSelected"] = new SolidColorBrush(subtle);
 			box.Resources["ComboBoxItemBackgroundSelectedPointerOver"] = new SolidColorBrush(subtle);
 			box.Resources["ComboBoxItemBackgroundSelectedPressed"] = new SolidColorBrush(subtle);
+			// WinUI 3 的 ComboBox 弹层模板用的是 StaticResource 解析出来的 Acrylic 画笔，
+			// 只改资源键在部分 DPI/主题下仍会保留毛玻璃（选项列表背景发糊）。
+			// 弹层打开后直接改模板里的 PopupBorder 元素，彻底换成实色。
+			box.DropDownOpened -= ForceOpaqueDropDown;
+			box.DropDownOpened += ForceOpaqueDropDown;
 		}
 		catch
 		{
 		}
+	}
+
+	/// <summary>弹层打开时把模板 Border 的背景/边框刷成实色，消除 Acrylic 毛玻璃。</summary>
+	private static void ForceOpaqueDropDown(object? sender, object e)
+	{
+		try
+		{
+			if (sender is not ComboBox box)
+			{
+				return;
+			}
+			bool dark = IsDark;
+			Color surface = (dark && IsBlack) ? Color.FromArgb(255, 12, 12, 12) : (dark ? Color.FromArgb(255, 43, 43, 43) : Color.FromArgb(255, 250, 250, 250));
+			Color stroke = dark ? Color.FromArgb(51, 255, 255, 255) : Color.FromArgb(51, 0, 0, 0);
+			Popup? popup = FindPopup(box);
+			// 模板里 Popup 的直接子元素是 Grid（PopupLayoutGrid），真正带背景的是
+			// 里面的 PopupBorder，所以必须往下找 Border，不能只看 popup.Child。
+			Border? border = FindBorder(popup?.Child);
+			if (border != null)
+			{
+				border.Background = new SolidColorBrush(surface);
+				border.BorderBrush = new SolidColorBrush(stroke);
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	/// <summary>在控件模板树里找 Popup（ComboBox 的弹层是模板的子元素，不是父级）。</summary>
+	private static Popup? FindPopup(DependencyObject root)
+	{
+		int count = VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < count; i++)
+		{
+			DependencyObject child = VisualTreeHelper.GetChild(root, i);
+			if (child is Popup popup)
+			{
+				return popup;
+			}
+			Popup? nested = FindPopup(child);
+			if (nested != null)
+			{
+				return nested;
+			}
+		}
+		return null;
+	}
+
+	/// <summary>在弹层模板里找真正承载背景的 Border（PopupBorder 优先）。</summary>
+	private static Border? FindBorder(DependencyObject? root)
+	{
+		if (root == null)
+		{
+			return null;
+		}
+		int count = VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < count; i++)
+		{
+			DependencyObject child = VisualTreeHelper.GetChild(root, i);
+			if (child is Border border)
+			{
+				return border;
+			}
+			Border? nested = FindBorder(child);
+			if (nested != null)
+			{
+				return nested;
+			}
+		}
+		return null;
 	}
 
 	/// <summary>列表容器（ListView/ListBox）的底色：必须不透明，否则深色下半透明层色与页面文字糊在一起。黑底深色下给纯黑底。</summary>

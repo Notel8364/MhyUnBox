@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -9,6 +10,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using MhyunBox.Settings;
@@ -29,7 +31,26 @@ public static class ProxyCaptureService
 
 		public int AuthAccountIndex = -1;
 
+		/// <summary>启动时解析到的认证账号键（Channel|Account）：账号列表增删会让索引漂移，
+		/// 会话认证时用它重新对准账号，避免拿到别人的登录态。</summary>
+		public string AuthAccountKey = "";
+
 		public long GameId;
+
+		/// <summary>
+		/// 代理来源："" / "tuohe" = 脱盒原服务器代理；"nexus-bot" / "nexus-market" / "nexus-manual" = 实例多开机器人侧。
+		/// 停止机器人代理时只允许停 nexus-* 的监听，绝不误停脱盒代理。
+		/// </summary>
+		public string Tag = "";
+
+		/// <summary>必须使用配置的监听端口：端口被占用时直接报错，不静默改绑其他端口。</summary>
+		public bool RequireExactPort;
+
+		/// <summary>
+		/// 端口被占用时自动改用其它空闲端口（实例多开的机器人/行情绑定用）。
+		/// 启动后调用方会把实际端口写回配置和客户端账号，避免游戏一直连旧端口。
+		/// </summary>
+		public bool AllowPortFallback;
 	}
 
 	public sealed class ActiveBindingInfo
@@ -43,7 +64,78 @@ public static class ProxyCaptureService
 		public string? TargetHost;
 
 		public int TargetPort;
+
+		public string Tag = "";
 	}
+
+	/// <summary>单个本地监听端口的实时流量统计（供实例多开角色卡片展示）。</summary>
+	public sealed class TrafficInfo
+	{
+		public int ListenPort;
+
+		public long UpBytes;
+
+		public long DownBytes;
+
+		public long UpPackets;
+
+		public long DownPackets;
+
+		public int Sessions;
+
+		public long ScreenPackets;
+
+		public DateTime LastActivityUtc;
+
+		public string LastEvent = "";
+
+		public DateTime LastEventUtc;
+
+		/// <summary>该端口最近捕获的聊天栏内容（旧→新，最多 12 条）。</summary>
+		public string[] ChatLines = Array.Empty<string>();
+
+		/// <summary>当前连接阶段：已连接 / 选择进服 / 进入服务器 / 进入子服 / 已进入游戏 / 已断开。</summary>
+		public string Status = "";
+
+		/// <summary>该端口最近一次连接失败或被踢的原因（卡片回显用）。</summary>
+		public string LastError = "";
+
+		public DateTime LastErrorUtc;
+	}
+
+	private sealed class TrafficCounter
+	{
+		public long UpBytes;
+
+		public long DownBytes;
+
+		public long UpPackets;
+
+		public long DownPackets;
+
+		public int Sessions;
+
+		public long ScreenPackets;
+
+		public DateTime LastActivityUtc;
+
+		public string LastEvent = "";
+
+		public DateTime LastEventUtc;
+
+		public string Status = "";
+
+		public string LastError = "";
+
+		public DateTime LastErrorUtc;
+
+		/// <summary>聊天栏历史（线程安全，按端口），供卡片「实例视角」直接显示。</summary>
+		public readonly object ChatLock = new object();
+
+		public readonly List<string> ChatLines = new List<string>();
+	}
+
+	private static readonly ConcurrentDictionary<int, TrafficCounter> TrafficCounters = new ConcurrentDictionary<int, TrafficCounter>();
 
 	private sealed class ListenerEntry
 	{
@@ -96,6 +188,23 @@ public static class ProxyCaptureService
 		public Cfb8Runner? DownCfb;
 
 		public int CompressionThreshold = -1;
+
+		public int ProtocolVersion;
+
+		/// <summary>用于「能不能收到游戏画面」的日志去重：Join Game / 首个区块包只记一次。</summary>
+		public bool JoinGameLogged;
+
+		public bool ChunkLogged;
+
+		public bool PlayerListLogged;
+
+		/// <summary>
+		/// 本会话收到过服务器下发的 Disconnect 包（踢人）。
+		/// 之后上游 EOF 属于「服务端主动断开」，不能当成上游被打挂去热切换线路：
+		/// 之前每次被踢都会切一次 IP，结果线路越切越乱（失落世界就是这样被切到
+		/// 1.95.232.232 后一直重连失败）。
+		/// </summary>
+		public bool SawDisconnectPacket;
 
 		public string? LoginRoleName;
 
@@ -501,6 +610,74 @@ public static class ProxyCaptureService
 				{
 					LogHelper.Log($"[代理抓取] 绑定（监听 {b.ListenPort}）目标 {value}:{targetPort2} 使用预设游戏 GameId={b.GameId}");
 				}
+				// 同一「角色 + 目标服务器」全进程只允许一条监听。
+				// 快速启动的脱盒代理与「会话多开」的机器人代理是两套入口，各自算端口，
+				// 历史上还漂移过，于是同一账号出现 20229+20205 这样的两条连接互相顶号。
+				// 这里在绑定前先按角色+目标查一遍：已有就复用那个端口。
+				ListenerEntry? sameRoleAnyPort = Listeners.FirstOrDefault((ListenerEntry x) =>
+					x.Binding != null
+					&& string.Equals((x.Binding.LoginName ?? "").Trim(), (b.LoginName ?? "").Trim(), StringComparison.OrdinalIgnoreCase)
+					&& string.Equals(x.Binding.TargetHost, value, StringComparison.OrdinalIgnoreCase)
+					&& x.Binding.TargetPort == targetPort2);
+				if (sameRoleAnyPort?.Binding != null && sameRoleAnyPort.Binding.ListenPort != b.ListenPort)
+				{
+					LogHelper.Log("[代理抓取] 角色 " + b.LoginName + " 已在 127.0.0.1:"
+						+ sameRoleAnyPort.Binding.ListenPort + " 有代理，改用该端口（不再新开一条，避免同账号顶号）");
+					b.ListenPort = sameRoleAnyPort.Binding.ListenPort;
+				}
+				// 同一个本地端口只允许一个监听；但必须区分代理来源：
+				// 脱盒原服务器代理与机器人代理互不抢占/互不复用，避免停止机器人时误停脱盒侧。
+				ListenerEntry existing = Listeners.FirstOrDefault((ListenerEntry x) =>
+					x.Binding != null && x.Binding.ListenPort == b.ListenPort);
+				if (existing != null)
+				{
+					bool sameTag = string.Equals(existing.Binding.Tag ?? "", b.Tag ?? "", StringComparison.OrdinalIgnoreCase);
+					// 同一端口 + 同一目标 + 同一登录名 = 同一个角色。
+					// 之前只认 Tag，脱盒代理占了端口就判定"另一类代理"，机器人侧被迫
+					// 改到下一个空闲端口 → 同账号出现两条连接互相踢（日志里
+					// Notel 20231+20239、Ja0keyL0ve 20236+20247 就是这么来的）。
+					// 现在只要目标与登录名一致就直接复用这条监听。
+					bool sameRole = string.Equals((existing.Binding.LoginName ?? "").Trim(), (b.LoginName ?? "").Trim(), StringComparison.OrdinalIgnoreCase)
+						&& string.Equals(existing.Binding.TargetHost, value, StringComparison.OrdinalIgnoreCase)
+						&& existing.Binding.TargetPort == targetPort2;
+					if (!sameTag)
+					{
+						if (sameRole)
+						{
+							LogHelper.Log("[代理抓取] 监听 " + b.ListenPort + " 已有同角色代理（"
+								+ (string.IsNullOrWhiteSpace(existing.Binding.Tag) ? "tuohe" : existing.Binding.Tag)
+								+ "），机器人侧复用该监听，不再新开第二条连接");
+							continue;
+						}
+						if (b.AllowPortFallback)
+						{
+							int alt = NextFreePort(b.ListenPort + 1);
+							LogHelper.Log("[代理抓取] 监听 " + b.ListenPort + " 已被另一类代理占用（"
+								+ (string.IsNullOrWhiteSpace(existing.Binding.Tag) ? "tuohe" : existing.Binding.Tag)
+								+ "），机器人侧自动改用空闲端口 " + alt);
+							b.ListenPort = alt;
+						}
+						else
+						{
+							string msg2 = "监听 " + b.ListenPort + " 已被另一类代理占用（" + (string.IsNullOrWhiteSpace(existing.Binding.Tag) ? "tuohe" : existing.Binding.Tag)
+								+ "），机器人侧绑定已跳过，不会停止现有代理";
+							LogHelper.Log("[代理抓取] " + msg2);
+							ReportBindingError(b.ListenPort, msg2);
+							continue;
+						}
+					}
+					else if (string.Equals(existing.Binding.TargetHost, value, StringComparison.OrdinalIgnoreCase)
+						&& existing.Binding.TargetPort == targetPort2)
+					{
+						LogHelper.Log($"[代理抓取] 监听 {b.ListenPort} 已在运行（-> {value}:{targetPort2}），复用现有监听");
+						continue;
+					}
+					else
+					{
+						LogHelper.Log($"[代理抓取] 监听 {b.ListenPort} 目标变更（{existing.Binding.TargetHost}:{existing.Binding.TargetPort} -> {value}:{targetPort2}），重启该端口");
+						StopPort(b.ListenPort);
+					}
+				}
 				int num = b.ListenPort;
 				TcpListener listener = null;
 				for (int num2 = 0; num2 < 100 && num >= 1 && num <= 65535; num2++)
@@ -513,6 +690,11 @@ public static class ProxyCaptureService
 					}
 					catch (SocketException)
 					{
+						if (b.RequireExactPort)
+						{
+							// 机器人侧端口必须与客户端配置一致，不能静默改绑。
+							break;
+						}
 						num = NextFreePort(num + 1);
 						continue;
 					}
@@ -520,7 +702,9 @@ public static class ProxyCaptureService
 				}
 				if (listener == null)
 				{
-					LogHelper.Log($"[代理抓取] 无法为端口 {b.ListenPort} 分配空闲端口，该绑定已跳过");
+					string msg = "无法为端口 " + b.ListenPort + " 建立监听（端口被占用或不可用），该绑定已跳过";
+					LogHelper.Log("[代理抓取] " + msg);
+					ReportBindingError(b.ListenPort, msg);
 					continue;
 				}
 				b.ListenPort = num;
@@ -532,6 +716,8 @@ public static class ProxyCaptureService
 					Binding = b
 				};
 				Listeners.Add(item);
+				SetTrafficStatus(b.ListenPort, "监听中");
+				ClearTrafficError(b.ListenPort);
 				string value2 = (string.IsNullOrWhiteSpace(b.LoginName) ? "无账号（不改写登录名）" : ("登录名 " + b.LoginName));
 				string value3 = (AllowLanBindings ? "0.0.0.0" : "127.0.0.1");
 				LogHelper.Log($"[代理抓取] 启动实例: 监听 {value3}:{num} ({value2}) -> {value}:{targetPort2} (被动中继，无主动请求)");
@@ -559,9 +745,204 @@ public static class ProxyCaptureService
 					LoginName = e.Binding.LoginName,
 					AuthAccountIndex = e.Binding.AuthAccountIndex,
 					TargetHost = e.Binding.TargetHost,
-					TargetPort = e.Binding.TargetPort
+					TargetPort = e.Binding.TargetPort,
+					Tag = e.Binding.Tag ?? ""
 				}).ToList();
 		}
+	}
+
+	/// <summary>各本地端口的实时收发流量 / 包量 / 会话数 / 最近聊天与出入事件。</summary>
+	public static IReadOnlyList<TrafficInfo> TrafficSnapshot()
+	{
+		var list = new List<TrafficInfo>(TrafficCounters.Count);
+		foreach (KeyValuePair<int, TrafficCounter> pair in TrafficCounters)
+		{
+			TrafficCounter c = pair.Value;
+			list.Add(new TrafficInfo
+			{
+				ListenPort = pair.Key,
+				UpBytes = Interlocked.Read(ref c.UpBytes),
+				DownBytes = Interlocked.Read(ref c.DownBytes),
+				UpPackets = Interlocked.Read(ref c.UpPackets),
+				DownPackets = Interlocked.Read(ref c.DownPackets),
+				ScreenPackets = Interlocked.Read(ref c.ScreenPackets),
+				Sessions = c.Sessions,
+				LastActivityUtc = c.LastActivityUtc,
+				LastEvent = c.LastEvent,
+				LastEventUtc = c.LastEventUtc,
+				Status = c.Status,
+				LastError = c.LastError,
+				LastErrorUtc = c.LastErrorUtc,
+				ChatLines = SnapshotChatLines(c)
+			});
+		}
+		return list;
+	}
+
+	private static string[] SnapshotChatLines(TrafficCounter counter)
+	{
+		lock (counter.ChatLock)
+		{
+			return counter.ChatLines.ToArray();
+		}
+	}
+
+	private static TrafficCounter TrafficFor(int listenPort)
+	{
+		return TrafficCounters.GetOrAdd(listenPort, _ => new TrafficCounter());
+	}
+
+	private static void AddTraffic(ActiveSession session, bool isUp, long bytes, long packets)
+	{
+		if (session == null || session.ListenPort <= 0)
+		{
+			return;
+		}
+		TrafficCounter c = TrafficFor(session.ListenPort);
+		if (isUp)
+		{
+			Interlocked.Add(ref c.UpBytes, bytes);
+			Interlocked.Add(ref c.UpPackets, packets);
+		}
+		else
+		{
+			Interlocked.Add(ref c.DownBytes, bytes);
+			Interlocked.Add(ref c.DownPackets, packets);
+		}
+		c.LastActivityUtc = DateTime.UtcNow;
+	}
+
+	private static void AddScreenPackets(ActiveSession session, long count)
+	{
+		if (session != null && session.ListenPort > 0)
+		{
+			Interlocked.Add(ref TrafficFor(session.ListenPort).ScreenPackets, count);
+		}
+	}
+
+	private static void SetTrafficEvent(ActiveSession session, string text, bool chat = false)
+	{
+		if (session == null || session.ListenPort <= 0 || string.IsNullOrWhiteSpace(text))
+		{
+			return;
+		}
+		TrafficCounter c = TrafficFor(session.ListenPort);
+		string value = text.Trim();
+		if (value.Length > 180)
+		{
+			value = value.Substring(0, 180) + "…";
+		}
+		c.LastEvent = value;
+		c.LastEventUtc = DateTime.UtcNow;
+	}
+
+	/// <summary>记录一条聊天栏内容（卡片「实例视角」按端口显示最近 12 条）。</summary>
+	private static void AddTrafficChat(ActiveSession session, string text, bool joinLeave)
+	{
+		if (session == null || session.ListenPort <= 0 || string.IsNullOrWhiteSpace(text))
+		{
+			return;
+		}
+		string value = CleanChatLine(text);
+		if (value.Length == 0)
+		{
+			return;
+		}
+		if (value.Length > 180)
+		{
+			value = value.Substring(0, 180) + "…";
+		}
+		string line = (joinLeave ? "[出入] " : "[聊天] ") + value;
+		TrafficCounter counter = TrafficFor(session.ListenPort);
+		lock (counter.ChatLock)
+		{
+			counter.ChatLines.Add(line);
+			if (counter.ChatLines.Count > MaxChatLines)
+			{
+				counter.ChatLines.RemoveRange(0, counter.ChatLines.Count - MaxChatLines);
+			}
+		}
+		SetTrafficEvent(session, line);
+	}
+
+	private const int MaxChatLines = 12;
+
+	/// <summary>去掉聊天里的 § 颜色/格式控制符，卡片里显示纯文本。</summary>
+	private static string CleanChatLine(string value)
+	{
+		try
+		{
+			return Regex.Replace(value, "§.", "").Trim();
+		}
+		catch
+		{
+			return value.Trim();
+		}
+	}
+
+	/// <summary>记录端口当前所处的连接阶段（卡片状态徽标用）。</summary>
+	private static void SetTrafficStatus(ActiveSession session, string status)
+	{
+		if (session == null || session.ListenPort <= 0 || string.IsNullOrWhiteSpace(status))
+		{
+			return;
+		}
+		SetTrafficStatus(session.ListenPort, status);
+	}
+
+	private static void SetTrafficStatus(int listenPort, string status)
+	{
+		if (listenPort <= 0 || string.IsNullOrWhiteSpace(status))
+		{
+			return;
+		}
+		TrafficCounter c = TrafficFor(listenPort);
+		c.Status = status.Trim();
+	}
+
+	/// <summary>记录端口最近一次连接失败 / 被踢原因（卡片红色回显）。</summary>
+	private static void SetTrafficError(ActiveSession session, string error)
+	{
+		if (session == null || session.ListenPort <= 0 || string.IsNullOrWhiteSpace(error))
+		{
+			return;
+		}
+		SetTrafficError(session.ListenPort, error);
+	}
+
+	private static void SetTrafficError(int listenPort, string error)
+	{
+		if (listenPort <= 0 || string.IsNullOrWhiteSpace(error))
+		{
+			return;
+		}
+		TrafficCounter c = TrafficFor(listenPort);
+		string value = error.Trim();
+		if (value.Length > 200)
+		{
+			value = value.Substring(0, 200) + "…";
+		}
+		c.LastError = value;
+		c.LastErrorUtc = DateTime.UtcNow;
+	}
+
+	/// <summary>启动失败等代理侧错误，直接写到端口状态，供实例卡片回显。</summary>
+	public static void ReportBindingError(int listenPort, string message)
+	{
+		SetTrafficStatus(listenPort, "启动失败");
+		SetTrafficError(listenPort, message);
+	}
+
+	/// <summary>端口成功建立监听后清掉上一次的错误，避免卡片一直显示旧错误。</summary>
+	public static void ClearTrafficError(int listenPort)
+	{
+		if (listenPort <= 0)
+		{
+			return;
+		}
+		TrafficCounter c = TrafficFor(listenPort);
+		c.LastError = "";
+		c.LastErrorUtc = DateTime.MinValue;
 	}
 
 	public static int NextFreePort(int startPort)
@@ -667,8 +1048,13 @@ public static class ProxyCaptureService
 
 	public static void RestartIfRunningForPreset()
 	{
-		if (!IsRunning)
+		// 只在「脱盒侧服务器代理确实在运行」时才重启它：
+		// 1) 账号取消登录/删除不该凭空把代理启动起来（此前只看 IsRunning，
+		//    机器人监听也会让这里为真 → Stop() 全停 + 重建服务器代理，表现为莫名启动代理）；
+		// 2) 机器人代理监听保持不动，只有服务器侧被重建。
+		if (!HasServerProxies())
 		{
+			LogHelper.Log("[账号检测] 服务器代理未在运行，账号变更不启停任何代理（机器人代理不受影响）");
 			return;
 		}
 		try
@@ -696,15 +1082,16 @@ public static class ProxyCaptureService
 			}
 			if (list.Count == 0)
 			{
-				LogHelper.Log("[账号检测] 重启代理：无可用角色，已停止");
+				LogHelper.Log("[账号检测] 重启代理：无可用角色，已停止服务器代理");
+				StopServerProxies();
 				return;
 			}
-			Stop();
+			StopServerProxies();
 			TargetFromHandshake = true;
 			StartBatch(list, serverPreset.Host, serverPreset.Port);
 			AutoStartPresetName = serverPreset.Name;
 			AutoStartPorts = string.Join("、", list.Select((ProxyBinding b) => b.ListenPort.ToString()));
-			LogHelper.Log("[账号检测] 已按预设重新启动代理: " + text + " 端口: " + AutoStartPorts);
+			LogHelper.Log("[账号检测] 已按预设重新启动服务器代理: " + text + " 端口: " + AutoStartPorts + "（机器人代理未受影响）");
 		}
 		catch (Exception ex)
 		{
@@ -824,8 +1211,273 @@ public static class ProxyCaptureService
 		SyncServerListDat();
 	}
 
-	public static void StopPort(int listenPort)
+	public static bool StopPort(int listenPort)
 	{
+		return StopPort(listenPort, null);
+	}
+
+	/// <summary>
+	/// 只停止机器人侧（Tag 以 nexus- 开头）的监听；脱盒原服务器代理绝不误停。
+	/// 返回是否真的停止了监听。
+	/// </summary>
+	public static bool StopNexusBinding(int listenPort)
+	{
+		return StopPort(listenPort, "nexus-");
+	}
+
+	/// <summary>
+	/// 清理重复监听：同一「角色 + 目标服务器」只保留最早建的那条，其余停掉。
+	/// 快速启动的脱盒代理和「会话多开」的机器人代理是两套入口，历史数据里
+	/// 同一角色曾在两个端口各跑一条，等于同账号双登互相顶号。启动后跑一次即可自愈。
+	/// </summary>
+	public static int DedupeSameRoleListeners()
+	{
+		List<ListenerEntry> snapshot;
+		lock (Sync)
+		{
+			snapshot = Listeners.Where(x => x.Binding != null).ToList();
+		}
+		var kept = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		var duplicates = new List<int>();
+		foreach (ListenerEntry item in snapshot)
+		{
+			if (item.Binding == null)
+			{
+				continue;
+			}
+			string key = (item.Binding.LoginName ?? "").Trim() + "|"
+				+ (item.Binding.TargetHost ?? "").ToLowerInvariant() + ":" + item.Binding.TargetPort;
+			if (kept.ContainsKey(key))
+			{
+				duplicates.Add(item.Binding.ListenPort);
+			}
+			else
+			{
+				kept[key] = item.Binding.ListenPort;
+			}
+		}
+		int stopped = 0;
+		foreach (int port in duplicates.Distinct())
+		{
+			if (StopPort(port, null))
+			{
+				stopped++;
+				LogHelper.Log("[代理抓取] 去重：同一角色重复监听，已停掉 127.0.0.1:" + port);
+			}
+		}
+		return stopped;
+	}
+
+	/// <summary>停止所有机器人侧监听，脱盒原服务器代理保持运行。返回停止的端口数。</summary>
+	public static int StopNexusBindings()
+	{
+		List<int> ports;
+		lock (Sync)
+		{
+			ports = Listeners
+				.Where(item => item.Binding != null && (item.Binding.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase))
+				.Select(item => item.Binding!.ListenPort)
+				.Distinct()
+				.ToList();
+		}
+		int stopped = 0;
+		foreach (int port in ports)
+		{
+			if (StopPort(port, "nexus-"))
+			{
+				stopped++;
+			}
+		}
+		return stopped;
+	}
+
+	/// <summary>是否存在脱盒侧（非 nexus- 标记）的服务器代理监听。</summary>
+	public static bool HasServerProxies()
+	{
+		lock (Sync)
+		{
+			return Listeners.Any(item => item.Binding != null
+				&& !(item.Binding.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase));
+		}
+	}
+
+	/// <summary>
+	/// 只停止脱盒侧（非 nexus- 标记）监听：机器人代理监听不受影响。
+	/// 端口归机器人代理所有时拒绝并记录；端口无监听时记日志返回 false。返回是否真的停止。
+	/// </summary>
+	public static bool StopServerBinding(int listenPort)
+	{
+		bool botOwned;
+		bool hasAny;
+		lock (Sync)
+		{
+			hasAny = Listeners.Any(item => item.Binding != null && item.Binding.ListenPort == listenPort);
+			botOwned = Listeners.Any(item => item.Binding != null && item.Binding.ListenPort == listenPort
+				&& (item.Binding.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase));
+		}
+		if (botOwned)
+		{
+			LogHelper.Log($"[代理抓取] 端口 {listenPort} 归机器人代理所有，已忽略服务器侧停止请求（请到「会话多开」停止机器人）");
+			return false;
+		}
+		if (!hasAny)
+		{
+			LogHelper.Log($"[代理抓取] 端口 {listenPort} 当前没有代理监听，无需停止");
+			return false;
+		}
+		return StopPort(listenPort);
+	}
+
+	/// <summary>
+	/// 按「具体角色」停止监听：先按服务器代理停；若该端口被机器人代理（nexus-）占用、
+	/// 但绑定的登录名正是这个角色，就连机器人代理一起停。
+	///
+	/// 背景：快速启动的某一组角色与「会话多开」撞了同一个端口时，端口会被 nexus-
+	/// 抢先占用。旧实现让 StopServerBinding 一律拒绝，按钮看起来「点了没反应」。
+	/// 用户点的就是这一行角色的「停止」，所以按角色名核对后再放行是安全的。
+	/// </summary>
+	public static bool StopBindingForRole(int listenPort, string? roleName)
+	{
+		if (listenPort <= 0)
+		{
+			return false;
+		}
+		bool sameRoleBot;
+		lock (Sync)
+		{
+			sameRoleBot = !string.IsNullOrWhiteSpace(roleName)
+				&& Listeners.Any(item => item.Binding != null
+					&& item.Binding.ListenPort == listenPort
+					&& (item.Binding.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase)
+					&& string.Equals((item.Binding.LoginName ?? "").Trim(), roleName!.Trim(),
+						StringComparison.OrdinalIgnoreCase));
+		}
+		if (sameRoleBot)
+		{
+			LogHelper.Log($"[代理抓取] 停止角色「{roleName}」：端口 {listenPort} 由机器人代理占用，按角色精确匹配后一并停止");
+			return StopPort(listenPort);
+		}
+		return StopServerBinding(listenPort);
+	}
+
+	/// <summary>停止所有脱盒侧（非 nexus- 标记）监听；机器人代理监听保持不动。返回停止的端口数。</summary>
+	public static int StopServerProxies()
+	{
+		List<int> ports;
+		lock (Sync)
+		{
+			ports = Listeners
+				.Where(item => item.Binding != null && !(item.Binding.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase))
+				.Select(item => item.Binding!.ListenPort)
+				.Distinct()
+				.ToList();
+		}
+		int stopped = 0;
+		foreach (int port in ports)
+		{
+			if (StopPort(port))
+			{
+				stopped++;
+			}
+		}
+		return stopped;
+	}
+
+	/// <summary>
+	/// 端口归脱盒代理所有时，只挂断该端口上指定机器人账号的会话，监听与其它玩家连接保持不动。
+	/// 返回挂断的会话数。
+	/// </summary>
+	public static int DropNexusSessions(int listenPort, string? loginName)
+	{
+		int dropped = 0;
+		foreach (long id in Active.Keys.ToList())
+		{
+			if (!Active.TryGetValue(id, out var session) || session.ListenPort != listenPort)
+			{
+				continue;
+			}
+			bool matches = string.IsNullOrWhiteSpace(loginName)
+				|| string.Equals((session.LoginRoleName ?? "").Trim(), loginName.Trim(), StringComparison.OrdinalIgnoreCase)
+				|| string.Equals((session.ClientName ?? "").Trim(), loginName.Trim(), StringComparison.OrdinalIgnoreCase);
+			if (!matches || !Active.TryRemove(id, out var removed))
+			{
+				continue;
+			}
+			LogHelper.Log("[代理抓取] 端口 " + listenPort + " 上机器人会话 " + (loginName ?? "(全部)") + " 已挂断（监听仍保留）");
+			removed.Dispose();
+			dropped++;
+		}
+		return dropped;
+	}
+
+	/// <summary>
+	/// 会话认证前重新校验账号索引：账号列表增删会让监听启动时记录的索引漂移，
+	/// 按启动时固化的 Channel|Account 键重新定位；对不上且找不到时回退原索引并记日志。
+	/// </summary>
+	private static int ResolveAuthIndexForSession(ProxyBinding binding, string sessionLabel)
+	{
+		try
+		{
+			System.Collections.Generic.IReadOnlyList<AccountStore.LocalAccount> all = AccountStore.All;
+			int idx = binding.AuthAccountIndex;
+			if (idx >= 0 && idx < all.Count)
+			{
+				string key = (all[idx].Channel ?? "") + "|" + (all[idx].Account ?? "");
+				if (string.Equals(key, binding.AuthAccountKey ?? "", StringComparison.OrdinalIgnoreCase))
+				{
+					return idx;
+				}
+			}
+			if (!string.IsNullOrWhiteSpace(binding.AuthAccountKey))
+			{
+				string[] parts = binding.AuthAccountKey.Split('|', 2);
+				if (parts.Length == 2)
+				{
+					for (int i = 0; i < all.Count; i++)
+					{
+						if (string.Equals(all[i].Channel ?? "", parts[0], StringComparison.Ordinal)
+							&& string.Equals(all[i].Account ?? "", parts[1], StringComparison.OrdinalIgnoreCase))
+						{
+							LogHelper.Log("[认证] " + sessionLabel + " 账号索引漂移 " + binding.AuthAccountIndex + " → " + i
+								+ "（" + parts[1] + "），按账号键重新对准");
+							return i;
+						}
+					}
+					LogHelper.Log("[认证] " + sessionLabel + " 账号键 " + binding.AuthAccountKey + " 在账号列表中已不存在，保持原索引 " + idx);
+				}
+			}
+			return binding.AuthAccountIndex;
+		}
+		catch
+		{
+			return binding.AuthAccountIndex;
+		}
+	}
+
+	private static bool StopPort(int listenPort, string? requiredTagPrefix)
+	{
+		bool ownsTarget = false;
+		bool hasAnyListener = false;
+		lock (Sync)
+		{
+			hasAnyListener = Listeners.Any(item => item.Binding != null && item.Binding.ListenPort == listenPort);
+			ownsTarget = Listeners.Any(item => item.Binding != null && item.Binding.ListenPort == listenPort
+				&& (requiredTagPrefix == null || (item.Binding.Tag ?? "").StartsWith(requiredTagPrefix, StringComparison.OrdinalIgnoreCase)));
+			if (requiredTagPrefix != null && !ownsTarget)
+			{
+				// 区分「根本没有监听」与「监听归另一类代理所有」，避免误导排障。
+				if (!hasAnyListener)
+				{
+					LogHelper.Log($"[代理抓取] 端口 {listenPort} 当前没有代理监听，无需停止");
+				}
+				else
+				{
+					LogHelper.Log($"[代理抓取] 端口 {listenPort} 不归机器人代理所有，已忽略停止请求（保护脱盒代理）");
+				}
+				return false;
+			}
+		}
+		SetTrafficStatus(listenPort, "已停止代理");
 		lock (Sync)
 		{
 			foreach (ListenerEntry item in Listeners.ToList())
@@ -871,6 +1523,7 @@ public static class ProxyCaptureService
 		StateChanged?.Invoke(IsRunning);
 		WriteRolesFile();
 		SyncServerListDat();
+		return true;
 	}
 
 	private static void WriteRolesFile()
@@ -926,12 +1579,21 @@ public static class ProxyCaptureService
 			});
 			string text2 = Path.Combine(text, "roles.json");
 			string text3 = text2 + ".tmp";
-			File.WriteAllText(text3, contents);
-			if (File.Exists(text2))
+			// 内容没变就不写，避免 CPTD 反复重读时抓到半截状态。
+			try
 			{
-				File.Delete(text2);
+				if (File.Exists(text2) && string.Equals(File.ReadAllText(text2), contents, StringComparison.Ordinal))
+				{
+					return;
+				}
 			}
-			File.Move(text3, text2);
+			catch
+			{
+			}
+			File.WriteAllText(text3, contents);
+			// 覆盖式移动是原子替换：不能先 Delete 再 Move，否则 CPTD 会有一瞬间读不到
+			// roles.json，表现为「角色端口列表在 0 个和 N 个之间快速横跳」。
+			File.Move(text3, text2, true);
 		}
 		catch (Exception ex)
 		{
@@ -1290,11 +1952,13 @@ public static class ProxyCaptureService
 				return;
 			}
 			bool statusPing = false;
+			int clientProtocol = 0;
 			if (handshake != null && TryParseHandshakeEx(handshake, out _, out _, out int handshakeProtocol, out int handshakeNextState))
 			{
 				if (handshakeProtocol > 0)
 				{
 					LastClientProtocol = handshakeProtocol;
+					clientProtocol = handshakeProtocol;
 				}
 				if (handshakeNextState == 2)
 				{
@@ -1413,6 +2077,13 @@ public static class ProxyCaptureService
 				ListenPort = (binding?.ListenPort ?? 0),
 				ProtectedPreset = FindProtectedPreset(targetHost, targetPort)
 			};
+			session.ProtocolVersion = clientProtocol;
+			Interlocked.Increment(ref TrafficFor(session.ListenPort).Sessions);
+			SetTrafficStatus(session, "已连接，等待登录");
+			if (session.ListenPort > 0)
+			{
+				LogHelper.Log("[代理画面] " + sessionLabel + " 本地通道 127.0.0.1:" + session.ListenPort + " 已建立（协议=" + clientProtocol + "），开始监听游戏画面 / 聊天 / 玩家出入数据");
+			}
 			Active[id] = session;
 			if (handshake != null)
 			{
@@ -1478,10 +2149,11 @@ public static class ProxyCaptureService
 			{
 				try
 				{
-					LogHelper.Log($"[代理抓取] {sessionLabel} 进入网易云认证 MITM: 账号索引={binding.AuthAccountIndex} GameId={binding.GameId} 登录名改写={(string.IsNullOrWhiteSpace(binding.LoginName) ? "(不改名)" : binding.LoginName)} 目标={binding.TargetHost ?? targetHost}:{targetPort}");
+					int sessionAuthIndex = ResolveAuthIndexForSession(binding, sessionLabel);
+					LogHelper.Log($"[代理抓取] {sessionLabel} 进入网易云认证 MITM: 账号索引={sessionAuthIndex} GameId={binding.GameId} 登录名改写={(string.IsNullOrWhiteSpace(binding.LoginName) ? "(不改名)" : binding.LoginName)} 目标={binding.TargetHost ?? targetHost}:{targetPort}");
 					NeteaseAuthBridge bridge = new NeteaseAuthBridge
 					{
-						AccountIndex = binding.AuthAccountIndex,
+						AccountIndex = sessionAuthIndex,
 						GameId = binding.GameId,
 						ServerName = ServerPresets.All.FirstOrDefault((ServerPreset p) => string.Equals(p.Host, binding.TargetHost ?? targetHost, StringComparison.OrdinalIgnoreCase))?.Name
 					};
@@ -1500,6 +2172,7 @@ public static class ProxyCaptureService
 						TargetAuthFailAt[targetKey] = DateTime.UtcNow;
 					}
 					string text3 = (string.IsNullOrWhiteSpace(text2) ? "网易云认证失败" : text2);
+						SetTrafficError(session, "认证未完成: " + text3);
 						LogHelper.Log("[代理抓取] " + sessionLabel + " 网易云认证未完成（" + text3 + "）");
 						session.Dispose();
 						if (Active.TryRemove(id, out value2))
@@ -1531,6 +2204,11 @@ public static class ProxyCaptureService
 			string value3 = await firstTask;
 			string value4 = ((firstTask == pumpUp) ? "客户端→服务器（客户端侧先断）" : "服务器→客户端（服务器侧先断）");
 			LogHelper.Log($"[代理抓取] {sessionLabel} 中继结束: 先结束={value4} 原因=\"{value3}\" 存活={DateTime.Now - session.Started:hh\\:mm\\:ss} 上行={session.UpBytes}B 下行={session.DownBytes}B");
+			SetTrafficStatus(session, "已断开（" + value3 + "）");
+			if (value3 != null && (value3.Contains("服务器流 EOF") || value3.Contains("服务器先断开")))
+			{
+				SetTrafficError(session, "服务器断开: " + value3);
+			}
 			await Task.WhenAll<string>(pumpUp, pumpDown);
 		}
 		catch (Exception ex4)
@@ -1541,6 +2219,7 @@ public static class ProxyCaptureService
 		{
 			if (session != null)
 			{
+				Interlocked.Decrement(ref TrafficFor(session.ListenPort).Sessions);
 				if (Active.TryRemove(id, out value2))
 				{
 					SessionInfo sessionInfo4 = ToInfo(session, "已关闭");
@@ -2035,6 +2714,7 @@ public static class ProxyCaptureService
 				Interlocked.Add(ref session.DownBytes, plain.Length);
 				WriteChunk(session, plain, plain.Length, isUp: false);
 				LogHelper.Log($"[代理抓取] {session.SessionLabel} 服务器在登录期踢出客户端，原样转发（{body.Length}B: {HexShort(body)}）");
+				SetTrafficError(session, "登录被踢: " + ExtractKickText(body));
 				ReportKickCredentialFailure(binding, ExtractKickText(body));
 				return (Success: false, Reason: "被服务器在登录期踢出");
 			}
@@ -2104,6 +2784,7 @@ public static class ProxyCaptureService
 				Interlocked.Add(ref session.DownBytes, plain3.Length);
 				WriteChunk(session, plain3, plain3.Length, isUp: false);
 				LogHelper.Log($"[代理抓取] {session.SessionLabel} 服务器加密后在登录期踢出客户端，原样转发原因后结束（{body.Length}B: {HexShort(body)}）");
+				SetTrafficError(session, "登录被踢: " + ExtractKickText(plain));
 				ReportKickCredentialFailure(binding, ExtractKickText(plain));
 				return (Success: false, Reason: "被服务器在登录期踢出（加密后）");
 			}
@@ -2126,6 +2807,7 @@ public static class ProxyCaptureService
 				Interlocked.Add(ref session.DownBytes, plain3.Length);
 				WriteChunk(session, plain3, plain3.Length, isUp: false);
 				LogHelper.Log("[代理抓取] " + session.SessionLabel + " LoginSuccess 已解密原样转发给客户端（实验:压缩直通模式）身份=" + (session.ClientName ?? "?") + " uuid=" + (session.ClientUuidHex ?? "无"));
+				SetTrafficStatus(session, "登录成功，选择进服");
 				MarkEnterSuccess(binding);
 				return (Success: true, Reason: "");
 			}
@@ -2352,18 +3034,23 @@ public static class ProxyCaptureService
 		return false;
 	}
 
-	private static async Task<byte[]?> ReadPacketAsync(Stream stream, CancellationToken ct)
+	/// <summary>一次性调用（登录嗅探 / 状态查询）用：不在高频循环里，临时分配头部缓冲即可。</summary>
+	private static Task<byte[]?> ReadPacketAsync(Stream stream, CancellationToken ct)
+	{
+		return ReadPacketAsync(stream, new byte[8], ct);
+	}
+
+	private static async Task<byte[]?> ReadPacketAsync(Stream stream, byte[] header, CancellationToken ct)
 	{
 		int length = 0;
-		byte[] one = new byte[1];
 		bool complete = false;
 		for (int i = 0; i < 3; i++)
 		{
-			if (await stream.ReadAsync(one, 0, 1, ct) != 1)
+			if (await stream.ReadAsync(header, 0, 1, ct) != 1)
 			{
 				return null;
 			}
-			int num = one[0];
+			int num = header[0];
 			length |= (num & 0x7F) << 7 * i;
 			if ((num & 0x80) == 0)
 			{
@@ -2609,13 +3296,15 @@ public static class ProxyCaptureService
 	private static async Task<string> PumpAsync(ActiveSession session, bool isUp)
 	{
 		string sideName = (isUp ? "客户端→服务器" : "服务器→客户端");
+		// 读包头缓冲在泵线程内复用：每包不再 new byte[1] / new byte[3]，多会话时显著减少小对象分配。
+		byte[] packetHeader = new byte[8];
 		try
 		{
 			if (isUp && session.DownCfb != null)
 			{
 				while (!session.Closed)
 				{
-					byte[] body = await ReadPacketAsync(session.ClientStream, CancellationToken.None);
+					byte[] body = await ReadPacketAsync(session.ClientStream, packetHeader, CancellationToken.None);
 					if (body == null)
 					{
 						break;
@@ -2632,6 +3321,8 @@ public static class ProxyCaptureService
 						session.UpstreamWriteLock.Release();
 					}
 					Interlocked.Add(ref session.UpBytes, enc.Length);
+					AddTraffic(session, true, enc.Length, 1);
+					SniffServerbound(session, body);
 					WriteChunk(session, body, body.Length, isUp: true);
 				}
 				if (!session.Closed)
@@ -2645,7 +3336,7 @@ public static class ProxyCaptureService
 			{
 				while (!session.Closed)
 				{
-					byte[] array = await ReadPacketCipheredAsync(session.UpstreamStream, session.UpCfb, CancellationToken.None);
+					byte[] array = await ReadPacketCipheredAsync(session.UpstreamStream, session.UpCfb, packetHeader, CancellationToken.None);
 					if (array == null)
 					{
 						break;
@@ -2653,6 +3344,8 @@ public static class ProxyCaptureService
 					byte[] enc = BuildPacket(array);
 					await session.ClientStream.WriteAsync(enc, 0, enc.Length);
 					Interlocked.Add(ref session.DownBytes, enc.Length);
+					AddTraffic(session, false, enc.Length, 1);
+					SniffClientbound(session, array);
 					WriteChunk(session, enc, enc.Length, isUp: false);
 				}
 				if (!session.Closed)
@@ -2669,24 +3362,34 @@ public static class ProxyCaptureService
 			{
 				return "流为空（未初始化）";
 			}
-			byte[] buffer = new byte[65536];
-			while (!session.Closed)
+			// 纯转发模式的 64KB 缓冲走池：多角色多会话时不再每条线路常驻两块 64KB 私有数组。
+			byte[] buffer = ArrayPool<byte>.Shared.Rent(65536);
+			try
 			{
-				int read = await from.ReadAsync(buffer, 0, buffer.Length);
-				if (read <= 0)
+				while (!session.Closed)
 				{
-					break;
+					int read = await from.ReadAsync(buffer, 0, 65536);
+					if (read <= 0)
+					{
+						break;
+					}
+					await to.WriteAsync(buffer, 0, read);
+					if (isUp)
+					{
+						Interlocked.Add(ref session.UpBytes, read);
+					}
+					else
+					{
+						Interlocked.Add(ref session.DownBytes, read);
+					}
+					// 纯转发模式拿不到包边界，这里按读取块粗略计包，B 值仍准确
+					AddTraffic(session, isUp, read, 1);
+					WriteChunk(session, buffer, read, isUp);
 				}
-				await to.WriteAsync(buffer, 0, read);
-				if (isUp)
-				{
-					Interlocked.Add(ref session.UpBytes, read);
-				}
-				else
-				{
-					Interlocked.Add(ref session.DownBytes, read);
-				}
-				WriteChunk(session, buffer, read, isUp);
+			}
+			finally
+			{
+				ArrayPool<byte>.Shared.Return(buffer);
 			}
 			if (!session.Closed)
 			{
@@ -2715,6 +3418,205 @@ public static class ProxyCaptureService
 		}
 	}
 
+	// ===== 机器人代理：游戏内聊天 / 玩家出入 / 画面包嗅探（尽力而为，仅解析 1.12.2 协议） =====
+	private const int Protocol1122 = 340;
+
+	private static bool IsSniffableProtocol(ActiveSession session)
+	{
+		// 网易客户端的握手协议号解析出来是 0，但正文仍然是 1.12.2（340）协议，
+		// 不能因为协议号不是 340 就跳过聊天 / 画面嗅探。
+		return session.ProtocolVersion == Protocol1122 || session.ProtocolVersion == 0;
+	}
+
+	private static void SniffClientbound(ActiveSession session, byte[] body)
+	{
+		if (session == null || !IsSniffableProtocol(session) || body == null || body.Length < 2)
+		{
+			return;
+		}
+		byte[] packet;
+		try
+		{
+			packet = DecodeUpstream(session, body);
+		}
+		catch
+		{
+			return;
+		}
+		if (packet.Length < 1)
+		{
+			return;
+		}
+		try
+		{
+			int pos = 0;
+			int pid = NetShared.ReadVarInt(packet, ref pos);
+			if (IsVisualPacket(pid))
+			{
+				AddScreenPackets(session, 1);
+			}
+			switch (pid)
+			{
+			case 15:
+			{
+				string json = NetShared.ReadString(packet, ref pos);
+				string text = ExtractChatText(json);
+				if (string.IsNullOrWhiteSpace(text))
+				{
+					return;
+				}
+				bool joinLeave = LooksPlayerJoinLeave(text);
+				LogHelper.Log("[代理聊天] " + session.SessionLabel + " 端口 " + session.ListenPort + (joinLeave ? " 玩家出入: " : " 聊天: ") + Clip(text, 200));
+				AddTrafficChat(session, text, joinLeave);
+				// 只有明确读到「传送至」+「幸存者」才认为进了子服，其它聊天不再改状态。
+				if (text.Contains("传送至", StringComparison.Ordinal)
+					&& text.Contains("幸存者", StringComparison.Ordinal))
+				{
+					SetTrafficStatus(session, "进入子服");
+				}
+				break;
+			}
+			case 45:
+				if (!session.PlayerListLogged)
+				{
+					session.PlayerListLogged = true;
+					int action = NetShared.ReadVarInt(packet, ref pos);
+					int count = NetShared.ReadVarInt(packet, ref pos);
+					LogHelper.Log("[代理画面] " + session.SessionLabel + " 端口 " + session.ListenPort + " 已收到玩家列表包（action=" + action + "，人数=" + count + "），画面数据通道正常");
+					SetTrafficEvent(session, "玩家列表已同步");
+				}
+				break;
+			case 32:
+				if (!session.ChunkLogged)
+				{
+					session.ChunkLogged = true;
+					LogHelper.Log("[代理画面] " + session.SessionLabel + " 端口 " + session.ListenPort + " 已收到首个区块数据包（" + packet.Length + "B），游戏画面开始加载");
+					SetTrafficEvent(session, "区块数据到达，画面加载中");
+				}
+				break;
+			case 35:
+				if (!session.JoinGameLogged)
+				{
+					session.JoinGameLogged = true;
+					LogHelper.Log("[代理画面] " + session.SessionLabel + " 端口 " + session.ListenPort + " 已收到 Join Game，服务器已下发进入游戏画面");
+					SetTrafficEvent(session, "已进入游戏画面");
+				}
+				SetTrafficStatus(session, "进入服务器");
+				break;
+			case 26:
+			{
+				// 1.12.2 游戏内 Disconnect 包：服务器踢人时把原因回显到卡片。
+				string json = NetShared.ReadString(packet, ref pos);
+				string text = ExtractChatText(json);
+				session.SawDisconnectPacket = true;
+				SetTrafficStatus(session, "已被服务器踢出");
+				SetTrafficError(session, "被服务器踢出: " + (string.IsNullOrWhiteSpace(text) ? "(无文本原因)" : text));
+				LogHelper.Log("[代理抓取] " + session.SessionLabel + " 端口 " + session.ListenPort + " 收到游戏内断开包: " + Clip(text, 200));
+				break;
+			}
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	private static void SniffServerbound(ActiveSession session, byte[] body)
+	{
+		if (session == null || !IsSniffableProtocol(session) || body == null || body.Length < 3)
+		{
+			return;
+		}
+		byte[] packet;
+		try
+		{
+			packet = DecodeUpstream(session, body);
+		}
+		catch
+		{
+			return;
+		}
+		try
+		{
+			int pos = 0;
+			if (NetShared.ReadVarInt(packet, ref pos) != 1)
+			{
+				return;
+			}
+			string text = NetShared.ReadString(packet, ref pos);
+			if (string.IsNullOrWhiteSpace(text))
+			{
+				return;
+			}
+			LogHelper.Log("[代理聊天] " + session.SessionLabel + " 端口 " + session.ListenPort + " 发送: " + Clip(text, 200));
+			AddTrafficChat(session, text, false);
+		}
+		catch
+		{
+		}
+	}
+
+	private static bool IsVisualPacket(int pid)
+	{
+		switch (pid)
+		{
+		case 3:
+		case 4:
+		case 5:
+		case 11:
+		case 32:
+		case 33:
+		case 34:
+		case 35:
+		case 37:
+		case 38:
+		case 39:
+		case 40:
+		case 46:
+		case 75:
+		case 76:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	private static string ExtractChatText(string json)
+	{
+		try
+		{
+			using JsonDocument document = JsonDocument.Parse(json);
+			StringBuilder sb = new StringBuilder();
+			CollectKickText(document.RootElement, sb);
+			return sb.ToString().Trim();
+		}
+		catch
+		{
+			return "";
+		}
+	}
+
+	private static bool LooksPlayerJoinLeave(string text)
+	{
+		return text.Contains("加入了游戏", StringComparison.Ordinal)
+			|| text.Contains("离开了游戏", StringComparison.Ordinal)
+			|| text.Contains("加入游戏", StringComparison.Ordinal)
+			|| text.Contains("离开游戏", StringComparison.Ordinal)
+			|| text.Contains("上线了", StringComparison.Ordinal)
+			|| text.Contains("下线了", StringComparison.Ordinal)
+			|| text.Contains("joined the game", StringComparison.OrdinalIgnoreCase)
+			|| text.Contains("left the game", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static string Clip(string text, int max)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return "";
+		}
+		return (text.Length <= max) ? text : (text.Substring(0, max) + "…");
+	}
+
 	private const string SwitchSignalDirName = "MhyCPTD";
 
 	private static readonly object SwitchSignalFileLock = new object();
@@ -2734,10 +3636,16 @@ public static class ProxyCaptureService
 		{
 			return;
 		}
-		// 正常下线判定：上游 EOF 且会话已存活超过 120s → 视为玩家正常退出，不写切换信号（异常路径 upstream-error 不受此限制）
-		if (reason == "upstream-eof" && (DateTime.UtcNow - session.Started).TotalSeconds >= 120.0)
+		// 服务端踢人后断开：不是上游故障，绝不能热切换线路。
+		if (session.SawDisconnectPacket)
 		{
-			LogHelper.Log($"[防DDoS] {session.SessionLabel} 会话已存活 {(DateTime.UtcNow - session.Started).TotalSeconds:F0}s 后上游正常关闭，判定为正常下线，不写切换信号");
+			LogHelper.Log($"[防DDoS] {session.SessionLabel} 本次是服务器踢人后断开（{(DateTime.Now - session.Started).TotalSeconds:F0}s），判定为账号/客户端原因，不写切换信号");
+			return;
+		}
+		// 正常下线判定：上游 EOF 且会话已存活超过 120s → 视为玩家正常退出，不写切换信号（异常路径 upstream-error 不受此限制）
+		if (reason == "upstream-eof" && (DateTime.Now - session.Started).TotalSeconds >= 120.0)
+		{
+			LogHelper.Log($"[防DDoS] {session.SessionLabel} 会话已存活 {(DateTime.Now - session.Started).TotalSeconds:F0}s 后上游正常关闭，判定为正常下线，不写切换信号");
 			return;
 		}
 		string address = "127.0.0.1:" + session.ListenPort;
@@ -3060,22 +3968,27 @@ public static class ProxyCaptureService
 		}
 	}
 
-	private static async Task<byte[]?> ReadPacketCipheredAsync(Stream stream, Cfb8Runner cfb, CancellationToken ct)
+	/// <summary>一次性调用用：临时分配头部缓冲。</summary>
+	private static Task<byte[]?> ReadPacketCipheredAsync(Stream stream, Cfb8Runner cfb, CancellationToken ct)
 	{
-		byte[] raw = new byte[3];
+		return ReadPacketCipheredAsync(stream, cfb, new byte[8], ct);
+	}
+
+	private static async Task<byte[]?> ReadPacketCipheredAsync(Stream stream, Cfb8Runner cfb, byte[] header, CancellationToken ct)
+	{
 		int rawCount = 0;
 		int length = 0;
-		byte[] one = new byte[1];
 		bool complete = false;
 		for (int i = 0; i < 3; i++)
 		{
-			if (await stream.ReadAsync(one, 0, 1, ct) != 1)
+			// header[0..2] 存加密原始字节（仅错误日志用），header[3] 作为单字节读缓冲复用。
+			if (await stream.ReadAsync(header, 3, 1, ct) != 1)
 			{
-				LogHelper.Log($"[加密流] 长度前缀读取中断（第 {i} 字节即流结束，已读原始 {HexShort(raw.AsSpan(0, rawCount).ToArray())}）");
+				LogHelper.Log($"[加密流] 长度前缀读取中断（第 {i} 字节即流结束，已读原始 {HexShort(header.AsSpan(0, rawCount).ToArray())}）");
 				return null;
 			}
-			raw[rawCount++] = one[0];
-			int num = cfb.DecryptByte(one[0]);
+			header[rawCount++] = header[3];
+			int num = cfb.DecryptByte(header[3]);
 			length |= (num & 0x7F) << 7 * i;
 			if ((num & 0x80) == 0)
 			{
@@ -3085,12 +3998,12 @@ public static class ProxyCaptureService
 		}
 		if (!complete)
 		{
-			LogHelper.Log($"[加密流] 长度前缀超过 3 字节（原始 {HexShort(raw.AsSpan(0, rawCount).ToArray())}）");
+			LogHelper.Log($"[加密流] 长度前缀超过 3 字节（原始 {HexShort(header.AsSpan(0, rawCount).ToArray())}）");
 			return null;
 		}
 		if (length <= 0 || length > 1048576)
 		{
-			LogHelper.Log($"[加密流] 非法长度 {length}（原始前 {rawCount}B: {HexShort(raw.AsSpan(0, rawCount).ToArray())}）");
+			LogHelper.Log($"[加密流] 非法长度 {length}（原始前 {rawCount}B: {HexShort(header.AsSpan(0, rawCount).ToArray())}）");
 			return null;
 		}
 		byte[] ciphertext = new byte[length];
@@ -3100,7 +4013,7 @@ public static class ProxyCaptureService
 			num2 = await stream.ReadAsync(ciphertext, i, length - i, ct);
 			if (num2 <= 0)
 			{
-				LogHelper.Log($"[加密流] 包体读取中断（长度={length} 已读={i}B，原始前 {HexShort(raw.AsSpan(0, rawCount).ToArray())}）");
+				LogHelper.Log($"[加密流] 包体读取中断（长度={length} 已读={i}B，原始前 {HexShort(header.AsSpan(0, rawCount).ToArray())}）");
 				return null;
 			}
 		}
@@ -3141,17 +4054,25 @@ public static class ProxyCaptureService
 		using MemoryStream stream = new MemoryStream(data);
 		using ZLibStream zLibStream = new ZLibStream(stream, CompressionMode.Decompress);
 		using MemoryStream memoryStream = new MemoryStream();
-		byte[] buffer = new byte[81920];
-		int total = 0;
-		int read;
-		while ((read = zLibStream.Read(buffer, 0, buffer.Length)) > 0)
+		// 80KB 走池：开压缩后每个下行包都会解压，多会话时这里曾是最大的 LOH 分配源。
+		byte[] buffer = ArrayPool<byte>.Shared.Rent(81920);
+		try
 		{
-			total += read;
-			if (total > MaxDecompressedPacketBytes)
+			int total = 0;
+			int read;
+			while ((read = zLibStream.Read(buffer, 0, 81920)) > 0)
 			{
-				throw new InvalidDataException("压缩包解压后超过安全上限 " + MaxDecompressedPacketBytes + "B（疑似 zlib 炸弹）");
+				total += read;
+				if (total > MaxDecompressedPacketBytes)
+				{
+					throw new InvalidDataException("压缩包解压后超过安全上限 " + MaxDecompressedPacketBytes + "B（疑似 zlib 炸弹）");
+				}
+				memoryStream.Write(buffer, 0, read);
 			}
-			memoryStream.Write(buffer, 0, read);
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(buffer);
 		}
 		return memoryStream.ToArray();
 	}

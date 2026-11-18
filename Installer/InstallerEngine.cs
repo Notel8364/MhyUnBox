@@ -39,7 +39,7 @@ internal static class SetupInfo
 
 	public const string AppExe = "MhyunBox.exe";
 
-	public const string Version = "8.3.0";
+	public const string Version = "9.1.0";
 
 	public const string Publisher = "Notel";
 
