@@ -236,6 +236,12 @@ public sealed class ProxyStartDialog : ContentDialog
 		{
 			return;
 		}
+		// 兼容模式（兼容网易发烧启动器）：自动角色刷新会附带 login-otp 建新会话，一律跳过。
+		if (SettingsManager.Instance.CompatNeteaseLauncher)
+		{
+			LogHelper.Log("[代理角色刷新] 兼容网易发烧启动器已开启，跳过自动角色刷新（避免顶掉官方会话）");
+			return;
+		}
 		// 角色刷新会附带一次 login-otp，官方启动器运行时跳过，避免顶掉它的同账号会话。
 		if (GameProcessDetector.IsOfficialLauncherRunning())
 		{

@@ -108,6 +108,18 @@
     <Content Include="Mods\*.jar">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!--
+      布吉岛专用 A/B 会话共享代理的 payload（源自 WtfNel native/prebuilt，反射注入、在游戏进程内监听 13337）。
+      用 Link 映射成输出目录的 payloads\WtfNel.Payload.Proxy.dll，运行时由
+      Services\BjdProxy\BjdInjector.ResolvePayloadPath 优先解析这一份。
+      Condition 保证仓库里没有该文件时构建不中断（此时功能会在 UI 上明确报「未找到 payload」，
+      而不是让整个工程编不过）。
+    -->
+    <Content Include="..\WtfNel\native\prebuilt\WtfNel.Payload.Proxy.dll"
+             Condition="Exists('..\WtfNel\native\prebuilt\WtfNel.Payload.Proxy.dll')">
+      <Link>payloads\WtfNel.Payload.Proxy.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <!--
     原生运行时复制策略（关键修复）：

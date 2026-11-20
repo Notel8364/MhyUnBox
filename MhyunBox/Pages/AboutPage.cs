@@ -147,15 +147,44 @@ public sealed partial class AboutPage : Page
 						IsTextSelectionEnabled = true
 					});
 				}
-				// .xbf 里的 TextBlock 默认不可选中，QQ 号那行就是在 XAML 里写死的；
-				// 运行时把「反馈情况」整块的文字都开放选中，用户就能直接拖选 / Ctrl+C 复制。
-				foreach (object child in usage.Children)
+			// .xbf 里的 TextBlock 默认不可选中，QQ 号那行就是在 XAML 里写死的；
+			// 运行时把「反馈情况」整块的文字都开放选中，用户就能直接拖选 / Ctrl+C 复制。
+			foreach (object child in usage.Children)
+			{
+				if (child is TextBlock selectable)
 				{
-					if (child is TextBlock selectable)
-					{
-						selectable.IsTextSelectionEnabled = true;
-					}
+					selectable.IsTextSelectionEnabled = true;
 				}
+			}
+			// 致谢名单（2026-11-20）：「反馈情况」下方追加；幂等（重复进入构造不重复加）。
+			bool hasThanks = false;
+			foreach (object child in usage.Children)
+			{
+				if (child is TextBlock t && (t.Text ?? "") == "致谢名单")
+				{
+					hasThanks = true;
+					break;
+				}
+			}
+			if (!hasThanks)
+			{
+				usage.Children.Add(new TextBlock
+				{
+					Text = "致谢名单",
+					FontSize = 14.0,
+					FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+					Margin = new Thickness(0.0, 14.0, 0.0, 0.0)
+				});
+				usage.Children.Add(new TextBlock
+				{
+					Text = "感谢武士提供的Alane初始框架及404 Launcher的喵喵及其他制造者以及广大元批与失落世界的玩家群体给予的反馈，建议与支持",
+					FontSize = 13.0,
+					Opacity = 0.9,
+					TextWrapping = TextWrapping.Wrap,
+					IsTextSelectionEnabled = true,
+					Margin = new Thickness(0.0, 6.0, 0.0, 0.0)
+				});
+			}
 			}
 		}
 		catch (Exception ex3)
@@ -168,7 +197,7 @@ public sealed partial class AboutPage : Page
 			StackPanel powered = new StackPanel
 			{
 				HorizontalAlignment = HorizontalAlignment.Center,
-				Margin = new Thickness(0.0, 4.0, 0.0, 10.0),
+				Margin = new Thickness(0.0, 4.0, 0.0, 2.0),
 				Orientation = Orientation.Horizontal,
 				Spacing = 2.0
 			};
@@ -248,6 +277,53 @@ public sealed partial class AboutPage : Page
 		catch (Exception ex4)
 		{
 			LogHelper.LogError(ex4, "关于页 Powered By 添加失败");
+		}
+		// 第二行署名：BJD Proxy Engine By DeepSeek Harness · 大肥鱼（点击「DeepSeek Harness」跳官网）
+		try
+		{
+			StackPanel poweredDsh = new StackPanel
+			{
+				HorizontalAlignment = HorizontalAlignment.Center,
+				Margin = new Thickness(0.0, 0.0, 0.0, 10.0),
+				Orientation = Orientation.Horizontal,
+				Spacing = 2.0
+			};
+			poweredDsh.Children.Add(new TextBlock
+			{
+				Text = "BJD Proxy Engine By ",
+				FontSize = 12.0,
+				Opacity = 0.65,
+				VerticalAlignment = VerticalAlignment.Center
+			});
+			HyperlinkButton dshLink = new HyperlinkButton
+			{
+				Content = "DeepSeek Harness",
+				NavigateUri = new Uri("https://www.deepseek.com/harness/"),
+				FontSize = 12.0,
+				FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+				Padding = new Thickness(3.0, 2.0, 3.0, 2.0),
+				MinWidth = 0.0,
+				MinHeight = 0.0,
+				CornerRadius = new CornerRadius(4.0)
+			};
+			ToolTipService.SetToolTip(dshLink, "DeepSeek Harness · 大肥鱼（官网 www.deepseek.com/harness）");
+			if (Application.Current?.Resources != null && Application.Current.Resources.TryGetValue("AccentTextFillColorPrimaryBrush", out object accentDsh) && accentDsh is Microsoft.UI.Xaml.Media.Brush accentDshBrush)
+			{
+				dshLink.Foreground = accentDshBrush;
+			}
+			poweredDsh.Children.Add(dshLink);
+			poweredDsh.Children.Add(new TextBlock
+			{
+				Text = "· 大肥鱼",
+				FontSize = 12.0,
+				Opacity = 0.65,
+				VerticalAlignment = VerticalAlignment.Center
+			});
+			AboutRoot?.Children.Add(poweredDsh);
+		}
+		catch (Exception exDsh)
+		{
+			LogHelper.LogError(exDsh, "关于页 DeepSeek Harness 署名添加失败");
 		}
 		base.Loaded += delegate
 		{

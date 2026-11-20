@@ -53,6 +53,15 @@ public sealed partial class HomePage : Page
 	{
 		InitializeComponent();
 		TrimNoticeCard();
+		// 服务器预设 · 启动客户端（脱盒直启，选预设即启动）
+		try
+		{
+			HomeRoot.Children.Add(BuildClientLauncherCard());
+		}
+		catch (Exception exLaunch)
+		{
+			LogHelper.LogError(exLaunch, "首页启动客户端卡片加载失败");
+		}
 		ApplyOpenSourceTweaks();
 		// 反馈与更新（QQ 群 + DLL 大小/SHA256 校验，代理流模式开关也放这张卡里）
 		try
@@ -62,15 +71,6 @@ public sealed partial class HomePage : Page
 		catch (Exception exCommunity)
 		{
 			LogHelper.LogError(exCommunity, "首页反馈/构建校验卡片加载失败");
-		}
-		// 盐值与版本卡片（代码后置构建：Alane 首位地址 / 404 三层 Fernet / 官方 DLL 索取 / 0x11 自动切换）
-		try
-		{
-			HomeRoot.Children.Add(new SaltSourcePanel());
-		}
-		catch (Exception ex4)
-		{
-			LogHelper.LogError(ex4, "首页盐值面板加载失败");
 		}
 		// 彩蛋：会躲鼠标的「不要点击」按钮（机制参考 PCL 愚人节 AprilScaleTrans）
 		try
@@ -110,6 +110,20 @@ public sealed partial class HomePage : Page
 
 	private bool _stampChecking;
 
+	private FrameworkElement BuildClientLauncherCard()
+	{
+		Border card = new Border
+		{
+			Background = ThemeHelper.CardBackground(),
+			BorderBrush = ThemeHelper.Resolve("CardStrokeColorDefaultBrush"),
+			BorderThickness = new Thickness(1.0),
+			CornerRadius = new CornerRadius(12.0),
+			Padding = new Thickness(14.0, 12.0, 14.0, 12.0),
+			Margin = new Thickness(0.0, 0.0, 0.0, 10.0),
+			Child = new RoleLauncherPanel().Root
+		};
+		return card;
+	}
 	private FrameworkElement BuildCommunityCard()
 	{
 		StackPanel card = new StackPanel
@@ -668,6 +682,8 @@ public sealed partial class HomePage : Page
 			// 开源版：移除免责声明卡片；「使用须知」整卡去掉
 			HomeCardGrid.Children.Remove(DisclaimerCard);
 			HomeCardGrid.Children.Remove(NoticeCard);
+			// 2026-11-20：「开源版 · 全功能开放」卡片整体移除（首页不再展示激活/入口卡）
+			HomeCardGrid.Children.Remove(ActivationCard);
 			// 激活卡片改为「开源版 · 全功能开放」
 			if (ActivationCard?.Child is StackPanel panel && panel.Children.Count > 0 && panel.Children[0] is TextBlock title)
 			{

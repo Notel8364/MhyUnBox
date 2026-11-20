@@ -12,88 +12,6 @@ public static class AssetCatalog
 {
 	public static string ToolPacksDir => Path.Combine(AppContext.BaseDirectory, "ResourcePacks");
 
-	public static List<PackItem> ScanPacks()
-	{
-		Dictionary<string, PackItem> dictionary = new Dictionary<string, PackItem>(StringComparer.OrdinalIgnoreCase);
-		try
-		{
-			Directory.CreateDirectory(ToolPacksDir);
-		}
-		catch
-		{
-		}
-		AddPacksFrom(dictionary, ToolPacksDir, toolOwned: true);
-		string text = FindNeteaseGameDir();
-		if (text != null)
-		{
-			try
-			{
-				string[] directories = Directory.GetDirectories(text);
-				for (int i = 0; i < directories.Length; i++)
-				{
-					string text2 = Path.Combine(directories[i], ".minecraft", "resourcepacks");
-					if (Directory.Exists(text2))
-					{
-						AddPacksFrom(dictionary, text2, toolOwned: false);
-					}
-				}
-			}
-			catch
-			{
-			}
-		}
-		return dictionary.Values.OrderBy<PackItem, string>((PackItem p) => p.Name, StringComparer.OrdinalIgnoreCase).ToList();
-	}
-
-	public static PackItem? FindPack(string name)
-	{
-		if (string.IsNullOrWhiteSpace(name))
-		{
-			return null;
-		}
-		foreach (PackItem item in ScanPacks())
-		{
-			if (string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase))
-			{
-				return item;
-			}
-			if (string.Equals(item.Name + ".zip", name, StringComparison.OrdinalIgnoreCase))
-			{
-				return item;
-			}
-		}
-		return null;
-	}
-
-	public static byte[]? ZipFolderPack(string folder)
-	{
-		if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
-		{
-			return null;
-		}
-		try
-		{
-			using MemoryStream memoryStream = new MemoryStream();
-			using (ZipArchive zipArchive = new ZipArchive(memoryStream, ZipArchiveMode.Create, leaveOpen: true))
-			{
-				string[] files = Directory.GetFiles(folder, "*", SearchOption.AllDirectories);
-				string[] array = files;
-				foreach (string path in array)
-				{
-					string entryName = Path.GetRelativePath(folder, path).Replace('\\', '/');
-					using Stream destination = zipArchive.CreateEntry(entryName).Open();
-					using FileStream fileStream = File.OpenRead(path);
-					fileStream.CopyTo(destination);
-				}
-			}
-			return memoryStream.ToArray();
-		}
-		catch
-		{
-			return null;
-		}
-	}
-
 	private static string? FindNeteaseGameDir()
 	{
 		// 网易客户端 game 目录：常见 MCLDownload 安装位置逐盘探测
@@ -168,21 +86,6 @@ public static class AssetCatalog
 		catch
 		{
 		}
-	}
-
-	private static string ComputeSha256Hex(string path)
-	{
-		using FileStream inputStream = File.OpenRead(path);
-		using SHA256 sHA = SHA256.Create();
-		byte[] array = sHA.ComputeHash(inputStream);
-		StringBuilder stringBuilder = new StringBuilder(array.Length * 2);
-		byte[] array2 = array;
-		byte[] array3 = array2;
-		foreach (byte b in array3)
-		{
-			stringBuilder.Append(b.ToString("x2"));
-		}
-		return stringBuilder.ToString();
 	}
 
 	private static string FormatBytes(long bytes)

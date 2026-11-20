@@ -87,11 +87,6 @@ public static class GitHubService
 		SecureStore.Save(TokenStoreName, token.Trim());
 	}
 
-	public static void ClearToken()
-	{
-		SecureStore.Delete(TokenStoreName);
-	}
-
 	// ---------- 更新检查 ----------
 
 	public sealed class UpdateInfo

@@ -612,15 +612,62 @@ public sealed partial class LoginPage : Page
 		Grid.SetColumnSpan(AutoLoginHint, 2);
 		grid.Children.Add(AutoLoginHint);
 		stackPanel.Children.Add(grid);
-		// 代理流模式开关（与设置页 / 首页 / 代理启动 / 快速启动共用同一份设置）
+		// 兼容网易发烧启动器（2026-11-20 新增，仅此页显示）：
+		// 开 = MhyunBox 让出会话优先级，切断所有自动建立新会话的链路（账密保活/自动重登/code=22 自动恢复/
+		// 自动角色刷新/认证启动重建会话），只复用已保存会话（uni_sauth 校验），不顶掉官方启动器的同账号会话；
+		// 关（默认）= 脱盒自主模式：自动链路全开，被顶立即自动重登抢回（优先级高于网易我的世界启动器）。
+		ToggleSwitch compatSwitch = new ToggleSwitch
+		{
+			OnContent = "兼容网易",
+			OffContent = "不兼容网易",
+			IsOn = SettingsManager.Instance.CompatNeteaseLauncher,
+			Margin = new Thickness(0.0, 2.0, 0.0, 0.0)
+		};
+		ToolTipService.SetToolTip(compatSwitch,
+			"开启后 MhyunBox 不再自动重登/保活/重建会话（这些操作会顶掉官方启动器的同账号会话），"
+			+ "只复用已保存的会话；需要换会话时请手动重新登录。"
+			+ "关闭则回到脱盒自主模式：会话被顶时自动重登抢回，优先级高于官方启动器。");
+		compatSwitch.Toggled += delegate
+		{
+			try
+			{
+				AppSettings instance = SettingsManager.Instance;
+				instance.CompatNeteaseLauncher = compatSwitch.IsOn;
+				SettingsManager.Save(instance);
+				// 重新开启兼容模式时重置 code=10 一次性自动重登标记，给新一轮会话一次兜底机会
+				if (compatSwitch.IsOn)
+				{
+					NeteaseAuthBridge.ResetCompatCode10Relog();
+				}
+				LogHelper.Log("[账号绑定] 兼容网易发烧启动器 => " + (compatSwitch.IsOn ? "开（让出会话优先级，不自动重建会话）" : "关（脱盒自主模式，被顶自动抢回）"));
+				MainWindow.Instance?.ShowToast(compatSwitch.IsOn
+					? "已开启兼容模式：MhyunBox 不再自动重建会话，官方启动器不会被顶"
+					: "已关闭兼容模式：脱盒自主模式，会话被顶时自动重登抢回", ok: true);
+			}
+			catch (Exception exCompat)
+			{
+				LogHelper.LogError(exCompat, "[账号绑定] 切换兼容模式失败");
+			}
+		};
+		// 两个开关打横放（2026-11-20）：左 = 兼容网易开关，右 = 代理流模式开关，同一行并排。
+		StackPanel switchRow = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 24.0,
+			Margin = new Thickness(0.0, 2.0, 0.0, 0.0)
+		};
+		switchRow.Children.Add(compatSwitch);
+		// 代理流模式开关（2026-11-20 从「客户端配置与启动」卡移回账号绑定页，与兼容开关同款右侧状态提示，不带标题）：
+		// 关 = 正常代理登录（单目标直连），开 = 防DDOS模式；与设置页 / 首页 / 快速启动共用同一份设置。
 		try
 		{
-			stackPanel.Children.Add(SettingsPage.CreateProxyModeSelector());
+			switchRow.Children.Add(SettingsPage.CreateProxyModeSelector(withHeader: false));
 		}
 		catch (Exception exMode)
 		{
-			LogHelper.DebugError(exMode, "[账号绑定] 代理模式切换构建失败");
+			LogHelper.DebugError(exMode, "[账号绑定] 代理流模式开关构建失败");
 		}
+		stackPanel.Children.Add(switchRow);
 		// 自动登录的保活机制已内置（账密每 6 小时重登一次），不再提供单独开关与长说明文案。
 		// 风控提醒横幅与冷静期已移除（2026-11-11）：登录环境异常问题不复存在，程序不设自设门槛。
 		SessionListPanel = new StackPanel
@@ -1280,7 +1327,7 @@ public sealed partial class LoginPage : Page
 				DefaultButton = ContentDialogButton.Primary,
 				XamlRoot = XamlRoot
 			};
-			ContentDialogResult result = await contentDialog.ShowAsync();
+			ContentDialogResult result = await DialogGate.ShowAsync(contentDialog);
 			if (result == ContentDialogResult.Primary)
 			{
 				string url = (string.IsNullOrWhiteSpace(verifyUrl) ? "https://pay.163.com/" : verifyUrl);
@@ -1382,7 +1429,7 @@ public sealed partial class LoginPage : Page
 			{
 				OnClick(args, true);
 			};
-			await dialog.ShowAsync();
+			await DialogGate.ShowAsync(dialog);
 		}
 		catch
 		{
@@ -1493,7 +1540,7 @@ public sealed partial class LoginPage : Page
 				DefaultButton = ContentDialogButton.Primary,
 				XamlRoot = XamlRoot
 			};
-			if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+			if (await DialogGate.ShowAsync(dialog) == ContentDialogResult.Primary)
 			{
 				await FinishRiskVerifyAsync(account, channel);
 			}

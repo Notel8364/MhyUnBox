@@ -285,13 +285,11 @@ public static class PrankEffects
 
 	// ---------- 4) 整窗口躲鼠标 ----------
 
-	private static Point _mouse;                 // 鼠标在根容器坐标系里的位置
-	private static bool _fleeHooked;
-	private static Grid? _fleeRoot;
-
 	/// <summary>
 	/// 整窗口躲鼠标：鼠标一靠近，窗口就往反方向挪开。
-	/// 思路与按钮躲避一致，只是作用在窗口本身。
+	/// 2026-11-20 修复：以前拿「根容器坐标（DIP、客户区）」和「AppWindow.Position（屏幕物理像素、含标题栏）」
+	/// 直接算距离，两套坐标系根本对不上，表现为窗口乱躲 / 不该躲时也躲。
+	/// 现统一用 GetCursorPos + GetWindowRect（屏幕物理像素），鼠标在窗口外也能感知。
 	/// 持续约 7 秒后自动停止并还原位置。
 	/// </summary>
 	public static void FleeFromMouse(Action? onDone = null)
@@ -312,43 +310,53 @@ public static class PrankEffects
 		EnsureNormalState(aw);
 		SaveState(root, aw);
 		_onDone = onDone;
-
-		// 记录鼠标位置（挂在根容器上，界面任何地方移动都能拿到）
-		if (!_fleeHooked)
+		IntPtr hwnd = IntPtr.Zero;
+		try
 		{
-			_fleeRoot = root;
-			_fleeRoot.PointerMoved += delegate (object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
-			{
-				try
-				{
-					_mouse = e.GetCurrentPoint(_fleeRoot).Position;
-				}
-				catch
-				{
-				}
-			};
-			_fleeHooked = true;
+			hwnd = Win32Interop.GetWindowFromWindowId(aw.Id);
+		}
+		catch
+		{
+		}
+		if (hwnd == IntPtr.Zero)
+		{
+			onDone?.Invoke();
+			return;
 		}
 
+		// 屏幕工作区（用于把窗口留在可见范围内）
+		RectInt32 work = DisplayArea.Primary.WorkArea;
+
 		int frames = 0;
-		int cx = _savedPos.X + _savedSize.Width / 2;
-		int cy = _savedPos.Y + _savedSize.Height / 2;
 		StartTimer(delegate
 		{
 			frames++;
-			// 鼠标离窗口中心太近就往反方向挪
-			double dx = cx - _mouse.X;
-			double dy = cy - _mouse.Y;
-			double dist = Math.Sqrt(dx * dx + dy * dy);
-			if (dist > 0.001 && dist < 420.0)
+			try
 			{
-				double push = (420.0 - dist) / 420.0 * 90.0;
-				int nx = _savedPos.X + (int)(dx / dist * push);
-				int ny = _savedPos.Y + (int)(dy / dist * push);
-				// 别挪出屏幕太多
-				nx = Math.Max(-40, Math.Min(nx, 3000));
-				ny = Math.Max(-40, Math.Min(ny, 2000));
-				MoveResizeWindow(aw, nx, ny, _savedSize.Width, _savedSize.Height);
+				if (!GetCursorPos(out POINT cur) || !GetWindowRect(hwnd, out RECT win))
+				{
+					return;
+				}
+				double cx = (win.Left + win.Right) / 2.0;
+				double cy = (win.Top + win.Bottom) / 2.0;
+				double dx = cx - cur.X;
+				double dy = cy - cur.Y;
+				double dist = Math.Sqrt(dx * dx + dy * dy);
+				if (dist > 0.001 && dist < 420.0)
+				{
+					double push = (420.0 - dist) / 420.0 * 90.0;
+					int nx = (int)(win.Left + dx / dist * push);
+					int ny = (int)(win.Top + dy / dist * push);
+					// 别挪出屏幕工作区（留 40px 余量）
+					int w = win.Right - win.Left;
+					int h = win.Bottom - win.Top;
+					nx = Math.Max(work.X - 40, Math.Min(nx, work.X + work.Width - w + 40));
+					ny = Math.Max(work.Y - 40, Math.Min(ny, work.Y + work.Height - h + 40));
+					MoveResizeWindow(aw, nx, ny, w, h);
+				}
+			}
+			catch
+			{
 			}
 			if (frames >= 250)
 			{
@@ -356,6 +364,28 @@ public static class PrankEffects
 			}
 		}, TimeSpan.FromMilliseconds(28.0));
 	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	private struct POINT
+	{
+		public int X;
+		public int Y;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	private struct RECT
+	{
+		public int Left;
+		public int Top;
+		public int Right;
+		public int Bottom;
+	}
+
+	[DllImport("user32.dll")]
+	private static extern bool GetCursorPos(out POINT lpPoint);
+
+	[DllImport("user32.dll")]
+	private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
 	// ---------- 公共工具 ----------
 

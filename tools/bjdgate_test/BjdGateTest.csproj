@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <!-- 允许在只有更高版本运行时（9/10）的机器上直接跑：本工具只是反射读 MhyunBox.dll 的元数据，
+         不加载 WinUI，不需要匹配主程序的 Windows 目标框架。 -->
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>BjdGateTest</AssemblyName>
+    <RootNamespace>BjdGateTest</RootNamespace>
+    <!-- 这是独立校验工具，不参与主程序构建（主 csproj 已 Compile Remove tools\**） -->
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+</Project>

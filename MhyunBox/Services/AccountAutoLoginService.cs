@@ -66,30 +66,6 @@ public static class AccountAutoLoginService
 		}
 	}
 
-	/// <summary>手动登录结束：成功则完全放行（Cookie 已换新），失败则再挡 30 秒避免立刻被自动链路顶号。</summary>
-	public static void EndManualLogin(string? channel, string? account, bool success)
-	{
-		try
-		{
-			string key = (channel ?? "") + "|" + (account ?? "").Trim();
-			lock (InFlightSync)
-			{
-				if (success)
-				{
-					ManualLoginUntil.Remove(key);
-					CookieExpired.Remove(key);
-				}
-				else
-				{
-					ManualLoginUntil[key] = DateTimeOffset.UtcNow.AddSeconds(30);
-				}
-			}
-		}
-		catch
-		{
-		}
-	}
-
 	private static bool IsManualLoginInProgress(string key)
 	{
 		lock (InFlightSync)
@@ -152,6 +128,13 @@ public static class AccountAutoLoginService
 				{
 				int credMinutes = Math.Max(60, SettingsManager.Instance.CredentialRefreshMinutes);
 				await Task.Delay(TimeSpan.FromMinutes(credMinutes)).ConfigureAwait(continueOnCapturedContext: false);
+				// 兼容模式（账号绑定页「兼容网易发烧启动器」）：切断会顶掉官方会话的自动重登，
+				// 不再依赖官方启动器进程检测（检测有盲区，启动器最小化/仅登录窗口时可能漏判）。
+				if (SettingsManager.Instance.CompatNeteaseLauncher)
+				{
+					LogHelper.Log("[自动登录] 兼容网易发烧启动器已开启，跳过本轮账密保活（不建立新会话）");
+					continue;
+				}
 				// 官方启动器运行时绝不发起账密重登：换全新 Cookie 会顶掉它正在用的同账号会话。
 				if (GameProcessDetector.IsOfficialLauncherRunning())
 				{
@@ -547,6 +530,12 @@ public static class AccountAutoLoginService
 			LogHelper.Log("[自动登录] " + Mask(account) + " 手动登录进行中，跳过本次自动重登");
 			return Task.FromResult(false);
 		}
+		// 兼容模式：切断一切自动重登（自动重登=建立新会话=顶掉官方启动器同账号会话）。
+		if (SettingsManager.Instance.CompatNeteaseLauncher)
+		{
+			LogHelper.Log("[自动登录] 兼容网易发烧启动器已开启，跳过自动重登：" + Mask(account));
+			return Task.FromResult(false);
+		}
 		// 官方启动器运行时跳过自动重登：避免把同账号下官方启动器正在用的会话顶掉。
 		if (GameProcessDetector.IsOfficialLauncherRunning())
 		{
@@ -715,41 +704,6 @@ public static class AccountAutoLoginService
 		}
 	}
 
-	/// <summary>
-	/// 按 渠道+账号 清零自动重登的尝试计数。
-	///
-	/// 存在的必要性（原来是「重登永远不生效」的元凶之一）：
-	/// EnsureLoginForAsync 有账号级 2 次上限，而 NeteaseAuthBridge 当场重试失败后会
-	/// 立刻转 AccountInvalidationDetector 兜底 —— 兜底里又调一次 EnsureLoginForAsync，
-	/// 此时计数已到上限被直接拒绝，90 秒后的延迟兜底同样被拒绝，
-	/// 于是一旦当场重登没成功，这个账号在本进程内就再也重登不了，只能重启程序。
-	/// 后台兜底是「新一轮尝试」（间隔 90 秒，不会形成风暴），理应先清零再试。
-	/// </summary>
-	public static void ResetRetryFor(string channel, string account)
-	{
-		if (string.IsNullOrWhiteSpace(account))
-		{
-			return;
-		}
-		RetryCounts.Remove((channel ?? "") + "|" + account);
-	}
-
-	/// <summary>该账号当前已累计的自动重登次数（诊断/UI 提示用）。</summary>
-	public static int GetRetryCount(string channel, string account)
-	{
-		if (string.IsNullOrWhiteSpace(account))
-		{
-			return 0;
-		}
-		if (RetryCounts.TryGetValue((channel ?? "") + "|" + account, out int value))
-		{
-			return value;
-		}
-		return 0;
-	}
-
-	/// <summary>自动登录暂停机制已移除（2026-11-11），恒返回 false，保留 API 兼容旧调用点。</summary>
-	public static bool IsAutoLoginSuspended(string channel, string account) => false;
 
 	/// <summary>
 	/// 解除自动登录暂停并清零连续失败计数。手动登录/手动验证成功后调用——
@@ -783,18 +737,6 @@ public static class AccountAutoLoginService
 			return;
 		}
 		LogHelper.Force("[自动登录] " + Mask(account) + " 记录一次网易拦截: " + msg + "（仅记录，不设冷静期/不暂停自动链路）");
-	}
-
-	private static void SetRiskCooldown(AccountStore.LocalAccount acc, string message)
-	{
-		// 冷静期已移除（2026-11-11）：只留一条记录，不改任何自动链路行为。
-		LogHelper.Log("[自动登录] " + Mask(acc.Account) + " 记录网易拦截（" + (message ?? "") + "）");
-	}
-
-	private static bool IsRiskCoolingDown(string channel, string account, out TimeSpan remaining)
-	{
-		remaining = TimeSpan.Zero;
-		return false;
 	}
 
 	private static void ClearRiskCooldown(AccountStore.LocalAccount acc)

@@ -56,7 +56,7 @@ public sealed class InstancesViewPage : Page
 	// 程序化重填下拉项期间置位：Items.Clear() 会强制关闭下拉框并触发 DropDownClosed，不能当成用户选择。
 	private bool _fillingRoleCombo;
 	private string _gameDir = "";
-	private ScrollViewer? _contentScroll;
+	private FrameworkElement? _contentScroll;
 	private Border? _lockPanel;
 	private ComboBox? _groupCombo;
 	private bool _groupComboSyncing;
@@ -64,10 +64,18 @@ public sealed class InstancesViewPage : Page
 	private string _groupListSignature = "";
 	private string _groupItemsSignature = "";
 	private bool _groupApplyQueued;
-	private readonly Dictionary<int, LiveRefs> _live = new Dictionary<int, LiveRefs>();
+	/// <summary>端口 → 各卡片区里对应的控件引用（上下两区可能同时显示同一张卡，所以是列表）。</summary>
+	private readonly Dictionary<int, List<LiveRefs>> _live = new Dictionary<int, List<LiveRefs>>();
 
 	/// <summary>每张卡片的批量勾选框（端口 → CheckBox），重建时清空。</summary>
-	private readonly Dictionary<int, CheckBox> _headChecks = new Dictionary<int, CheckBox>();
+	private readonly Dictionary<int, List<CheckBox>> _headChecks = new Dictionary<int, List<CheckBox>>();
+
+	/// <summary>「全选角色卡片」勾选框：随子卡片勾选状态自动同步。</summary>
+	private CheckBox? _selectAllCheck;
+
+	/// <summary>被勾选的卡片端口。卡片每 2 秒可能整批重建，勾选状态必须放在这里，
+	/// 否则重建一次用户勾的就全没了（「全选只生效一次」的根因之一）。</summary>
+	private readonly HashSet<int> _checkedPorts = new HashSet<int>();
 
 	/// <summary>最近一次 Refresh 得到的可见卡片（批量操作按勾选取）。</summary>
 	private List<NexusEndpointService.Endpoint> _lastVisible = new List<NexusEndpointService.Endpoint>();
@@ -86,6 +94,9 @@ public sealed class InstancesViewPage : Page
 
 		/// <summary>是否已经收到过聊天栏内容（收到即视为已进服，右上角改显示「已进服」）。</summary>
 		public bool SawChat;
+
+		/// <summary>这张卡是否处于「高级信息」模式：统计行与错误行只在高级信息下显示。</summary>
+		public bool Advanced;
 	}
 
 	public InstancesViewPage()
@@ -107,6 +118,40 @@ public sealed class InstancesViewPage : Page
 			SettingsManager.Saved -= OnSettingsSaved;
 		};
 		Refresh();
+	}
+
+	/// <summary>填一条显示组下拉（全部组 + 各快速启动组），并同步选中项。</summary>
+	private void FillGroupCombo(ComboBox? combo, List<ProxyGroup> groups, string current, ref string itemsSignature)
+	{
+		if (combo == null)
+		{
+			return;
+		}
+		string signature = "全部组\u0001" + string.Join("\u0001", groups.Select(g => g.Name));
+		if (!string.Equals(itemsSignature, signature, StringComparison.Ordinal) || combo.Items.Count == 0)
+		{
+			combo.Items.Clear();
+			combo.Items.Add(new ComboBoxItem { Content = "全部组", Tag = "" });
+			foreach (ProxyGroup group in groups)
+			{
+				combo.Items.Add(new ComboBoxItem { Content = group.Name, Tag = group.Name });
+			}
+			itemsSignature = signature;
+		}
+		int index = 0;
+		for (int i = 0; i < combo.Items.Count; i++)
+		{
+			string tag = ((combo.Items[i] as ComboBoxItem)?.Tag as string) ?? "";
+			if (string.Equals(tag, current, StringComparison.OrdinalIgnoreCase))
+			{
+				index = i;
+				break;
+			}
+		}
+		if (combo.SelectedIndex != index)
+		{
+			combo.SelectedIndex = index;
+		}
 	}
 
 	/// <summary>快速启动里分组/角色/端口一变，实例多开的卡片跟着刷新一次。</summary>
@@ -145,9 +190,10 @@ public sealed class InstancesViewPage : Page
 		{
 			_summaryDetail.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
 		}
+		// 「0 失落世界 | 0 元素之诗」已经并进主摘要行，这一行不再单独显示。
 		if (_serverSummary != null)
 		{
-			_serverSummary.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+			_serverSummary.Visibility = Visibility.Collapsed;
 		}
 	}
 
@@ -180,6 +226,17 @@ public sealed class InstancesViewPage : Page
 			return "";
 		}
 		return string.Join(" | ", order.Select(n => connected[n] + " " + n));
+	}
+
+	/// <summary>摘要行：各服务器已进服数 + 总进服数，如「0 失落世界 | 2 元素之诗 | 2/5 已进服」。</summary>
+	private static string BuildSummaryLine(
+		List<NexusEndpointService.Endpoint> cards,
+		Dictionary<int, ProxyCaptureService.TrafficInfo> traffic,
+		int connected)
+	{
+		string servers = BuildServerSummary(cards, traffic);
+		string total = connected + "/" + cards.Count + " 已进服";
+		return servers.Length == 0 ? total : servers + " | " + total;
 	}
 
 	/// <summary>
@@ -221,7 +278,7 @@ public sealed class InstancesViewPage : Page
 			DefaultButton = ContentDialogButton.Primary,
 			XamlRoot = XamlRoot
 		};
-		ContentDialogResult result = await dialog.ShowAsync();
+		ContentDialogResult result = await DialogGate.ShowAsync(dialog);
 		if (result != ContentDialogResult.Primary)
 		{
 			ApplyLockState(false);
@@ -346,21 +403,30 @@ public sealed class InstancesViewPage : Page
 		};
 		checks.Children.Add(_autoStartCheck);
 		// 批量操作：勾选卡片后可一次启动 / 停止 / 重启 / 设置自启动
-		var allCheck = new CheckBox
+		_selectAllCheck = new CheckBox
 		{
 			Content = "全选角色卡片",
 			FontSize = 13,
 			VerticalAlignment = VerticalAlignment.Center
 		};
-		allCheck.Click += (_, _) =>
+		ToolTipService.SetToolTip(_selectAllCheck, "勾选/取消当前显示的全部卡片；子卡片手动勾选会自动同步这里的勾选状态");
+		_selectAllCheck.Click += (_, _) =>
 		{
-			bool on = allCheck.IsChecked == true;
-			foreach (CheckBox box in _headChecks.Values)
+			bool on = _selectAllCheck?.IsChecked == true;
+			_checkedPorts.Clear();
+			if (on)
+			{
+				foreach (NexusEndpointService.Endpoint e in _lastVisible)
+				{
+					_checkedPorts.Add(e.ListenPort);
+				}
+			}
+			foreach (CheckBox box in _headChecks.Values.SelectMany(v => v))
 			{
 				box.IsChecked = on;
 			}
 		};
-		checks.Children.Add(allCheck);
+		checks.Children.Add(_selectAllCheck);
 		// 自启动全选：一键勾选/取消所有卡片的「自启动」（放在全选与批量按钮之间的空处）
 		_autoAllCheck = new CheckBox
 		{
@@ -557,30 +623,7 @@ public sealed class InstancesViewPage : Page
 			_groupComboSyncing = true;
 			try
 			{
-				if (!string.Equals(_groupItemsSignature, signature, StringComparison.Ordinal) || _groupCombo.Items.Count == 0)
-				{
-					_groupCombo.Items.Clear();
-					_groupCombo.Items.Add(new ComboBoxItem { Content = "全部组", Tag = "" });
-					foreach (ProxyGroup group in groups)
-					{
-						_groupCombo.Items.Add(new ComboBoxItem { Content = group.Name, Tag = group.Name });
-					}
-					_groupItemsSignature = signature;
-				}
-				int index = 0;
-				for (int i = 0; i < _groupCombo.Items.Count; i++)
-				{
-					string tag = ((_groupCombo.Items[i] as ComboBoxItem)?.Tag as string) ?? "";
-					if (string.Equals(tag, current, StringComparison.OrdinalIgnoreCase))
-					{
-						index = i;
-						break;
-					}
-				}
-				if (_groupCombo.SelectedIndex != index)
-				{
-					_groupCombo.SelectedIndex = index;
-				}
+				FillGroupCombo(_groupCombo, groups, current, ref _groupItemsSignature);
 			}
 			finally
 			{
@@ -626,6 +669,9 @@ public sealed class InstancesViewPage : Page
 			}
 			_signature = "";
 			Refresh();
+			// 换组 = 换挂机名单：组内的机器人账号补写进客户端，组外的立刻撤下，
+			// 否则上一组挂过的机器人会一直留在游戏里（「莫名冒出来的角色」就是这条）。
+			NexusEndpointService.SyncClientAccountsToDisplayGroup();
 			MainWindow.Instance?.ShowToast(string.IsNullOrWhiteSpace(name) ? "实例多开：显示全部组" : "实例多开：显示组 " + name);
 		}
 		catch (Exception ex)
@@ -699,62 +745,57 @@ public sealed class InstancesViewPage : Page
 			List<NexusEndpointService.Endpoint> endpoints = string.IsNullOrWhiteSpace(gameDir)
 				? new List<NexusEndpointService.Endpoint>()
 				: NexusEndpointService.Load(gameDir);
-			List<NexusEndpointService.Endpoint> visible = endpoints
+			List<NexusEndpointService.Endpoint> all = endpoints
 				.Where(e => e.ListenPort > 0)
 				.OrderBy(e => e.ListenPort)
 				.ToList();
-			if (visible.Count == 0)
+			if (all.Count == 0)
 			{
-				visible = endpoints.OrderBy(e => e.ListenPort).ToList();
-			}
-			if (!string.IsNullOrWhiteSpace(groupName))
-			{
-				ProxyGroup? group = (SettingsManager.Instance.ProxyGroups ?? new List<ProxyGroup>())
-					.FirstOrDefault(g => string.Equals(g.Name, groupName, StringComparison.OrdinalIgnoreCase));
-				HashSet<string> keys = group == null ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : GroupRoleKeys(group);
-				visible = visible.Where(e => keys.Contains(e.Key)).ToList();
+				all = endpoints.OrderBy(e => e.ListenPort).ToList();
 			}
 			// 行情角色跟随显示组：换组时自动切到该组记住的角色（没记录就用组内第一个）。
 			EnsureMarketRoleForGroup(groupName, endpoints);
 			SyncRoleCombos(groupName, endpoints);
 
 			IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> active = ProxyCaptureService.ActiveBindingsSnapshot();
+			var listeningPorts = new HashSet<int>(active.Select(b => b.ListenPort));
 			// 排序口径：按服务器分组，角色最多的服务器排最前；组内按监听端口升序。
-			visible = OrderForDisplay(visible);
+			List<NexusEndpointService.Endpoint> visible = OrderForDisplay(FilterEndpointsForGroup(all, groupName));
 			Dictionary<int, ProxyCaptureService.TrafficInfo> traffic = ProxyCaptureService.TrafficSnapshot()
 				.GroupBy(t => t.ListenPort)
 				.ToDictionary(g => g.Key, g => g.First());
-			int listening = visible.Count(e => active.Any(b => b.ListenPort == e.ListenPort));
-			int connected = visible.Count(e =>
-			{
-				return traffic.TryGetValue(e.ListenPort, out ProxyCaptureService.TrafficInfo? t) && t.Sessions > 0;
-			});
+			List<NexusEndpointService.Endpoint> distinct = all
+				.GroupBy(e => e.ListenPort)
+				.Select(g => g.First())
+				.ToList();
+			int listening = distinct.Count(e => listeningPorts.Contains(e.ListenPort));
+			int connected = distinct.Count(e => IsConnected(traffic, e.ListenPort));
 			long upBytes = traffic.Values.Sum(t => t.UpBytes);
 			long downBytes = traffic.Values.Sum(t => t.DownBytes);
 			long upPackets = traffic.Values.Sum(t => t.UpPackets);
 			long downPackets = traffic.Values.Sum(t => t.DownPackets);
 			string groupHint = string.IsNullOrWhiteSpace(groupName) ? "" : "（显示组：" + groupName + "）";
-			// 默认只显示「已进服数/总数」；其余统计放在「高级信息」里。
-			_summary.Text = visible.Count == 0
+			// 主摘要：各服务器已进服数 + 总进服数（如「0 失落世界 | 2 元素之诗 | 2/5 已进服」）。
+			_summary.Text = distinct.Count == 0
 				? groupHint + "未启动机器人：没有匹配的角色端口，请到「快速启动」给角色分配 127.0.0.1 端口并勾选启用。"
-				: connected + "/" + visible.Count + " 已进服";
-			_summaryDetail.Text = "监听 " + listening + "/" + visible.Count + "｜上行 " + FormatBytes(upBytes)
+				: BuildSummaryLine(distinct, traffic, connected);
+			_summaryDetail.Text = "监听 " + listening + "/" + distinct.Count + "｜上行 " + FormatBytes(upBytes)
 				+ " / " + upPackets + " 包｜下行 " + FormatBytes(downBytes) + " / " + downPackets + " 包" + groupHint;
-			_serverSummary.Text = BuildServerSummary(visible, traffic);
+			_serverSummary.Text = "";
 			ApplyAdvancedVisibility();
-
-			string signature = groupName + "|" + string.Join("|", visible.Select(e => e.Key + "#" + e.ListenPort + "#" + e.Enabled + "#" + active.Any(b => b.ListenPort == e.ListenPort)));
+			string signature = groupName + "|" + SettingsManager.Instance.ShowAdvancedSessionInfo
+				+ "|" + string.Join("|", visible.Select(e => e.Key + "#" + e.ListenPort + "#" + e.Enabled + "#" + listeningPorts.Contains(e.ListenPort)));
 			SyncAutoAllCheckState();
 			SyncLogAllCheckState();
 			if (signature == _signature && _tiles.Children.Count > 0)
 			{
-				UpdateLive(traffic);
+				UpdateLive(traffic, listeningPorts);
 				return;
 			}
 			_signature = signature;
 
 			RebuildTiles(visible, active);
-			UpdateLive(traffic);
+			UpdateLive(traffic, listeningPorts);
 			SyncAutoAllCheckState();
 			SyncLogAllCheckState();
 		}
@@ -997,14 +1038,41 @@ public sealed class InstancesViewPage : Page
 		}
 	}
 
-	private void RebuildTiles(List<NexusEndpointService.Endpoint> endpoints, IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> active)
+	private void RebuildTiles(
+		List<NexusEndpointService.Endpoint> endpoints,
+		IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> active)
 	{
 		_tiles.Children.Clear();
 		_live.Clear();
 		_headChecks.Clear();
 		_lastVisible = endpoints.ToList();
-		// 卡片已经不存在的端口不必再记展开状态
+		// 卡片已经不存在的端口不必再记展开状态 / 勾选状态
 		_logExpanded.RemoveWhere(port => endpoints.All(x => x.ListenPort != port));
+		_checkedPorts.RemoveWhere(port => endpoints.All(x => x.ListenPort != port));
+		FillPane(_tiles, endpoints, active);
+		SyncSelectAllCheckState();
+	}
+
+	/// <summary>「全选角色卡片」的勾选状态跟随子卡片：全部勾上才勾，任何一个没勾就取消。</summary>
+	private void SyncSelectAllCheckState()
+	{
+		if (_selectAllCheck == null)
+		{
+			return;
+		}
+		bool all = _lastVisible.Count > 0 && _lastVisible.All(e => _checkedPorts.Contains(e.ListenPort));
+		if (_selectAllCheck.IsChecked != all)
+		{
+			_selectAllCheck.IsChecked = all;
+		}
+	}
+
+	/// <summary>把一组卡片按服务器分组堆进卡片区。</summary>
+	private void FillPane(
+		StackPanel panel,
+		List<NexusEndpointService.Endpoint> endpoints,
+		IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> active)
+	{
 		if (endpoints.Count == 0)
 		{
 			var empty = new Border
@@ -1013,10 +1081,11 @@ public sealed class InstancesViewPage : Page
 				BorderThickness = new Thickness(1),
 				BorderBrush = new SolidColorBrush(Color.FromArgb(40, 128, 128, 128)),
 				Background = CardBrush(),
+				MinHeight = 96,
 				Child = new TextBlock
 				{
 					Text = "暂无角色卡片\n\n在「快速启动」里给角色分配本地端口并勾选启用后，这里会按服务器分组生成机器人代理卡片。",
-					FontSize = 14,
+					FontSize = 13,
 					Opacity = 0.65,
 					TextAlignment = TextAlignment.Center,
 					TextWrapping = TextWrapping.Wrap,
@@ -1024,15 +1093,13 @@ public sealed class InstancesViewPage : Page
 					VerticalAlignment = VerticalAlignment.Center
 				}
 			};
-			empty.MinHeight = 260;
-			_tiles.Children.Add(empty);
+			panel.Children.Add(empty);
 			return;
 		}
-
 		// 按服务器分组堆叠：角色最多的服务器排最前，同组卡片紧挨在一起。
 		foreach (IGrouping<string, NexusEndpointService.Endpoint> section in endpoints.GroupBy(ServerGroupName))
 		{
-			_tiles.Children.Add(BuildServerSection(section.Key, section.ToList(), active));
+			panel.Children.Add(BuildServerSection(section.Key, section.ToList(), active));
 		}
 	}
 
@@ -1268,7 +1335,7 @@ public sealed class InstancesViewPage : Page
 				BorderBrush = new SolidColorBrush(Color.FromArgb(40, 128, 128, 128)),
 				Background = CardBrush(),
 				Padding = new Thickness(12),
-				MinHeight = 168
+				MinHeight = SettingsManager.Instance.ShowAdvancedSessionInfo ? 168 : 132
 			};
 
 			var grid = new Grid { RowSpacing = 6 };
@@ -1287,14 +1354,32 @@ public sealed class InstancesViewPage : Page
 		// 批量操作勾选框（与快速启动页的分组勾选同一交互）
 		var pick = new CheckBox
 		{
-			IsChecked = false,
+			// 勾选状态放在 _checkedPorts 里：卡片重建（每 2 秒可能的整批刷新）不再清空用户的勾选。
+			IsChecked = _checkedPorts.Contains(e.ListenPort),
 			MinWidth = 0,
 			Padding = new Thickness(0),
 			Margin = new Thickness(0, 0, 6, 0),
 			VerticalAlignment = VerticalAlignment.Center
 		};
 		ToolTipService.SetToolTip(pick, "勾选后可批量启动 / 停止 / 重启 / 自启动");
-		_headChecks[e.ListenPort] = pick;
+		pick.Click += (_, _) =>
+		{
+			if (pick.IsChecked == true)
+			{
+				_checkedPorts.Add(e.ListenPort);
+			}
+			else
+			{
+				_checkedPorts.Remove(e.ListenPort);
+			}
+			SyncSelectAllCheckState();
+		};
+		if (!_headChecks.TryGetValue(e.ListenPort, out List<CheckBox>? pickList))
+		{
+			pickList = new List<CheckBox>();
+			_headChecks[e.ListenPort] = pickList;
+		}
+		pickList.Add(pick);
 		head.Children.Add(pick);
 		var titleText = new TextBlock
 		{
@@ -1329,14 +1414,15 @@ public sealed class InstancesViewPage : Page
 		head.Children.Add(state);
 		grid.Children.Add(head);
 
-		// 第一行：服务器（只显示服务器名/地址，不显示 :端口）
+		// 第一行：机器人账号实际挂在哪个客户端实例（服务器名已经在标题里，这里不再重复）
 		var line1 = new TextBlock
 		{
-			Text = StripPort(e.ServerKey),
-			FontSize = 12.5,
-			Opacity = 0.75,
+			Text = "实例 " + ClientDisplayName(e),
+			FontSize = 12,
+			Opacity = 0.7,
 			TextTrimming = TextTrimming.CharacterEllipsis
 		};
+		ToolTipService.SetToolTip(line1, "机器人账号写在 " + (NexusEndpointService.ClientDirOf(e) is string d && d.Length > 0 ? d : "未识别客户端"));
 		Grid.SetRow(line1, 1);
 		grid.Children.Add(line1);
 
@@ -1349,6 +1435,8 @@ public sealed class InstancesViewPage : Page
 			TextTrimming = TextTrimming.CharacterEllipsis,
 			FontFamily = new FontFamily("Consolas")
 		};
+		// 统计行只在「高级信息」打开时出现（默认隐藏）。
+		stats.Visibility = SettingsManager.Instance.ShowAdvancedSessionInfo ? Visibility.Visible : Visibility.Collapsed;
 		Grid.SetRow(stats, 2);
 		grid.Children.Add(stats);
 
@@ -1489,7 +1577,12 @@ public sealed class InstancesViewPage : Page
 		Grid.SetRow(actions, 5);
 		grid.Children.Add(actions);
 
-		_live[e.ListenPort] = new LiveRefs
+		if (!_live.TryGetValue(e.ListenPort, out List<LiveRefs>? refsList))
+		{
+			refsList = new List<LiveRefs>();
+			_live[e.ListenPort] = refsList;
+		}
+		refsList.Add(new LiveRefs
 		{
 			Stats = stats,
 			Event = eventText,
@@ -1497,8 +1590,9 @@ public sealed class InstancesViewPage : Page
 			Status = badgeText,
 			Chat = chatText,
 			StatusBadge = state,
-			Listening = listening
-		};
+			Listening = listening,
+			Advanced = SettingsManager.Instance.ShowAdvancedSessionInfo
+		});
 
 		border.Child = grid;
 		return border;
@@ -1572,7 +1666,13 @@ public sealed class InstancesViewPage : Page
 			if (isBot)
 			{
 				string botUser = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
-				NexusEndpointService.EnsureBotAccount(e.ServerHint, botUser, e.ListenPort);
+				// 显式启动 = 用户改主意了：先解掉删除墓碑，否则这次启动写不进账号。
+				NexusEndpointService.ClearCardTombstone(e);
+				NexusEndpointService.EnsureBotAccount(e.ServerHint, botUser, e.ListenPort, "机器人代理", e.CardKey, NexusEndpointService.ClientDirOf(e));
+				// 单客户端 10 个会话到顶时只提醒、不拦（过渡逻辑在 Load 里统一处理）。
+				int sessions = NexusEndpointService.CountBotSessions(
+					NexusEndpointService.Load(_gameDir), NexusEndpointService.ClientDirOf(e));
+				NexusEndpointService.WarnSessionLimitIfNeeded(NexusEndpointService.ClientDirOf(e), sessions);
 			}
 			int started = NexusEndpointService.StartMembers(_gameDir, new[] { e.CardKey });
 			bool listening = ProxyCaptureService.ActiveBindingsSnapshot().Any(b => b.ListenPort == e.ListenPort);
@@ -1645,7 +1745,13 @@ public sealed class InstancesViewPage : Page
 						LogHelper.Log("[实例多开] 重启前释放端口 " + e.ListenPort + " 上的占位代理（角色 " + botUser + "）");
 					}
 				}
-				NexusEndpointService.RemoveBotAccount(e.ServerHint, botUser, e.ListenPort);
+				NexusEndpointService.RemoveBotAccount(e.ServerHint, botUser, e.ListenPort, NexusEndpointService.ClientDirOf(e));
+				if (!releaseForRestart)
+				{
+					// 停用落盘：否则下次游戏启动 / 程序启动又会按「已启用」把账号写回来，
+					// 表现就是「关掉了机器人却又自己挂上了」。
+					NexusEndpointService.SetCardEnabled(e, false);
+				}
 			}
 			LogHelper.Log("[实例多开] 卡片停止机器人 " + e.Key + " → 127.0.0.1:" + e.ListenPort + "：stopped=" + stopped);
 			if (!batch)
@@ -1693,13 +1799,15 @@ public sealed class InstancesViewPage : Page
 			{
 				cfg.NexusHiddenCards.Add(cardKey);
 			}
+			// 打墓碑：这张卡被删了，任何自动补写（游戏启动重放 / 启动补齐 / 端口自愈）都不许再写回来。
+			NexusEndpointService.AddCardTombstone(e);
 			// 快速启动分组里对应的角色一起删，避免「卡片删了、组里还在」的悬空角色。
 			int rolesRemoved = NexusEndpointService.RemoveQuickStartRole(e);
 			// 机器人代理卡：客户端里写入的机器人账号一并移除，避免游戏一直重连没人监听的端口。
 			if (string.Equals(e.Group, "机器人代理", StringComparison.OrdinalIgnoreCase))
 			{
 				string botUser = string.IsNullOrWhiteSpace(roleName) ? e.User : roleName;
-				NexusEndpointService.RemoveBotAccount(e.ServerHint, botUser, e.ListenPort);
+				NexusEndpointService.RemoveBotAccount(e.ServerHint, botUser, e.ListenPort, NexusEndpointService.ClientDirOf(e));
 			}
 			SettingsManager.Save(cfg);
 			LogHelper.Log("[实例多开] 已删除卡片：" + cardKey + "（联动删除快速启动角色 " + rolesRemoved + " 个）");
@@ -1714,57 +1822,95 @@ public sealed class InstancesViewPage : Page
 		}
 	}
 
-	private void UpdateLive(Dictionary<int, ProxyCaptureService.TrafficInfo> traffic)
+	private void UpdateLive(Dictionary<int, ProxyCaptureService.TrafficInfo> traffic, HashSet<int> listeningPorts)
 	{
-		foreach (KeyValuePair<int, LiveRefs> pair in _live)
+		foreach (KeyValuePair<int, List<LiveRefs>> pair in _live)
 		{
-			LiveRefs refs = pair.Value;
-			if (traffic.TryGetValue(pair.Key, out ProxyCaptureService.TrafficInfo? t))
+			bool listening = listeningPorts.Contains(pair.Key);
+			traffic.TryGetValue(pair.Key, out ProxyCaptureService.TrafficInfo? t);
+			bool connected = IsConnected(traffic, pair.Key);
+			foreach (LiveRefs refs in pair.Value)
 			{
-				refs.Stats.Text = "↑ 发送 " + FormatBytes(t.UpBytes) + " / " + t.UpPackets + " 包　↓ 接收 " + FormatBytes(t.DownBytes) + " / " + t.DownPackets + " 包"
-					+ "　画面 " + t.ScreenPackets + " 包";
-				refs.Event.Text = string.IsNullOrWhiteSpace(t.LastEvent) ? "最近事件：等待代理数据…" : ("最近事件：" + t.LastEvent);
-				if (t.ChatLines != null && t.ChatLines.Length > 0)
+				refs.Listening = listening;
+				if (t != null)
 				{
-					int start = Math.Max(0, t.ChatLines.Length - 6);
-					refs.Chat.Text = string.Join("\n", t.ChatLines.Skip(start));
-					// 收到过聊天内容 = 已经在服务器里了，右上角从「监听中」改为「已进服」
-					refs.SawChat = true;
+					refs.Stats.Text = "↑ 发送 " + FormatBytes(t.UpBytes) + " / " + t.UpPackets
+						+ " 包　↓ 接收 " + FormatBytes(t.DownBytes) + " / " + t.DownPackets + " 包"
+						+ "　画面 " + t.ScreenPackets + " 包";
+					refs.Event.Text = string.IsNullOrWhiteSpace(t.LastEvent) ? "最近事件：等待代理数据…" : ("最近事件：" + t.LastEvent);
+					if (t.ChatLines != null && t.ChatLines.Length > 0)
+					{
+						int start = Math.Max(0, t.ChatLines.Length - 6);
+						refs.Chat.Text = string.Join("\n", t.ChatLines.Skip(start));
+						refs.SawChat = true;
+					}
+					else
+					{
+						refs.Chat.Text = "等待聊天栏内容…";
+					}
+					refs.Stats.Opacity = t.Sessions > 0 ? 0.9 : 0.72;
+					if (refs.Advanced && !string.IsNullOrWhiteSpace(t.LastError))
+					{
+						refs.Error.Text = "最近错误：" + t.LastError;
+						refs.Error.Visibility = Visibility.Visible;
+					}
+					else
+					{
+						refs.Error.Visibility = Visibility.Collapsed;
+					}
 				}
 				else
 				{
+					refs.Stats.Text = "↑ 发送 0 B / 0 包　↓ 接收 0 B / 0 包";
+					refs.Event.Text = "最近事件：等待代理数据…";
 					refs.Chat.Text = "等待聊天栏内容…";
-				}
-				refs.Stats.Opacity = t.Sessions > 0 ? 0.9 : 0.72;
-				UpdateStatusBadge(refs, t.Status);
-				if (string.IsNullOrWhiteSpace(t.LastError))
-				{
+					refs.Stats.Opacity = 0.72;
 					refs.Error.Visibility = Visibility.Collapsed;
 				}
-				else
-				{
-					refs.Error.Text = "最近错误：" + t.LastError;
-					refs.Error.Visibility = Visibility.Visible;
-				}
-			}
-			else
-			{
-				refs.Stats.Text = "↑ 发送 0 B / 0 包　↓ 接收 0 B / 0 包";
-				refs.Event.Text = "最近事件：等待代理数据…";
-				refs.Chat.Text = "等待聊天栏内容…";
-				refs.Stats.Opacity = 0.72;
-				UpdateStatusBadge(refs, "");
-				refs.Error.Visibility = Visibility.Collapsed;
+				UpdateStatusBadge(refs, t?.Status, connected);
 			}
 		}
 	}
 
+	/// <summary>「已进服」的有效期：最近一次聊天栏内容必须在 10 秒内。</summary>
+	private const int ChatFreshSeconds = 10;
+
 	/// <summary>
-	/// 卡片右上角只显示两种状态：进入子服（聊天读到「传送至」+「幸存者」）、监听中。
+	/// 该端口是否算「已进服」：会话在、且最近 10 秒内还收到过聊天栏内容。
+	/// 停止机器人或长时间收不到聊天（掉线/被踢/退回大厅）都不再显示已进服。
+	/// </summary>
+	private static bool IsConnected(Dictionary<int, ProxyCaptureService.TrafficInfo> traffic, int port)
+	{
+		if (!traffic.TryGetValue(port, out ProxyCaptureService.TrafficInfo? t) || t.Sessions <= 0)
+		{
+			return false;
+		}
+		if (t.LastChatUtc == default)
+		{
+			return false;
+		}
+		return (DateTime.UtcNow - t.LastChatUtc).TotalSeconds <= ChatFreshSeconds;
+	}
+
+	/// <summary>
+	/// 卡片右上角只显示三种状态：已进服 / 进入子服 / 监听中。
 	/// 其余状态（已连接 / 等待连接 / 已断开及原因 / 未启动代理）一律隐藏。
 	/// </summary>
-	private static void UpdateStatusBadge(LiveRefs refs, string? status)
+	private static void UpdateStatusBadge(LiveRefs refs, string? status, bool connected)
 	{
+		if (!refs.Listening)
+		{
+			// 停止 / 没有监听：连「监听中」都不显示，更不会残留「已进服」。
+			refs.StatusBadge.Visibility = Visibility.Collapsed;
+			return;
+		}
+		if (connected)
+		{
+			refs.Status.Text = "已进服";
+			refs.StatusBadge.Background = new SolidColorBrush(Color.FromArgb(70, 40, 130, 200));
+			refs.StatusBadge.Visibility = Visibility.Visible;
+			return;
+		}
 		if (!string.IsNullOrEmpty(status) && status.StartsWith("进入子服", StringComparison.Ordinal))
 		{
 			refs.Status.Text = "进入子服";
@@ -1772,42 +1918,21 @@ public sealed class InstancesViewPage : Page
 			refs.StatusBadge.Visibility = Visibility.Visible;
 			return;
 		}
-		if (refs.Listening && refs.SawChat)
-		{
-			// 收到聊天内容即视为已进服（比「监听中」更进一步）
-			refs.Status.Text = "已进服";
-			refs.StatusBadge.Background = new SolidColorBrush(Color.FromArgb(70, 40, 130, 200));
-			refs.StatusBadge.Visibility = Visibility.Visible;
-			return;
-		}
-		if (refs.Listening)
-		{
-			refs.Status.Text = "监听中";
-			refs.StatusBadge.Background = new SolidColorBrush(Color.FromArgb(70, 40, 170, 90));
-			refs.StatusBadge.Visibility = Visibility.Visible;
-			return;
-		}
-		refs.StatusBadge.Visibility = Visibility.Collapsed;
+		refs.Status.Text = "监听中";
+		refs.StatusBadge.Background = new SolidColorBrush(Color.FromArgb(70, 40, 170, 90));
+		refs.StatusBadge.Visibility = Visibility.Visible;
 	}
 
-	/// <summary>可收缩区块的标题按钮：点一下展开/收起目标元素。</summary>
-	private static Button ChatToggle(string label, FrameworkElement target)
+	/// <summary>卡片上显示的客户端实例名：优先用版本目录名，去掉「挂号版」后缀太啰嗦就不动它。</summary>
+	private static string ClientDisplayName(NexusEndpointService.Endpoint e)
 	{
-		var btn = new Button
+		string dir = NexusEndpointService.ClientDirOf(e);
+		if (string.IsNullOrWhiteSpace(dir))
 		{
-			Content = label + " ▾",
-			FontSize = 11,
-			MinHeight = 0,
-			Padding = new Thickness(10, 3, 10, 3),
-			HorizontalAlignment = HorizontalAlignment.Stretch
-		};
-		btn.Click += (_, _) =>
-		{
-			bool show = target.Visibility != Visibility.Visible;
-			target.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-			btn.Content = label + (show ? " ▴" : " ▾");
-		};
-		return btn;
+			return "未识别客户端";
+		}
+		string name = System.IO.Path.GetFileName(dir) ?? "";
+		return name.Length == 0 ? dir : name;
 	}
 
 	/// <summary>卡片标题：角色名 · 服务器名（如 Notel · 失落世界）。</summary>
@@ -1826,7 +1951,7 @@ public sealed class InstancesViewPage : Page
 	private List<NexusEndpointService.Endpoint> SelectedEndpoints()
 	{
 		return _lastVisible
-			.Where(e => _headChecks.TryGetValue(e.ListenPort, out CheckBox? box) && box.IsChecked == true)
+			.Where(e => _checkedPorts.Contains(e.ListenPort))
 			.ToList();
 	}
 
@@ -1935,18 +2060,6 @@ public sealed class InstancesViewPage : Page
 			}
 			System.Threading.Thread.Sleep(50);
 		}
-	}
-
-	private void BatchAutoStart(bool on)
-	{
-		List<NexusEndpointService.Endpoint> picked = SelectedEndpoints();
-		if (picked.Count == 0)
-		{
-			MainWindow.Instance?.ShowToast("请先勾选要操作的卡片", false);
-			return;
-		}
-		ApplyAutoStart(picked, on);
-		MainWindow.Instance?.ShowToast((on ? "已勾选自启动 " : "已取消自启动 ") + picked.Count + " 个机器人");
 	}
 
 	/// <summary>「自启动全选」：对当前显示的全部卡片生效（不需要先勾选）。</summary>

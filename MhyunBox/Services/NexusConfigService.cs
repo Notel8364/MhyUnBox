@@ -539,45 +539,6 @@ public static class NexusConfigService
 		return changed;
 	}
 
-	/// <summary>
-	/// 把账号键写入 / 移出 lastOnline。MythosNexus 启动时按 lastOnline + autoReconnect 决定哪些角色自动进服。
-	/// </summary>
-	public static void MarkOnline(string gameDir, string user, string host, int port, bool online)
-	{
-		string u = (user ?? "").Trim();
-		string h = (host ?? "").Trim();
-		if (u.Length == 0 || h.Length == 0)
-		{
-			return;
-		}
-		string key = u + "@" + h + ":" + port;
-		JsonObject root = LoadRoot(gameDir, out _);
-		JsonArray arr = EnsureArray(root, "lastOnline");
-		int index = -1;
-		for (int i = 0; i < arr.Count; i++)
-		{
-			if (arr[i] is JsonValue v && v.TryGetValue<string>(out string s)
-				&& string.Equals(s, key, StringComparison.OrdinalIgnoreCase))
-			{
-				index = i;
-				break;
-			}
-		}
-		if (online && index < 0)
-		{
-			arr.Add(key);
-		}
-		else if (!online && index >= 0)
-		{
-			arr.RemoveAt(index);
-		}
-		else
-		{
-			return;
-		}
-		SaveRoot(gameDir, root);
-	}
-
 	/// <summary>删除账号及其绑定、上次在线记录、人物同步组成员。</summary>
 	public static void RemoveAccount(string gameDir, string key)
 	{
@@ -632,89 +593,6 @@ public static class NexusConfigService
 			}
 		}
 		SaveRoot(gameDir, root);
-	}
-
-	/// <summary>
-	/// 移除同一账号在其它本机端口上的旧账号 / 绑定 / 在线记录。
-	/// 端口并非写死（程序会按占用情况自动改绑），客户端里残留旧端口账号时
-	/// 会一直重连一个没人监听的端口，表现为永远“连接被拒绝”。
-	/// </summary>
-	public static void RemoveLocalAccountVariants(string gameDir, string user, int keepPort)
-	{
-		string name = (user ?? "").Trim();
-		if (string.IsNullOrWhiteSpace(gameDir) || name.Length == 0 || keepPort <= 0)
-		{
-			return;
-		}
-		JsonObject root = LoadRoot(gameDir, out _);
-		bool changed = false;
-		if (root["accounts"] is JsonArray accounts)
-		{
-			for (int i = accounts.Count - 1; i >= 0; i--)
-			{
-				if (accounts[i] is not JsonObject a)
-				{
-					continue;
-				}
-				string host = Str(a, "host");
-				bool loopback = string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
-					|| string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase);
-				if (loopback && Int(a, "port", 25565) != keepPort
-					&& string.Equals(Str(a, "username"), name, StringComparison.OrdinalIgnoreCase))
-				{
-					accounts.RemoveAt(i);
-					changed = true;
-				}
-			}
-		}
-		if (root["bindings"] is JsonObject bindings)
-		{
-			var stale = new List<string>();
-			foreach (KeyValuePair<string, JsonNode?> kv in bindings)
-			{
-				string key = kv.Key;
-				int at = key.IndexOf('@');
-				int colon = key.LastIndexOf(':');
-				if (at <= 0 || colon <= at || !int.TryParse(key.Substring(colon + 1), out int port) || port == keepPort)
-				{
-					continue;
-				}
-				string who = key.Substring(0, at);
-				string host = key.Substring(at + 1, colon - at - 1);
-				bool loopback = string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
-					|| string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase);
-				if (loopback && string.Equals(who, name, StringComparison.OrdinalIgnoreCase))
-				{
-					stale.Add(key);
-				}
-			}
-			foreach (string key in stale)
-			{
-				bindings.Remove(key);
-				changed = true;
-			}
-		}
-		if (root["lastOnline"] is JsonArray online)
-		{
-			for (int i = online.Count - 1; i >= 0; i--)
-			{
-				if (online[i] is JsonValue v && v.TryGetValue<string>(out string s) && s.StartsWith(name + "@", StringComparison.OrdinalIgnoreCase))
-				{
-					int colon = s.LastIndexOf(':');
-					if (colon > 0 && int.TryParse(s.Substring(colon + 1), out int port) && port != keepPort
-						&& (s.IndexOf("127.0.0.1", StringComparison.OrdinalIgnoreCase) > 0
-							|| s.IndexOf("localhost", StringComparison.OrdinalIgnoreCase) > 0))
-					{
-						online.RemoveAt(i);
-						changed = true;
-					}
-				}
-			}
-		}
-		if (changed)
-		{
-			SaveRoot(gameDir, root);
-		}
 	}
 
 	/// <summary>
@@ -821,95 +699,6 @@ public static class NexusConfigService
 		return changed;
 	}
 
-	/// <summary>追加一个代理到代理池尾部（Nexus 按数组下标绑定账号）。</summary>
-	public static void AddProxy(string gameDir, string type, string host, int port, string user, string pass)
-	{
-		string h = (host ?? "").Trim();
-		if (h.Length == 0)
-		{
-			throw new ArgumentException("代理地址不能为空");
-		}
-		JsonObject root = LoadRoot(gameDir, out _);
-		JsonArray proxies = EnsureArray(root, "proxies");
-		proxies.Add(new JsonObject
-		{
-			["type"] = string.Equals(type, "http", StringComparison.OrdinalIgnoreCase) ? "http" : "socks5",
-			["host"] = h,
-			["port"] = Math.Max(1, Math.Min(65535, port)),
-			["user"] = user ?? "",
-			["pass"] = pass ?? ""
-		});
-		SaveRoot(gameDir, root);
-	}
-
-	/// <summary>删除代理并同步修正所有账号的代理下标（与 NexusConfig.removeProxy 行为一致）。</summary>
-	public static void RemoveProxy(string gameDir, int index)
-	{
-		JsonObject root = LoadRoot(gameDir, out _);
-		if (root["proxies"] is not JsonArray proxies || index < 0 || index >= proxies.Count)
-		{
-			return;
-		}
-		proxies.RemoveAt(index);
-		if (root["bindings"] is JsonObject bindings)
-		{
-			foreach (KeyValuePair<string, JsonNode?> kv in bindings)
-			{
-				if (kv.Value is not JsonObject b)
-				{
-					continue;
-				}
-				int p = Int(b, "proxy", -1);
-				if (p == index)
-				{
-					b["proxy"] = -1;
-				}
-				else if (p > index)
-				{
-					b["proxy"] = p - 1;
-				}
-			}
-		}
-		SaveRoot(gameDir, root);
-	}
-
-	/// <summary>写回 Tick 调度参数（对应游戏内 Tick 面板）。</summary>
-	public static void SaveTickSettings(string gameDir, bool adaptiveTick, int maxCpuPct, int minBandPct,
-		int tickRatePathing, int tickRateIdle, int rejoinMinMs, int rejoinMaxMs, int connectDelayMs, float[] curve)
-	{
-		JsonObject root = LoadRoot(gameDir, out _);
-		root["adaptiveTick"] = adaptiveTick;
-		root["maxCpuPct"] = Math.Max(5, Math.Min(95, maxCpuPct));
-		root["minBandPct"] = Math.Max(0, Math.Min(100, minBandPct));
-		root["tickRatePathing"] = Math.Max(0, Math.Min(100, tickRatePathing));
-		root["tickRateIdle"] = Math.Max(0, Math.Min(100, tickRateIdle));
-		root["rejoinMinMs"] = Math.Max(0, Math.Min(600000, rejoinMinMs));
-		root["rejoinMaxMs"] = Math.Max(Math.Max(0, Math.Min(600000, rejoinMinMs)), Math.Min(600000, rejoinMaxMs));
-		root["connectDelayMs"] = Math.Max(0, Math.Min(600000, connectDelayMs));
-		if (curve != null && curve.Length >= 6)
-		{
-			var arr = new JsonArray();
-			for (int i = 0; i < 6; i++)
-			{
-				arr.Add((JsonNode)(float)Math.Max(0f, Math.Min(100f, curve[i])));
-			}
-			root["priorityCurve"] = arr;
-		}
-		SaveRoot(gameDir, root);
-	}
-
-	/// <summary>写回 Nexus 面板外观：卡片模式 / 排序 / 密度 / LiveViewport 尺寸 / 高清字体。</summary>
-	public static void SavePanelSettings(string gameDir, string cardMode, string cardSort, string cardDensity, string liveViewSize, bool hdFont)
-	{
-		JsonObject root = LoadRoot(gameDir, out _);
-		root["cardMode"] = NormalizeChoice(cardMode, "WATERFALL", "WATERFALL", "PAGE", "LIVE");
-		root["cardSort"] = NormalizeChoice(cardSort, "DEFAULT", "DEFAULT", "STATE", "NAME", "UPTIME");
-		root["cardDensity"] = NormalizeChoice(cardDensity, "NORMAL", "NORMAL", "COMPACT", "DETAILED");
-		root["liveViewSize"] = string.IsNullOrWhiteSpace(liveViewSize) ? "320x180" : liveViewSize.Trim();
-		root["hdFont"] = hdFont;
-		SaveRoot(gameDir, root);
-	}
-
 	/// <summary>
 	/// 写回「画面显示账号」：MythosNexus 读到非空值时会把该账号的机器人画面直接挂到
 	/// 游戏主窗口（用于程序反向指定某个实例显示哪个账号的游戏画面）。
@@ -923,18 +712,6 @@ public static class NexusConfigService
 		JsonObject root = LoadRoot(gameDir, out _);
 		root["viewAccount"] = (account ?? "").Trim();
 		SaveRoot(gameDir, root);
-	}
-
-	private static string NormalizeChoice(string value, string fallback, params string[] allowed)
-	{
-		foreach (string item in allowed)
-		{
-			if (string.Equals(value, item, StringComparison.OrdinalIgnoreCase))
-			{
-				return item;
-			}
-		}
-		return fallback;
 	}
 
 	// ---- JSON 辅助 ----

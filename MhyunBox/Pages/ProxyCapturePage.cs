@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using MhyunBox.Services;
+using MhyunBox.Services.BjdProxy;
 using MhyunBox.Settings;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
@@ -125,8 +126,6 @@ public sealed partial class ProxyCapturePage : Page
 
 	private Microsoft.UI.Dispatching.DispatcherQueueTimer? _statusRefreshTimer;
 
-	private bool _suppressLanChanged;
-
 	private static readonly string[] OneClickFlavor = new string[5] { "万事俱备，只欠开玩，冲鸭！", "代理已就位，接下来交给你的手速啦～", "一切准备妥当，去游戏里大杀四方吧！", "搞定收工，剩下的就是快乐！", "线路已通，快乐起航，玩得尽兴！" };
 
 	private static readonly nint HWND_TOPMOST = new IntPtr(-1);
@@ -184,9 +183,6 @@ public sealed partial class ProxyCapturePage : Page
 	private TextBlock PclPathHint;
 
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
-	private TextBox PclJoinPortBox;
-
-	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
 	private CheckBox PclAutoLaunchCheck;
 
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
@@ -195,13 +191,10 @@ public sealed partial class ProxyCapturePage : Page
 	private CheckBox PclInjectCptdCheck;
 
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
-	private CheckBox LanListenCheck;
+	private Button PclMoreLinkButton;
 
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
-	private Button PclGameLaunchButton;
-
-	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
-	private Button PclInjectButton;
+	private Button PclCopyCptdButton;
 
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
 	private TextBox PclPathBox;
@@ -253,6 +246,18 @@ public sealed partial class ProxyCapturePage : Page
 	[GeneratedCode("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2509")]
 	private Button OneClickStartButton;
 
+	// —— 布吉岛专用 A/B 会话共享代理（仅布吉岛预设可见，代码构建，不依赖 XBF）——
+	private Border _bjdSection;
+	private Button _bjdInjectButton;
+	private Button _bjdReInjectButton;
+	private TextBlock _bjdStatusText;
+	private TextBlock _bjdHintText;
+	private Button _bjdLogButton;
+	private bool _bjdBusy;
+	/// <summary>布吉岛区块的状态刷新定时器（看 B 是否接入 / A 是否重连）。</summary>
+	private Microsoft.UI.Dispatching.DispatcherQueueTimer? _bjdTimer;
+	/// <summary>最近一次按钮操作的可视反馈（"HH:mm:ss 结果"），避免用户觉得点了没反应。</summary>
+	private string _bjdLastAction = "";
 
 	public ProxyCapturePage()
 	{
@@ -276,6 +281,9 @@ public sealed partial class ProxyCapturePage : Page
 		base.Unloaded += OnUnloaded;
 		base.Loaded += OnLoaded;
 		BuildTargetAddressBox();
+		// 旧「布吉岛专用代理（A/B 会话共享）」与旧「官方客户端脱盒启动」区块已合并为顶部
+		// 统一的「客户端配置与启动」卡片（见 RoleLauncherPanel），不再重复构建。
+		BuildClientLauncherSection();
 	}
 
 	private void RemoveSessionAndLogSections()
@@ -408,6 +416,171 @@ public sealed partial class ProxyCapturePage : Page
 		}
 	}
 
+	// =====================================================================================
+	// 布吉岛专用 A/B 会话共享代理
+	//
+	// 与「启动代理」按钮那条通用链路（ProxyCaptureService，按账号重走网易云认证）互相独立：
+	// 这里是把 WtfNel/SakuraTools 的 payload 反射注入 A 客户端 JVM，由 payload 把 A 的
+	// 已登录会话复制给 B，B 连本机端口即可，不需要第二个账号。
+	//
+	// 门禁：只有选中布吉岛预设（BjdGate.GameId）时区块才可见，点击时再判一次。
+	// =====================================================================================
+
+	/// <summary>「服务器预设 · 启动客户端」区块（选预设直接脱盒启动官方客户端）。</summary>
+	/// <summary>代理启动页布局整理（2026-11-20）：
+	/// 「客户端配置与启动」卡已按需求从代理启动页移除（只在快速启动页显示）；
+	/// 「PCL 启动器」块从 ProxyCardGrid 里单独分出来，作为独立卡放在角色端口卡区域中间
+	/// （角色端口卡下方、「千!万!不!要!点!」按钮上方）。</summary>
+	private void BuildClientLauncherSection()
+	{
+		try
+		{
+			// 1) PCL 启动器块单独分出来：从 ProxyCardGrid 移到 ProxyRoot，紧跟在角色端口卡（ProxyCardGrid）后面
+			if (XamlScope.Find(this, "ProxyCardGrid") is Panel cardGrid
+				&& cardGrid.Children.Contains(PclSection)
+				&& ProxyRoot != null && !ProxyRoot.Children.Contains(PclSection))
+			{
+				cardGrid.Children.Remove(PclSection);
+				int gi = ProxyRoot.Children.IndexOf(cardGrid);
+				ProxyRoot.Children.Insert((gi >= 0) ? (gi + 1) : ProxyRoot.Children.Count, PclSection);
+				LogHelper.Log("[代理启动] PCL 启动器块已从端口卡网格分出，独立置于其下方");
+			}
+			// 2) 去掉「角色端口栏 / 状态」标题（XBF 预编译，运行时摘除）
+			if (XamlScope.Find(this, "StatusSection") is StackPanel status)
+			{
+				for (int i = status.Children.Count - 1; i >= 0; i--)
+				{
+					if (status.Children[i] is TextBlock tb && (tb.Text ?? "").StartsWith("角色端口栏", StringComparison.Ordinal))
+					{
+						status.Children.RemoveAt(i);
+					}
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[代理启动] PCL 区块整理失败");
+		}
+	}
+
+	/// <summary>
+	/// 区块常驻显示（用户要求）：不再随预设切换隐藏。
+	/// 但目标服务器恒为布吉岛内置预设 —— 当前选中的预设若不是布吉岛，状态行会说明。
+	/// </summary>
+	private void UpdateBjdSectionVisibility()
+	{
+		try
+		{
+			if (_bjdSection == null)
+			{
+				return;
+			}
+			_bjdSection.Visibility = Visibility.Visible;
+			if (_bjdHintText != null)
+			{
+				bool selectedIsBjd = BjdGate.IsBjd(SelectedPreset());
+				_bjdHintText.Text = "把 A 已登录的会话共享给 B，不用第二个账号。"
+					+ "⚠ 必须先用 A 进入布吉岛服务器（看到游戏世界）再点注入："
+					+ "若 A 还没进服，payload 会挂起游戏主线程等待 B，画面会卡死，且按 DEL 也解不开。"
+					+ (selectedIsBjd
+						? ""
+						: "\n（本区块常驻：注入目标固定为「" + BjdGate.PresetName + "」，与上面选中的服务器预设无关。）");
+			}
+			SyncBjdStatus();
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[布吉岛代理] 更新区块可见性失败");
+		}
+	}
+
+	private void OnBjdStateChanged()
+	{
+		_queue?.TryEnqueue(SyncBjdStatus);
+	}
+
+	private void SyncBjdStatus()
+	{
+		try
+		{
+			if (_bjdStatusText == null)
+			{
+				return;
+			}
+			// 程序重启后接管仍存活的注入会话（payload 常驻游戏进程，端口可能还在）
+			BjdProxyService.AdoptExistingSession();
+			BjdProxyService.Refresh();
+			string actionLine = string.IsNullOrWhiteSpace(_bjdLastAction)
+				? ""
+				: (Environment.NewLine + "上次操作：" + _bjdLastAction);
+			if (BjdProxyService.IsActive)
+			{
+				string pid = (BjdProxyService.ActivePid > 0) ? ("（A 客户端 pid " + BjdProxyService.ActivePid + "）") : "";
+				if (BjdProxyService.IsGameFrozen)
+				{
+					_bjdStatusText.Text = "状态：⚠ 已注入，但游戏主线程被挂起（画面卡住）· "
+						+ "让 B 连 127.0.0.1:" + BjdProxyService.ActivePort + " 即可恢复；按 DEL 无效" + pid;
+				}
+				else
+				{
+					_bjdStatusText.Text = "状态：运行中（未阻塞游戏）· 端口 127.0.0.1:" + BjdProxyService.ActivePort + pid;
+				}
+				// B 是否接入：这是「注入成功却没效果」的最常见原因 —— 没有 B 就没有任何共享
+				if (BjdProxyService.BConnected)
+				{
+					_bjdStatusText.Text += Environment.NewLine + "B：已接入";
+				}
+				else
+				{
+					_bjdStatusText.Text += Environment.NewLine
+						+ "B：TCP 已连接，但尚未到达 PLAY —— 当前仍是握手未完成状态；"
+						+ "不要重复注入。检查第二个客户端是否卡在“正在连接至服务器”，"
+						+ "若出现 ServerboundHelloPacket / 12 bytes extra 异常，请重启两个客户端后重试";
+				}
+				// A 重连会让 payload 在新连接上重挂 Relay，实测会破坏 Forge 的进服流程
+				int aConn = BjdProxyService.AConnectionCount;
+				if (BjdProxyService.CapturedLiveSession && aConn > 0)
+				{
+					_bjdStatusText.Text += Environment.NewLine
+						+ "⚠ 检测到 A 已重新建连 " + aConn + " 次：payload 会在新连接上重挂 Relay，"
+						+ "实测可能触发 Forge 重复注册（Duplicate handler name: forge:vanilla_filter）、"
+						+ "进服失败或服务端反作弊验证超时。建议重启客户端后按流程重来。";
+				}
+				_bjdStatusText.Text += actionLine;
+				if (_bjdInjectButton != null)
+				{
+					_bjdInjectButton.Content = "复制 B 连接地址（已在运行）";
+				}
+				if (_bjdReInjectButton != null)
+				{
+					// 二次注入会重复挂 Hook/Relay 并破坏连接，固定禁用
+					_bjdReInjectButton.IsEnabled = false;
+				}
+			}
+			else
+			{
+				string last = string.IsNullOrWhiteSpace(BjdProxyService.LastMessage) ? "" : ("。" + BjdProxyService.LastMessage);
+				_bjdStatusText.Text = "状态：未运行" + last + actionLine;
+				if (_bjdInjectButton != null)
+				{
+					_bjdInjectButton.Content = "注入布吉岛代理";
+				}
+				if (_bjdReInjectButton != null)
+				{
+					_bjdReInjectButton.IsEnabled = false;
+				}
+			}
+			if (_bjdLogButton != null)
+			{
+				_bjdLogButton.IsEnabled = BjdPayloadLog.CurrentPath != null;
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[布吉岛代理] 刷新状态失败");
+		}
+	}
+
 	private void UpdateTargetPlaceholder()
 	{
 		try
@@ -475,9 +648,20 @@ public sealed partial class ProxyCapturePage : Page
 			}
 			if (ControlCard.Child is Panel panel)
 			{
+				// 2026-11-20 修复：预设多时横排会溢出边缘——套横向滑栏（与角色端口栏同款样式）
+				ScrollViewer presetScroller = new ScrollViewer
+				{
+					Content = stackPanel,
+					HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+					HorizontalScrollMode = ScrollMode.Enabled,
+					VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+					VerticalScrollMode = ScrollMode.Disabled,
+					HorizontalAlignment = HorizontalAlignment.Stretch,
+					Padding = new Thickness(0.0, 0.0, 0.0, 4.0)
+				};
 				int num = panel.Children.IndexOf(PresetListView);
-				panel.Children.Insert((num < 0) ? panel.Children.Count : num, stackPanel);
-				LogHelper.Debug("[代理启动] 预设胶囊已插入控制卡（容器=" + panel.GetType().Name + ", 位置=" + num + ", 预设数=" + _presetRadios.Count + "）");
+				panel.Children.Insert((num < 0) ? panel.Children.Count : num, presetScroller);
+				LogHelper.Debug("[代理启动] 预设胶囊已插入控制卡（横向滑栏, 位置=" + num + ", 预设数=" + _presetRadios.Count + "）");
 			}
 			else
 			{
@@ -509,20 +693,17 @@ public sealed partial class ProxyCapturePage : Page
 			ProxyCardGrid.ColumnDefinitions.Add(new ColumnDefinition());
 			ProxyCardGrid.RowDefinitions.Add(new RowDefinition());
 			ProxyCardGrid.RowDefinitions.Add(new RowDefinition());
-			ProxyCardGrid.RowDefinitions.Add(new RowDefinition());
 			SetCell(ControlCard, 0, 0, 2);
 			SetCell(StatusSection, 1, 0, 2);
-			SetCell(PclSection, 2, 0, 2);
+			// PclSection 已分出网格（见 BuildClientLauncherSection），不再占网格行
 		}
 		else
 		{
 			ProxyCardGrid.ColumnDefinitions.Add(new ColumnDefinition());
 			ProxyCardGrid.RowDefinitions.Add(new RowDefinition());
 			ProxyCardGrid.RowDefinitions.Add(new RowDefinition());
-			ProxyCardGrid.RowDefinitions.Add(new RowDefinition());
 			SetCell(ControlCard, 0, 0, 1);
 			SetCell(StatusSection, 1, 0, 1);
-			SetCell(PclSection, 2, 0, 1);
 		}
 	}
 
@@ -539,6 +720,7 @@ public sealed partial class ProxyCapturePage : Page
 		{
 			base.KeyDown += PageRoot_KeyDown;
 			_queue = base.DispatcherQueue;
+			StartBjdStatusTimer();
 			RestorePresetSelection();
 			ApplySelectedPreset();
 			if (SettingsManager.Instance.ProxyListenPort > 0)
@@ -550,9 +732,7 @@ public sealed partial class ProxyCapturePage : Page
 			ProxyCaptureService.SessionClosed += OnSessionClosed;
 			ElsewhereLoginNotice.Changed += OnElsewhereChanged;
 			ActivationService.StateChanged += OnActivationChanged;
-			_suppressLanChanged = true;
-			LanListenCheck.IsChecked = SettingsManager.Instance.AllowLanListen;
-			_suppressLanChanged = false;
+			// 2026-11-20：「允许局域网设备连接」UI 已移除；设置值仍然生效（AllowLanListen），仅不再提供界面开关。
 			ProxyCaptureService.AllowLanBindings = SettingsManager.Instance.AllowLanListen;
 			RefreshSessionList();
 			SyncUiState();
@@ -608,6 +788,7 @@ public sealed partial class ProxyCapturePage : Page
 		ProxyCaptureService.SessionClosed -= OnSessionClosed;
 		ElsewhereLoginNotice.Changed -= OnElsewhereChanged;
 		ActivationService.StateChanged -= OnActivationChanged;
+		BjdProxyService.StateChanged -= OnBjdStateChanged;
 		base.KeyDown -= PageRoot_KeyDown;
 		if (_statusWheelHandler != null)
 		{
@@ -618,6 +799,45 @@ public sealed partial class ProxyCapturePage : Page
 		{
 			_statusRefreshTimer.Stop();
 			_statusRefreshTimer = null;
+		}
+		if (_bjdTimer != null)
+		{
+			_bjdTimer.Stop();
+			_bjdTimer = null;
+		}
+	}
+
+	/// <summary>
+	/// 布吉岛区块每 2 秒刷新一次：主要看两件运行期事实 ——
+	/// B 是否已接入 13337（未接入 = 没有任何共享效果）、A 是否重连（会重挂 Relay 破坏进服）。
+	/// </summary>
+	private void StartBjdStatusTimer()
+	{
+		try
+		{
+			if (_bjdTimer != null)
+			{
+				_bjdTimer.Stop();
+			}
+			if (_queue == null)
+			{
+				return;
+			}
+			_bjdTimer = _queue.CreateTimer();
+			_bjdTimer.Interval = TimeSpan.FromSeconds(2.0);
+			_bjdTimer.Tick += delegate
+			{
+				if (_bjdBusy || _bjdSection == null || _bjdSection.Visibility != Visibility.Visible)
+				{
+					return;
+				}
+				SyncBjdStatus();
+			};
+			_bjdTimer.Start();
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[布吉岛代理] 启动状态定时器失败");
 		}
 	}
 
@@ -778,30 +998,6 @@ public sealed partial class ProxyCapturePage : Page
 		AutoStartHint.Visibility = Visibility.Collapsed;
 	}
 
-	private void LanListen_Changed(object sender, RoutedEventArgs e)
-	{
-		if (!_suppressLanChanged)
-		{
-			bool valueOrDefault = LanListenCheck.IsChecked == true;
-			AppSettings instance = SettingsManager.Instance;
-			instance.AllowLanListen = valueOrDefault;
-			SettingsManager.Save(instance);
-			ProxyCaptureService.AllowLanBindings = valueOrDefault;
-			if (valueOrDefault)
-			{
-				ApplyFirewallRule(enable: true);
-				List<string> lanIps = GetLanIps();
-				MainWindow.Instance?.ShowToast((lanIps.Count > 0) ? ("已开启局域网监听，手机连 " + lanIps[0] + ":端口（如连不上请确认 UAC 弹窗已为程序放行防火墙）") : "已开启局域网监听（未检测到局域网 IP）");
-			}
-			else
-			{
-				ApplyFirewallRule(enable: false);
-				MainWindow.Instance?.ShowToast("已关闭局域网监听");
-			}
-			UpdateStatus();
-		}
-	}
-
 	private static List<string> GetLanIps()
 	{
 		List<string> list = new List<string>();
@@ -821,53 +1017,6 @@ public sealed partial class ProxyCapturePage : Page
 		{
 		}
 		return list;
-	}
-
-	private static void ApplyFirewallRule(bool enable)
-	{
-		try
-		{
-			string text = Process.GetCurrentProcess().MainModule?.FileName ?? "";
-			if (!string.IsNullOrWhiteSpace(text))
-			{
-				string text2 = "MhyunBox 局域网代理";
-				ProcessStartInfo processStartInfo = new ProcessStartInfo("netsh.exe")
-				{
-					UseShellExecute = true,
-					Verb = "runas",
-					WindowStyle = ProcessWindowStyle.Hidden
-				};
-				processStartInfo.ArgumentList.Add("advfirewall");
-				processStartInfo.ArgumentList.Add("firewall");
-				processStartInfo.ArgumentList.Add("delete");
-				processStartInfo.ArgumentList.Add("rule");
-				processStartInfo.ArgumentList.Add("name=" + text2);
-				Process.Start(processStartInfo);
-				if (enable)
-				{
-					ProcessStartInfo processStartInfo2 = new ProcessStartInfo("netsh.exe")
-					{
-						UseShellExecute = true,
-						Verb = "runas",
-						WindowStyle = ProcessWindowStyle.Hidden
-					};
-					processStartInfo2.ArgumentList.Add("advfirewall");
-					processStartInfo2.ArgumentList.Add("firewall");
-					processStartInfo2.ArgumentList.Add("add");
-					processStartInfo2.ArgumentList.Add("rule");
-					processStartInfo2.ArgumentList.Add("name=" + text2);
-					processStartInfo2.ArgumentList.Add("dir=in");
-					processStartInfo2.ArgumentList.Add("action=allow");
-					processStartInfo2.ArgumentList.Add("program=" + text);
-					processStartInfo2.ArgumentList.Add("enable=yes");
-					Process.Start(processStartInfo2);
-				}
-			}
-		}
-		catch (Exception ex)
-		{
-			LogHelper.LogError(ex, "设置防火墙规则失败");
-		}
 	}
 
 	private void AppendTail(string text)
@@ -899,6 +1048,8 @@ public sealed partial class ProxyCapturePage : Page
 			_fallbackPort = serverPreset.Port;
 		}
 		UpdateTargetPlaceholder();
+		// 布吉岛专用区块跟随预设切换显隐（唯一门禁入口）
+		UpdateBjdSectionVisibility();
 	}
 
 	private void RestorePresetSelection()
@@ -977,7 +1128,7 @@ public sealed partial class ProxyCapturePage : Page
 				CloseButtonText = "取消",
 				DefaultButton = ContentDialogButton.Primary,
 				RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
-				XamlRoot = base.XamlRoot
+				XamlRoot = base.XamlRoot,
 			}.ShowAsync() == ContentDialogResult.Primary)
 			{
 				MainWindow.Instance?.NavigateTo("LoginPage");
@@ -1005,7 +1156,7 @@ public sealed partial class ProxyCapturePage : Page
 			started = true;
 		};
 		dialog.ProxyStarted += OnProxyStarted;
-		await dialog.ShowAsync();
+		await DialogGate.ShowAsync(dialog);
 		UpdateStatus();
 		if (started && dialog.AutoLaunchPcl)
 		{
@@ -1496,7 +1647,7 @@ public sealed partial class ProxyCapturePage : Page
 				RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 				XamlRoot = base.XamlRoot
 			};
-			if (await contentDialog.ShowAsync() != ContentDialogResult.Primary)
+			if (await DialogGate.ShowAsync(contentDialog) != ContentDialogResult.Primary)
 			{
 				return;
 			}
@@ -1880,17 +2031,17 @@ public sealed partial class ProxyCapturePage : Page
 			Title = "清理日志",
 			Content = ((num > 0) ? $"已清理 {num} 个日志文件(保留今天的应用日志)" : "没有可清理的日志"),
 			CloseButtonText = "确定",
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync();
 	}
 
 	private void InitPclUi()
 	{
-		RelayoutPclChecks();
+		ReconcilePclSection();
 		AddPclCptdToggle();
 		string text = ResolvePclPath();
 		PclPathBox.Text = text;
-		PclJoinPortBox.Text = CurrentDirectConnectPort().ToString();
 		_suppressPclOption = true;
 		PclAutoLaunchCheck.IsChecked = SettingsManager.Instance.PclAutoLaunchGame;
 		PclAutoStartCheck.IsChecked = SettingsManager.Instance.AutoStartPcl;
@@ -1959,9 +2110,6 @@ public sealed partial class ProxyCapturePage : Page
 		{
 			PclInjectCptdCheck.IsEnabled = isEnabled;
 		}
-		PclGameLaunchButton.IsEnabled = isEnabled;
-		PclInjectButton.IsEnabled = isEnabled;
-		PclJoinPortBox.IsEnabled = isEnabled;
 	}
 
 	private void PclOption_Changed(object sender, RoutedEventArgs e)
@@ -2001,10 +2149,6 @@ public sealed partial class ProxyCapturePage : Page
 
 	private int CurrentDirectConnectPort()
 	{
-		if (int.TryParse(PclJoinPortBox.Text.Trim(), out var result) && result >= 1 && result <= 65535)
-		{
-			return result;
-		}
 		int pclJoinPort = SettingsManager.Instance.PclJoinPort;
 		if (pclJoinPort >= 1 && pclJoinPort <= 65535)
 		{
@@ -2023,53 +2167,53 @@ public sealed partial class ProxyCapturePage : Page
 		return proxyListenPort;
 	}
 
-	private async void PclGameLaunch_Click(object sender, RoutedEventArgs e)
+	/// <summary>打开「更多显示」模组下载页（2026-11-20：玩家自主下载/更换模组，注入按钮已移除）。</summary>
+	private void PclMoreLink_Click(object sender, RoutedEventArgs e)
 	{
-		SavePclPath();
-		await AutoLaunchGameAsync();
-	}
-
-	private async Task AutoLaunchGameAsync()
-	{
-		string text = PclPathBox.Text.Trim();
-		if (!File.Exists(text))
-		{
-			MainWindow.Instance?.ShowToast("未找到 PCL 启动器：" + text);
-			return;
-		}
-		if (WriteDirectConnectAddress())
-		{
-			await TryAutoInjectAsync();
-			LaunchPclProcess();
-		}
-	}
-
-	private async void PclInject_Click(object sender, RoutedEventArgs e)
-	{
-		SavePclPath();
-		string path = PclPathBox.Text.Trim();
-		PclInjectButton.IsEnabled = false;
 		try
 		{
-			var (injectResultKind, text) = await Task.Run(() => ModInjectService.InjectAll(path, SettingsManager.Instance.PclInjectCptd));
-			LogHelper.Log("[模组注入] " + text);
-			switch (injectResultKind)
+			using Process p = new Process
 			{
-			case InjectResultKind.NoMatch:
-				MainWindow.Instance?.ShowToast("未识别到元素之诗客户端（已取消注入）");
-				break;
-			case InjectResultKind.Failed:
-				MainWindow.Instance?.ShowToast(text);
-				break;
-			default:
-				MainWindow.Instance?.ShowToast(text);
-				break;
-			}
-			UpdatePclHint(path);
+				StartInfo = new ProcessStartInfo
+				{
+					FileName = ModInjectService.MoreShowDownloadPage,
+					UseShellExecute = true
+				}
+			};
+			p.Start();
+			LogHelper.Log("[PCL] 已打开更多显示模组下载页：" + ModInjectService.MoreShowDownloadPage);
 		}
-		finally
+		catch (Exception ex)
 		{
-			PclInjectButton.IsEnabled = File.Exists(path);
+			LogHelper.LogError(ex, "[PCL] 打开模组下载页失败");
+			MainWindow.Instance?.ShowToast("打开链接失败：" + ex.Message);
+		}
+	}
+
+	/// <summary>把内置 MhyCPTD 模组（程序 Mods 目录里最新的 MhyCPTD-*.jar）复制到桌面（2026-11-20 新增）。</summary>
+	private void PclCopyCptd_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			string mods = ModInjectService.ModsDirectory();
+			string src = Directory.GetFiles(mods, "MhyCPTD-*.jar")
+				.OrderByDescending(File.GetLastWriteTimeUtc)
+				.FirstOrDefault() ?? "";
+			if (src.Length == 0 || !File.Exists(src))
+			{
+				MainWindow.Instance?.ShowToast("未找到内置 CPTD 模组（程序 Mods 目录无 MhyCPTD-*.jar）");
+				return;
+			}
+			string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+			string dest = Path.Combine(desktop, Path.GetFileName(src));
+			File.Copy(src, dest, overwrite: true);
+			LogHelper.Log("[PCL] 内置 CPTD 已复制到桌面：" + dest);
+			MainWindow.Instance?.ShowToast("已复制到桌面：" + Path.GetFileName(src) + "，请自行放入客户端 mods 文件夹", ok: true);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[PCL] 复制内置 CPTD 到桌面失败");
+			MainWindow.Instance?.ShowToast("复制到桌面失败：" + ex.Message);
 		}
 	}
 
@@ -2090,29 +2234,72 @@ public sealed partial class ProxyCapturePage : Page
 		}
 	}
 
-	/// <summary>XBF 把 PCL 选项挤在同一行导致「允许局域网设备连接」溢出边缘：把每个选项换成独立一行。</summary>
-	private void RelayoutPclChecks()
+	/// <summary>
+	/// 2026-11-20 PCL 区版式重建（兼容旧预编译 XBF）：
+	/// 移除「启动PCL我的世界」「注入元素之诗模组」「允许局域网设备连接」与「指定端口」行，
+	/// 在原按钮行位置插入「打开链接」（更多显示模组下载页）与「复制到桌面」（内置 CPTD 复制）。
+	/// 新 XBF 已按新版式编译：此时旧控件找不到、新按钮字段已绑定，本方法自动跳过重建只做兜底。
+	/// </summary>
+	private void ReconcilePclSection()
 	{
 		try
 		{
-			if (LanListenCheck?.Parent is StackPanel row && row.Orientation == Orientation.Horizontal && row.Parent is Panel section)
+			// 1) 允许局域网设备连接：摘除勾选框（设置值 AllowLanListen 仍生效，只是不再提供界面开关）
+			if (XamlScope.Find(this, "LanListenCheck") is FrameworkElement lan)
 			{
-				int rowIndex = section.Children.IndexOf(row);
-				row.Children.Remove(LanListenCheck);
-				StackPanel lanRow = new StackPanel
-				{
-					Orientation = Orientation.Horizontal,
-					Spacing = row.Spacing,
-					Margin = row.Margin
-				};
-				lanRow.Children.Add(LanListenCheck);
-				section.Children.Insert(rowIndex + 1, lanRow);
+				(lan.Parent as Panel)?.Children.Remove(lan);
 			}
+			// 2) 指定端口行（文字 + 输入框）整行摘除
+			if (XamlScope.Find(this, "PclJoinPortBox") is FrameworkElement portBox && portBox.Parent is Panel portRow)
+			{
+				if (portRow.Parent is Panel portHost)
+				{
+					portHost.Children.Remove(portRow);
+				}
+				else
+				{
+					portRow.Children.Remove(portBox);
+				}
+			}
+			// 3) 旧按钮行整行移除，原位插入新按钮
+			Panel? btnRowHost = null;
+			int btnRowIndex = -1;
+			if (XamlScope.Find(this, "PclGameLaunchButton") is FrameworkElement oldBtn && oldBtn.Parent is Panel oldRow && oldRow.Parent is Panel oldHost)
+			{
+				btnRowIndex = oldHost.Children.IndexOf(oldRow);
+				oldHost.Children.Remove(oldRow);
+				btnRowHost = oldHost;
+			}
+			if (btnRowHost != null && btnRowIndex >= 0)
+			{
+				Button moreLink = PclMoreLinkButton ??= CreatePclActionButton("下载更多显示", PclMoreLink_Click);
+				Button copyCptd = PclCopyCptdButton ??= CreatePclActionButton("复制到桌面", PclCopyCptd_Click);
+				StackPanel newRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8.0 };
+				newRow.Children.Add(moreLink);
+				newRow.Children.Add(copyCptd);
+				btnRowHost.Children.Insert(Math.Min(btnRowIndex, btnRowHost.Children.Count), newRow);
+			}
+			else if (PclMoreLinkButton != null && PclCopyCptdButton != null)
+			{
+				// 新 XBF：按钮由 XAML 提供，只做事件兜底挂接（幂等）
+				PclMoreLinkButton.Click -= PclMoreLink_Click;
+				PclMoreLinkButton.Click += PclMoreLink_Click;
+				PclCopyCptdButton.Click -= PclCopyCptd_Click;
+				PclCopyCptdButton.Click += PclCopyCptd_Click;
+			}
+			LogHelper.Log("[PCL] 区块版式已重建（移除局域网/指定端口/启动PCL/注入按钮，新增打开链接/复制到桌面）");
 		}
-		catch (Exception ex)
+		catch (Exception exRecon)
 		{
-			LogHelper.LogError(ex, "PCL 选项换行布局失败");
+			LogHelper.LogError(exRecon, "[PCL] 区块版式重建失败");
 		}
+	}
+
+	private static Button CreatePclActionButton(string text, RoutedEventHandler onClick)
+	{
+		Button b = new Button { Content = text };
+		b.Click += onClick;
+		return b;
 	}
 
 	private void AddPclCptdToggle()
@@ -2165,15 +2352,13 @@ public sealed partial class ProxyCapturePage : Page
 	{
 		string pclExePath = PclPathBox.Text.Trim();
 		int port = CurrentDirectConnectPort();
-		bool flag = string.IsNullOrWhiteSpace(PclJoinPortBox.Text.Trim());
 		int.TryParse(ListenPortBox.Text.Trim(), out var result);
 		IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> readOnlyList = ProxyCaptureService.ActiveBindingsSnapshot();
-		if (readOnlyList.Count > 0 && (flag || (port == result && readOnlyList.All((ProxyCaptureService.ActiveBindingInfo b) => b.ListenPort != port))))
+		if (readOnlyList.Count > 0 && port == result && readOnlyList.All((ProxyCaptureService.ActiveBindingInfo b) => b.ListenPort != port))
 		{
 			port = readOnlyList[0].ListenPort;
 		}
 		port = Math.Clamp(port, 1, 65535);
-		PclJoinPortBox.Text = port.ToString();
 		AppSettings instance = SettingsManager.Instance;
 		instance.PclJoinPort = port;
 		SettingsManager.Save(instance);
@@ -2409,7 +2594,7 @@ public sealed partial class ProxyCapturePage : Page
 			CloseButtonText = "取消",
 			DefaultButton = ContentDialogButton.Primary,
 			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
 		}.ShowAsync() == ContentDialogResult.Primary && list3.SelectedIndex >= 0 && list3.SelectedIndex < found.Count)
 		{
 			PclPathBox.Text = found[list3.SelectedIndex];
@@ -2439,7 +2624,7 @@ public sealed partial class ProxyCapturePage : Page
 				CloseButtonText = "取消",
 				DefaultButton = ContentDialogButton.Primary,
 				RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
-				XamlRoot = base.XamlRoot
+				XamlRoot = base.XamlRoot,
 			}.ShowAsync() == ContentDialogResult.Primary)
 			{
 				MainWindow.Instance?.NavigateTo("LoginPage");
@@ -2498,7 +2683,7 @@ public sealed partial class ProxyCapturePage : Page
 			started = true;
 		};
 		dialog.ProxyStarted += OnProxyStarted;
-		await dialog.ShowAsync();
+		await DialogGate.ShowAsync(dialog);
 		UpdateStatus();
 		if (started && dialog.AutoLaunchPcl)
 		{
@@ -2575,7 +2760,7 @@ public sealed partial class ProxyCapturePage : Page
 			Content = message + "\n\n" + OneClickFlavor[Random.Shared.Next(OneClickFlavor.Length)],
 			CloseButtonText = "好的",
 			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
 		}.ShowAsync();
 	}
 
@@ -2601,34 +2786,6 @@ public sealed partial class ProxyCapturePage : Page
 			SavePclPath();
 			UpdatePclHint(storageFile.Path);
 			await TryAutoInjectAsync();
-		}
-	}
-
-	private async void StatusCopy_Click(object sender, RoutedEventArgs e)
-	{
-		Button button = sender as Button;
-		string text = null;
-		int num;
-		if ((object)button != null)
-		{
-			text = button.Tag as string;
-			if (text != null)
-			{
-				num = ((!string.IsNullOrWhiteSpace(text)) ? 1 : 0);
-				goto IL_007f;
-			}
-		}
-		num = 0;
-		goto IL_007f;
-		IL_007f:
-		if (num != 0)
-		{
-			DataPackage dataPackage = new DataPackage();
-			dataPackage.SetText(text);
-			Clipboard.SetContent(dataPackage);
-			button.Content = "已复制";
-			await Task.Delay(1500);
-			button.Content = "复制";
 		}
 	}
 

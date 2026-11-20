@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using MhyunBox.Settings;
 
 namespace MhyunBox.Services;
 
@@ -113,6 +114,29 @@ public sealed class NeteaseAuthBridge
 		return NeteaseLogin.IsRiskControlText(msg);
 	}
 
+	// 2026-11-20 兼容模式 code=10 一次性自动重登标记：进程级只触发一次，
+	// 兼容开关重新开启时经 ResetCompatCode10Relog 重置。
+	private static bool _compatCode10RelogDone;
+
+	/// <summary>兼容开关重新开启时重置 code=10 一次性自动重登标记（LoginPage 切换开关时调用）。</summary>
+	public static void ResetCompatCode10Relog()
+	{
+		_compatCode10RelogDone = false;
+	}
+
+	/// <summary>
+	/// login-start 返回「请先登录 (code=10)」：兼容模式下 uni_sauth 校验通过、但服务器侧
+	/// 持有的会话与脱盒保存的不是同一张时出现（程序检测不到是否同源），按一次性自动重登信号处理。
+	/// </summary>
+	public static bool IsCompatCode10Message(string msg)
+	{
+		if (string.IsNullOrWhiteSpace(msg))
+		{
+			return false;
+		}
+		return msg.Contains("code=10", StringComparison.Ordinal) || msg.Contains("请先登录", StringComparison.Ordinal);
+	}
+
 	public static bool IsSessionInvalidMessage(string msg)
 	{
 		if (string.IsNullOrWhiteSpace(msg))
@@ -215,6 +239,22 @@ public sealed class NeteaseAuthBridge
 			string token;
 			using (NeteaseLogin login = new NeteaseLogin())
 			{
+				// 兼容模式（兼容网易发烧启动器）：账号已有保存的会话字段时先只做 uni_sauth 校验
+				//（createSession:false，不建立新会话、不顶官方启动器），校验通过直接复用旧会话；
+				// 旧会话确实失效才回退完整登录链（此时官方那侧会话大概率也已不在，顶无可顶）。
+				if (SettingsManager.Instance.CompatNeteaseLauncher
+					&& !string.IsNullOrWhiteSpace(account.EntityId) && !string.IsNullOrWhiteSpace(account.Token))
+				{
+					NeteaseLoginResult probe = await login.LoginWithCookieAsync(account.CookieJson, account.Channel, createSession: false).ConfigureAwait(continueOnCapturedContext: false);
+					if (probe.Success)
+					{
+						LogHelper.Log("[认证] 兼容模式：保存的会话 uni_sauth 校验通过，复用旧会话（不重建，避免顶掉官方启动器）");
+						entityId = account.EntityId;
+						token = account.Token;
+						goto GotSession;
+					}
+					LogHelper.Log("[认证] 兼容模式：保存的会话校验未通过（" + probe.Message + "），回退完整登录链重建会话");
+				}
 				NeteaseLoginResult neteaseLoginResult = await login.LoginWithCookieAsync(account.CookieJson, account.Channel).ConfigureAwait(continueOnCapturedContext: false);
 				if (!neteaseLoginResult.Success)
 				{
@@ -322,6 +362,63 @@ public sealed class NeteaseAuthBridge
 				if (IsSessionInvalidMessage(gsMsg))
 				{
 					AccountInvalidationDetector.ReportInGameSessionFailure(_failChannel, _failAccount, _failNickname, gsMsg);
+				}
+				// 2026-11-20 兼容模式 code=10 兜底：开了「兼容网易发烧启动器」后自动链路已切断，
+				// 但官方启动器那侧持有的会话与脱盒保存的不是同一张时（uni_sauth 校验照样通过，
+				// 程序检测不到是否同源），login-start 会报「请先登录 (code=10)」。
+				// 此时自动明文重登一次换新会话并原地重试本次进服；进程级只触发一次
+				//（兼容开关重新开启时经 ResetCompatCode10Relog 重置），后续 code=10 不再自动重登。
+				if (SettingsManager.Instance.CompatNeteaseLauncher && IsCompatCode10Message(gsMsg) && !_compatCode10RelogDone)
+				{
+					_compatCode10RelogDone = true;
+					LogHelper.Force($"[会话提醒] 账号「{account.Nickname}」兼容模式下 login-start 报 code=10（请先登录），自动重登一次换取新会话并重试…");
+					bool relogined3 = await AccountAutoLoginService.EnsureLoginForAsync(account.Channel, account.Account, ct).ConfigureAwait(continueOnCapturedContext: false);
+					if (relogined3)
+					{
+						AccountStore.LocalAccount? fresh3 = ResolveFreshAccount(_failChannel, _failAccount, accountIndex);
+						if (fresh3 != null)
+						{
+							var (flag5, text7) = await NeteaseYggdrasil.StartGameSessionAsync(fresh3.EntityId, fresh3.Token, GameId.ToString()).ConfigureAwait(continueOnCapturedContext: false);
+							if (flag5)
+							{
+								LogHelper.Log("[认证] GameStart 成功(code=10重登重试): " + text7);
+								string modsJson3 = await GetModsJsonAsync(fresh3.EntityId, fresh3.Token, ct);
+								YggdrasilGameProfile profile3 = new YggdrasilGameProfile
+								{
+									GameId = GameId.ToString(),
+									GameVersion = "1.12.2",
+									BootstrapMd5 = "A895FE657915D58F55919CEACD30209D",
+									DatFileMd5 = "51581ADD89B8AC5A0D8CCDD0E33EE1DE",
+									ModsJson = modsJson3,
+									UserId = int.Parse(fresh3.EntityId),
+									UserToken = fresh3.Token
+								};
+								YggdrasilResult retryResult3 = await NeteaseYggdrasil.JoinServerAsync(profile3, certification, null, null, ct);
+								if (retryResult3.Success)
+								{
+									LogHelper.Log($"[认证] code=10 自动重登后重试 joinServer 通过: 昵称={account.Nickname} gameId={profile3.GameId}");
+									SyncRolesAfterJoin(fresh3, fresh3.EntityId, fresh3.Token);
+									return true;
+								}
+								LastFailReason = "网易云认证未通过（code=10 自动重登后重试仍失败）：" + retryResult3.Message;
+								LogHelper.Log("[认证] code=10 自动重登后重试 join 仍失败: " + retryResult3.Message);
+							}
+							else
+							{
+								LastFailReason = "服务器会话启动失败（code=10 自动重登后重试）：" + (text7 ?? "");
+								LogHelper.Log("[认证] code=10 自动重登后 GameStart 仍失败: " + text7);
+							}
+						}
+						else
+						{
+							LogHelper.Log("[认证] code=10 自动重登后未取到新会话字段，按失败处理");
+						}
+					}
+					else
+					{
+						LogHelper.Log("[认证] code=10 兼容模式自动重登未成功（无账密或重试上限），按失败处理");
+					}
+					return false;
 				}
 				return false;
 			}

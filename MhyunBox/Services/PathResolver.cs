@@ -11,22 +11,6 @@ public static class PathResolver
 
 	private static readonly string[] KnownMclRoots = new string[2] { "MCLDownload", "MCLDownload GPU加速缓存" };
 
-	public static List<string> FindVersionsDirs()
-	{
-		List<string> list = new List<string>();
-		AddIfExists(list, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".minecraft", "versions"));
-		DriveInfo[] drives = DriveInfo.GetDrives();
-		for (int i = 0; i < drives.Length; i++)
-		{
-			string text = drives[i].Name.TrimEnd('\\');
-			AddIfExists(list, Path.Combine(text, "PCL", ".minecraft", "versions"));
-			AddIfExists(list, Path.Combine(text, "MCLDownload", "Game", ".minecraft", "versions"));
-			AddIfExists(list, Path.Combine(text, "MCLDownload", ".minecraft", "versions"));
-			AddIfExists(list, Path.Combine(text, "PCL", "versions"));
-		}
-		return list.Distinct().ToList();
-	}
-
 	public static string? FindPclExecutable()
 	{
 		string[] array = new string[4] { "G:\\PCL", "E:\\PCL", "D:\\PCL", "C:\\PCL" };
@@ -74,11 +58,4 @@ public static class PathResolver
 		return null;
 	}
 
-	private static void AddIfExists(List<string> list, string path)
-	{
-		if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
-		{
-			list.Add(path);
-		}
-	}
 }

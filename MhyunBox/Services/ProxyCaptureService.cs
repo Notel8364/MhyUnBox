@@ -94,6 +94,9 @@ public static class ProxyCaptureService
 		/// <summary>该端口最近捕获的聊天栏内容（旧→新，最多 12 条）。</summary>
 		public string[] ChatLines = Array.Empty<string>();
 
+		/// <summary>最近一条聊天栏内容的时刻（UTC）。卡片「已进服」只在 10 秒内有效。</summary>
+		public DateTime LastChatUtc;
+
 		/// <summary>当前连接阶段：已连接 / 选择进服 / 进入服务器 / 进入子服 / 已进入游戏 / 已断开。</summary>
 		public string Status = "";
 
@@ -133,6 +136,9 @@ public static class ProxyCaptureService
 		public readonly object ChatLock = new object();
 
 		public readonly List<string> ChatLines = new List<string>();
+
+		/// <summary>最近一条聊天栏内容的时刻（UTC）。</summary>
+		public DateTime LastChatUtc;
 	}
 
 	private static readonly ConcurrentDictionary<int, TrafficCounter> TrafficCounters = new ConcurrentDictionary<int, TrafficCounter>();
@@ -773,6 +779,7 @@ public static class ProxyCaptureService
 				Status = c.Status,
 				LastError = c.LastError,
 				LastErrorUtc = c.LastErrorUtc,
+				LastChatUtc = c.LastChatUtc,
 				ChatLines = SnapshotChatLines(c)
 			});
 		}
@@ -857,6 +864,7 @@ public static class ProxyCaptureService
 		lock (counter.ChatLock)
 		{
 			counter.ChatLines.Add(line);
+			counter.LastChatUtc = DateTime.UtcNow;
 			if (counter.ChatLines.Count > MaxChatLines)
 			{
 				counter.ChatLines.RemoveRange(0, counter.ChatLines.Count - MaxChatLines);
@@ -1223,72 +1231,6 @@ public static class ProxyCaptureService
 	public static bool StopNexusBinding(int listenPort)
 	{
 		return StopPort(listenPort, "nexus-");
-	}
-
-	/// <summary>
-	/// 清理重复监听：同一「角色 + 目标服务器」只保留最早建的那条，其余停掉。
-	/// 快速启动的脱盒代理和「会话多开」的机器人代理是两套入口，历史数据里
-	/// 同一角色曾在两个端口各跑一条，等于同账号双登互相顶号。启动后跑一次即可自愈。
-	/// </summary>
-	public static int DedupeSameRoleListeners()
-	{
-		List<ListenerEntry> snapshot;
-		lock (Sync)
-		{
-			snapshot = Listeners.Where(x => x.Binding != null).ToList();
-		}
-		var kept = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-		var duplicates = new List<int>();
-		foreach (ListenerEntry item in snapshot)
-		{
-			if (item.Binding == null)
-			{
-				continue;
-			}
-			string key = (item.Binding.LoginName ?? "").Trim() + "|"
-				+ (item.Binding.TargetHost ?? "").ToLowerInvariant() + ":" + item.Binding.TargetPort;
-			if (kept.ContainsKey(key))
-			{
-				duplicates.Add(item.Binding.ListenPort);
-			}
-			else
-			{
-				kept[key] = item.Binding.ListenPort;
-			}
-		}
-		int stopped = 0;
-		foreach (int port in duplicates.Distinct())
-		{
-			if (StopPort(port, null))
-			{
-				stopped++;
-				LogHelper.Log("[代理抓取] 去重：同一角色重复监听，已停掉 127.0.0.1:" + port);
-			}
-		}
-		return stopped;
-	}
-
-	/// <summary>停止所有机器人侧监听，脱盒原服务器代理保持运行。返回停止的端口数。</summary>
-	public static int StopNexusBindings()
-	{
-		List<int> ports;
-		lock (Sync)
-		{
-			ports = Listeners
-				.Where(item => item.Binding != null && (item.Binding.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase))
-				.Select(item => item.Binding!.ListenPort)
-				.Distinct()
-				.ToList();
-		}
-		int stopped = 0;
-		foreach (int port in ports)
-		{
-			if (StopPort(port, "nexus-"))
-			{
-				stopped++;
-			}
-		}
-		return stopped;
 	}
 
 	/// <summary>是否存在脱盒侧（非 nexus- 标记）的服务器代理监听。</summary>
@@ -3663,19 +3605,6 @@ public static class ProxyCaptureService
 	private static readonly ConcurrentDictionary<string, int> UpstreamRecoverStreak = new ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
 	/// <summary>
-	/// 游戏内防被 DDoS 掉线的核心动作：上游（主域名）当前不可达时，
-	/// 把匹配该上游的监听绑定热切换到预设 IP 池里探测可达的那个 IP。
-	///
-	/// 只改「之后新建连接」用的目标，绝不碰正在转发中的会话 ——
-	/// 这样已经在游戏里的其他玩家不受影响，而被打掉的玩家点重连就直接走健康 IP，
-	/// 不用再经历一次域名解析 + 连接超时。
-	/// </summary>
-	private static void FailoverToHealthyUpstream(string targetHost, int targetPort, ServerPreset? preset)
-	{
-		_ = Task.Run(() => FailoverToHealthyUpstreamAsync(targetHost, targetPort, preset));
-	}
-
-	/// <summary>
 	/// 异步版热切换：上游刚被打挂的瞬间，后台健康表可能仍标记为「可达」（探测周期最长 60s），
 	/// 此时直接看表会误判为「主域名还活着」而放弃切换。这里先对主域名做一次
 	/// 立即探测（复用真实客户端协议的 status ping，非可疑特征），确认真的挂了再切 IP 池。
@@ -3806,86 +3735,6 @@ public static class ProxyCaptureService
 		}
 		UpstreamRecoverStreak[fromHost + ":" + fromPort] = 0;
 		LogHelper.Force($"[防DDoS] 上游 {fromHost} 当前不可用，已热切换 {serverName} 至 {toHost}:{fromPort}，影响 {changed} 个监听；正在游戏内的会话保持不动，玩家重连即走新线路");
-	}
-
-	/// <summary>
-	/// 主目标恢复后的回切。要求连续 2 轮探测在线才切回，避免上游在「半死不活」状态下来回横跳
-	///（每切一次，新建连接的目标就变一次，反而更容易出现连不上的错觉）。
-	/// </summary>
-	private static void MaybeRestorePrimaryUpstream(ProxyUpstreamHealth st)
-	{
-		try
-		{
-			string key = st.Host + ":" + st.Port;
-			if (!st.Reachable)
-			{
-				UpstreamRecoverStreak[key] = 0;
-				return;
-			}
-			ServerPreset preset = FindProtectedPreset(st.Host, st.Port);
-			if (preset == null)
-			{
-				return;
-			}
-			int streak = UpstreamRecoverStreak.AddOrUpdate(key, 1, (string _, int v) => v + 1);
-			if (streak < 2)
-			{
-				return;
-			}
-			bool anyRedirected = false;
-			lock (Sync)
-			{
-				foreach (ListenerEntry le in Listeners)
-				{
-					ProxyBinding b = le.Binding;
-					if (b == null)
-					{
-						continue;
-					}
-					// 绑定当前正指向 IP 池里的某个地址，而不是主域名 → 说明之前切走过
-					if (b.TargetPort == st.Port && !string.IsNullOrWhiteSpace(b.TargetHost)
-						&& !string.Equals(b.TargetHost, st.Host, StringComparison.OrdinalIgnoreCase)
-						&& preset.IpPool != null && Array.Exists(preset.IpPool, (string x) => string.Equals(x, b.TargetHost, StringComparison.OrdinalIgnoreCase)))
-					{
-						anyRedirected = true;
-						break;
-					}
-				}
-			}
-			if (!anyRedirected && !((TargetHost != null && !string.Equals(TargetHost, st.Host, StringComparison.OrdinalIgnoreCase) && preset.IpPool != null && Array.Exists(preset.IpPool, (string x) => string.Equals(x, TargetHost, StringComparison.OrdinalIgnoreCase)))))
-			{
-				return;
-			}
-			int changed = 0;
-			lock (Sync)
-			{
-				foreach (ListenerEntry le2 in Listeners)
-				{
-					ProxyBinding b2 = le2.Binding;
-					if (b2 == null)
-					{
-						continue;
-					}
-					if (b2.TargetPort == st.Port && !string.IsNullOrWhiteSpace(b2.TargetHost)
-						&& !string.Equals(b2.TargetHost, st.Host, StringComparison.OrdinalIgnoreCase)
-						&& preset.IpPool != null && Array.Exists(preset.IpPool, (string x) => string.Equals(x, b2.TargetHost, StringComparison.OrdinalIgnoreCase)))
-					{
-						b2.TargetHost = st.Host;
-						changed++;
-					}
-				}
-			}
-			if (TargetHost != null && preset.IpPool != null && Array.Exists(preset.IpPool, (string x) => string.Equals(x, TargetHost, StringComparison.OrdinalIgnoreCase)))
-			{
-				TargetHost = st.Host;
-			}
-			UpstreamRecoverStreak[key] = 0;
-			LogHelper.Force($"[防DDoS] 上游 {st.Host}:{st.Port} 已恢复（连续 2 轮探测在线），{preset.Name} 已切回主目标，影响 {changed} 个监听");
-		}
-		catch (Exception ex)
-		{
-			LogHelper.LogError(ex, "[防DDoS] 上游回切失败");
-		}
 	}
 
 	internal static void SignalUpstreamSwitch(int listenPort, string address, string upstream, string reason)
@@ -4077,104 +3926,7 @@ public static class ProxyCaptureService
 		return memoryStream.ToArray();
 	}
 
-	private static byte[] ZlibCompress(byte[] data)
-	{
-		using MemoryStream memoryStream = new MemoryStream();
-		using (ZLibStream zLibStream = new ZLibStream(memoryStream, CompressionMode.Compress, leaveOpen: true))
-		{
-			zLibStream.Write(data, 0, data.Length);
-		}
-		return memoryStream.ToArray();
-	}
 
-	private static byte[] EncodeUpstream(ActiveSession session, byte[] body)
-	{
-		if (session.CompressionThreshold < 0)
-		{
-			return body;
-		}
-		using MemoryStream memoryStream = new MemoryStream();
-		if (body.Length >= session.CompressionThreshold)
-		{
-			byte[] array = ZlibCompress(body);
-			NetShared.WriteVarInt(memoryStream, body.Length);
-			memoryStream.Write(array, 0, array.Length);
-		}
-		else
-		{
-			NetShared.WriteVarInt(memoryStream, 0);
-			memoryStream.Write(body, 0, body.Length);
-		}
-		return memoryStream.ToArray();
-	}
-
-
-
-	private static byte[] EncodeGenericEntry(int action, byte[] uuid, int value, string? displayName)
-	{
-		using MemoryStream memoryStream = new MemoryStream();
-		memoryStream.Write(uuid, 0, uuid.Length);
-		NetShared.WriteVarInt(memoryStream, value);
-		if (action == 3 && value == 1 && displayName != null)
-		{
-			NetShared.WriteString(memoryStream, displayName);
-		}
-		return memoryStream.ToArray();
-	}
-
-	private static void RewriteOwnUuidIfMatch(ActiveSession session, ref byte[] uuid)
-	{
-		if (session.ServerOwnUuidHex == null || session.ClientUuid == null || session.ClientUuid.Length != 16)
-		{
-			return;
-		}
-		try
-		{
-			if (string.Equals(Convert.ToHexString(uuid).ToLowerInvariant(), session.ServerOwnUuidHex, StringComparison.Ordinal))
-			{
-				uuid = session.ClientUuid;
-			}
-		}
-		catch
-		{
-		}
-	}
-
-	private static string? ExtractSkinUrl(string base64Value)
-	{
-		try
-		{
-			string text = Encoding.UTF8.GetString(Convert.FromBase64String(base64Value));
-			int num = text.IndexOf("\"SKIN\"", StringComparison.Ordinal);
-			if (num < 0)
-			{
-				return null;
-			}
-			int num2 = text.IndexOf("\"url\":\"", num, StringComparison.Ordinal);
-			if (num2 < 0)
-			{
-				return null;
-			}
-			int num3 = num2 + 7;
-			int num4 = text.IndexOf('"', num3);
-			if (num4 < 0)
-			{
-				return null;
-			}
-			return text.Substring(num3, num4 - num3);
-		}
-		catch
-		{
-			return null;
-		}
-	}
-
-	private static string BuildTexturesProperty(string uuidHex, string name, string textureUrl)
-	{
-		long num = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-		string s = "{\"timestamp\":" + num + ",\"profileId\":\"" + uuidHex + "\",\"profileName\":\"" + NetShared.EscapeJson(name) + "\",\"textures\":{\"SKIN\":{\"url\":\"" + textureUrl + "\"}}}";
-		return Convert.ToBase64String(Encoding.UTF8.GetBytes(s));
-	}
 
 	private static int PeekPacketId(byte[] body)
 	{

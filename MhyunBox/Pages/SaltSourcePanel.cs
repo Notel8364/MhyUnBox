@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -1599,7 +1599,7 @@ public sealed class SaltSourcePanel : StackPanel
 			CloseButtonText = "关闭",
 			XamlRoot = XamlRoot
 		};
-		await dlg.ShowAsync();
+		await DialogGate.ShowAsync(dlg);
 	}
 
 	private void BlacklistDelete_Click(object sender, RoutedEventArgs e)
@@ -1661,7 +1661,7 @@ public sealed class SaltSourcePanel : StackPanel
 				CloseButtonText = "知道了",
 				XamlRoot = XamlRoot
 			};
-			await dlg.ShowAsync();
+			await DialogGate.ShowAsync(dlg);
 		}
 		catch
 		{

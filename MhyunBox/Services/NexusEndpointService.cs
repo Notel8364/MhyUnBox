@@ -34,6 +34,13 @@ public static class NexusEndpointService
 		/// <summary>角色来源客户端版本对应的服务器名（用于把 127.0.0.1/null 这类占位目标替换成真实预设地址）。</summary>
 		public string ServerHint = "";
 
+		/// <summary>
+		/// 该卡片的机器人账号写进哪个客户端目录（空 = 按 ServerHint 自动解析）。
+		/// 单客户端 10 个会话是内存上限，超出部分会自动过渡到第二个同服客户端，
+		/// 过渡结果就记在这里，避免每次 Load 又算回第一个客户端。
+		/// </summary>
+		public string ClientDir = "";
+
 		public string Key => User + "@" + Host + ":" + Port;
 		public string ServerKey => Host + ":" + Port;
 		public string ListenAddress => "127.0.0.1:" + ListenPort;
@@ -49,6 +56,117 @@ public static class NexusEndpointService
 	public static string CardKeyOf(NexusEndpointSetting s)
 	{
 		return s == null || string.IsNullOrWhiteSpace(s.RoleName) ? (s?.Key ?? "") : s.Key + "#" + s.RoleName;
+	}
+
+	/// <summary>单客户端机器人会话上限（10 个；第 11 个开始游戏会爆内存并崩溃）。</summary>
+	public const int SessionLimitPerClient = 10;
+
+	/// <summary>该卡片的机器人账号实际写进哪个客户端：优先卡片自身的过渡结果，其次按服务器解析。</summary>
+	public static string ClientDirOf(Endpoint e)
+	{
+		if (e == null)
+		{
+			return "";
+		}
+		if (!string.IsNullOrWhiteSpace(e.ClientDir) && Directory.Exists(e.ClientDir))
+		{
+			return e.ClientDir;
+		}
+		return ResolveClientDir(e.ServerHint);
+	}
+
+	// ---- 机器人卡片墓碑：删除过的卡片不再被任何自动流程写回来 ----
+
+	/// <summary>卡片级墓碑键。</summary>
+	private static string TombstoneOfCard(string cardKey)
+	{
+		return "card#" + (cardKey ?? "").Trim().ToLowerInvariant();
+	}
+
+	/// <summary>账号级墓碑键（用户直接在游戏模组界面删掉账号时用）。</summary>
+	private static string TombstoneOfAccount(string clientDir, string user, int listenPort)
+	{
+		return "acct#" + (Path.GetFileName(clientDir) ?? "").Trim().ToLowerInvariant()
+			+ "|" + (user ?? "").Trim().ToLowerInvariant() + "@" + listenPort;
+	}
+
+	private static bool HasTombstone(string key)
+	{
+		if (string.IsNullOrWhiteSpace(key))
+		{
+			return false;
+		}
+		List<string> list = SettingsManager.Instance.NexusBotTombstones ?? new List<string>();
+		return list.Any(x => string.Equals(x, key, StringComparison.OrdinalIgnoreCase));
+	}
+
+	/// <summary>该卡片 / 该账号是否已被用户删除并打了墓碑。</summary>
+	public static bool IsBotTombstoned(string cardKey, string clientDir = "", string user = "", int listenPort = 0)
+	{
+		if (!string.IsNullOrWhiteSpace(cardKey) && HasTombstone(TombstoneOfCard(cardKey)))
+		{
+			return true;
+		}
+		return listenPort > 0 && !string.IsNullOrWhiteSpace(clientDir)
+			&& HasTombstone(TombstoneOfAccount(clientDir, user, listenPort));
+	}
+
+	private static void AddTombstone(string key)
+	{
+		if (string.IsNullOrWhiteSpace(key))
+		{
+			return;
+		}
+		AppSettings cfg = SettingsManager.Instance;
+		cfg.NexusBotTombstones ??= new List<string>();
+		if (!cfg.NexusBotTombstones.Any(x => string.Equals(x, key, StringComparison.OrdinalIgnoreCase)))
+		{
+			cfg.NexusBotTombstones.Add(key);
+			SettingsManager.Save(cfg);
+		}
+	}
+
+	/// <summary>把一张卡片记成「已删除」，之后所有自动回写都会跳过它。</summary>
+	public static void AddCardTombstone(Endpoint e)
+	{
+		if (e == null)
+		{
+			return;
+		}
+		AddTombstone(TombstoneOfCard(e.CardKey));
+		string dir = ClientDirOf(e);
+		string user = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
+		if (!string.IsNullOrWhiteSpace(dir) && e.ListenPort > 0)
+		{
+			AddTombstone(TombstoneOfAccount(dir, user, e.ListenPort));
+		}
+	}
+
+	/// <summary>用户在这张卡上显式点了「启动」：解除墓碑（否则启动也不会写账号）。</summary>
+	public static void ClearCardTombstone(Endpoint e, string clientDir = "")
+	{
+		if (e == null)
+		{
+			return;
+		}
+		AppSettings cfg = SettingsManager.Instance;
+		List<string>? list = cfg.NexusBotTombstones;
+		if (list == null || list.Count == 0)
+		{
+			return;
+		}
+		string card = TombstoneOfCard(e.CardKey);
+		string dir = string.IsNullOrWhiteSpace(clientDir) ? ClientDirOf(e) : clientDir;
+		string user = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
+		string acct = e.ListenPort > 0 ? TombstoneOfAccount(dir, user, e.ListenPort) : "";
+		int removed = list.RemoveAll(x => string.Equals(x, card, StringComparison.OrdinalIgnoreCase)
+			|| (!string.IsNullOrEmpty(acct) && x.StartsWith("acct#", StringComparison.OrdinalIgnoreCase)
+				&& string.Equals(x, acct, StringComparison.OrdinalIgnoreCase)));
+		if (removed > 0)
+		{
+			SettingsManager.Save(cfg);
+			LogHelper.Log("[实例多开] 已清除卡片墓碑：" + e.CardKey + "（用户显式启动）");
+		}
 	}
 
 	/// <summary>
@@ -268,29 +386,39 @@ public static class NexusEndpointService
 	/// 账号 host 指向本机监听端口，游戏内 MythosNexus 启动时就会连 127.0.0.1:端口 → 本程序 → 真实服务器。
 	/// 同时写入 lastOnline + autoReconnect，保证进游戏后自动挂机。
 	/// </summary>
-	public static bool EnsureBotAccount(string serverHint, string user, int listenPort, string group = "机器人代理")
+	public static bool EnsureBotAccount(string serverHint, string user, int listenPort, string group = "机器人代理",
+		string? cardKey = null, string? clientDir = null)
 	{
-		string dir = ResolveClientDir(serverHint);
+		string dir = string.IsNullOrWhiteSpace(clientDir) ? ResolveClientDir(serverHint) : clientDir;
 		if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(user) || listenPort <= 0)
 		{
+			return false;
+		}
+		// 用户删掉的卡片永远不再写回来：游戏每次启动都会走这里重放账号，
+		// 没有这道闸门就会出现「删了又出现」。
+		if (IsBotTombstoned(cardKey ?? "", dir, user, listenPort))
+		{
+			LogHelper.Log("[实例多开] 跳过已删除的机器人卡片（墓碑）：" + user + "@127.0.0.1:" + listenPort
+				+ (string.IsNullOrWhiteSpace(cardKey) ? "" : " 卡片=" + cardKey));
 			return false;
 		}
 		try
 		{
 			// 单次读改写完成「清旧端口 + 写账号/绑定 + 标记在线」，缩短与游戏端配置保存的竞态窗口。
 			NexusConfigService.WriteBotAccount(dir, user, listenPort, group, "MhyunBox 机器人号代理");
+			MarkBotAccountWritten(dir, user, listenPort);
 			// 其它客户端（例如合并版）里如果已经存在这个账号，也一起改成实际端口：
 			// 用户可能在别的客户端里开同一个角色，端口一变它就会一直连旧端口。
 			HashSet<int> keep = CollectKnownPorts(listenPort);
-			foreach (string clientDir in EnumerateClientDirs())
+			foreach (string otherDir in EnumerateClientDirs())
 			{
-				if (string.Equals(clientDir, dir, StringComparison.OrdinalIgnoreCase))
+				if (string.Equals(otherDir, dir, StringComparison.OrdinalIgnoreCase))
 				{
 					continue;
 				}
-				if (NexusConfigService.UpdateLocalAccountPort(clientDir, user, listenPort, keep))
+				if (NexusConfigService.UpdateLocalAccountPort(otherDir, user, listenPort, keep))
 				{
-					LogHelper.Log("[端口自适配] 客户端账号端口已更新：" + Path.GetFileName(clientDir)
+					LogHelper.Log("[端口自适配] 客户端账号端口已更新：" + Path.GetFileName(otherDir)
 						+ " " + user + " → 127.0.0.1:" + listenPort);
 				}
 			}
@@ -305,6 +433,28 @@ public static class NexusEndpointService
 		}
 	}
 
+	/// <summary>本进程最近写过哪些机器人账号（客户端目录|账号@端口 → 写入时刻）。</summary>
+	private static readonly Dictionary<string, DateTime> WrittenBotAccounts = new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>「账号消失了」的连续命中次数：连续两次才算用户删除，避免读到半写文件时误判。</summary>
+	private static readonly Dictionary<string, int> MissingBotStrikes = new(StringComparer.OrdinalIgnoreCase);
+
+	private static string BotAccountSlot(string clientDir, string user, int listenPort)
+	{
+		return (Path.GetFileName(clientDir) ?? "").Trim().ToLowerInvariant()
+			+ "|" + (user ?? "").Trim().ToLowerInvariant() + "@" + listenPort;
+	}
+
+	private static void MarkBotAccountWritten(string clientDir, string user, int listenPort)
+	{
+		lock (WrittenBotAccounts)
+		{
+			WrittenBotAccounts[BotAccountSlot(clientDir, user, listenPort)] = DateTime.Now;
+			MissingBotStrikes.Remove(BotAccountSlot(clientDir, user, listenPort));
+		}
+	}
+
+
 	/// <summary>
 	/// 只补「客户端里还没有」的机器人账号，已有的不动（避免每次启动把整份配置重写几十遍）。
 	/// 卡片端口变了但客户端仍是旧端口的情况由 <see cref="WriteBotAccount"/> 的清理逻辑 + 端口冲突自愈处理。
@@ -315,8 +465,8 @@ public static class NexusEndpointService
 		{
 			int added = 0;
 			foreach (IGrouping<string, Endpoint> group in all
-				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0)
-				.GroupBy(e => ResolveClientDir(e.ServerHint)))
+				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e))
+				.GroupBy(e => ClientDirOf(e)))
 			{
 				string dir = group.Key;
 				if (string.IsNullOrWhiteSpace(dir))
@@ -337,7 +487,7 @@ public static class NexusEndpointService
 					{
 						continue;
 					}
-					if (EnsureBotAccount(e.ServerHint, user, e.ListenPort))
+					if (EnsureBotAccount(e.ServerHint, user, e.ListenPort, "机器人代理", e.CardKey, ClientDirOf(e)))
 					{
 						added++;
 					}
@@ -387,9 +537,9 @@ public static class NexusEndpointService
 	}
 
 	/// <summary>停止机器人代理时移除写进客户端的机器人账号，避免游戏启动后又自动连回来。</summary>
-	public static void RemoveBotAccount(string serverHint, string user, int listenPort)
+	public static void RemoveBotAccount(string serverHint, string user, int listenPort, string? clientDir = null)
 	{
-		string dir = ResolveClientDir(serverHint);
+		string dir = string.IsNullOrWhiteSpace(clientDir) ? ResolveClientDir(serverHint) : clientDir;
 		if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(user) || listenPort <= 0)
 		{
 			return;
@@ -397,6 +547,12 @@ public static class NexusEndpointService
 		try
 		{
 			NexusConfigService.RemoveAccount(dir, user + "@127.0.0.1:" + listenPort);
+			// 这是程序主动删的，不能算成「用户在游戏里删了」。
+			lock (WrittenBotAccounts)
+			{
+				WrittenBotAccounts.Remove(BotAccountSlot(dir, user, listenPort));
+				MissingBotStrikes.Remove(BotAccountSlot(dir, user, listenPort));
+			}
 			LogHelper.Log("[实例多开] 已移除客户端机器人账号：" + user + "@127.0.0.1:" + listenPort
 				+ " → " + Path.GetFileName(dir));
 		}
@@ -405,6 +561,510 @@ public static class NexusEndpointService
 			LogHelper.Log("[实例多开] 移除机器人账号失败（" + user + "）：" + ex.Message);
 		}
 	}
+
+	/// <summary>
+	/// 检测「用户在游戏里的模组界面把机器人账号删掉了」。
+	///
+	/// 只看本进程写过、且写入之后客户端配置又被别人（游戏）改写过、账号却不见了的情况：
+	/// 连续两次轮询都缺这个账号才确认，避免读到写一半的文件误杀卡片。
+	/// 确认后：打墓碑 → 停监听 → 删快速启动角色 → 删卡片，之后任何自动流程都不会再写回来。
+	/// </summary>
+	public static int DetectUserDeletedBots()
+	{
+		List<KeyValuePair<string, DateTime>> snapshot;
+		lock (WrittenBotAccounts)
+		{
+			if (WrittenBotAccounts.Count == 0)
+			{
+				return 0;
+			}
+			snapshot = WrittenBotAccounts.ToList();
+		}
+		int confirmed = 0;
+		foreach (IGrouping<string, KeyValuePair<string, DateTime>> group in snapshot.GroupBy(p => p.Key.Split('|')[0]))
+		{
+			string dirName = group.Key;
+			string dir = EnumerateClientDirs()
+				.FirstOrDefault(d => string.Equals((Path.GetFileName(d) ?? "").ToLowerInvariant(), dirName, StringComparison.OrdinalIgnoreCase)) ?? "";
+			if (string.IsNullOrWhiteSpace(dir))
+			{
+				continue;
+			}
+			string cfgPath = Path.Combine(dir, "config", "mythosnexus.json");
+			if (!File.Exists(cfgPath))
+			{
+				continue;
+			}
+			DateTime writeTime;
+			try
+			{
+				writeTime = File.GetLastWriteTime(cfgPath);
+			}
+			catch
+			{
+				continue;
+			}
+			HashSet<string> have;
+			try
+			{
+				have = new HashSet<string>(NexusConfigService.Load(dir).Accounts.Select(a => a.Key), StringComparer.OrdinalIgnoreCase);
+			}
+			catch
+			{
+				continue;
+			}
+			foreach (KeyValuePair<string, DateTime> pair in group)
+			{
+				string[] parts = pair.Key.Split('|');
+				if (parts.Length < 2)
+				{
+					continue;
+				}
+				string account = parts[1];
+				if (have.Contains(account))
+				{
+					lock (WrittenBotAccounts)
+					{
+						MissingBotStrikes.Remove(pair.Key);
+					}
+					continue;
+				}
+				// 游戏必须在我们写完之后改过这个文件，才可能是「用户删的」。
+				if (writeTime <= pair.Value.AddSeconds(1))
+				{
+					continue;
+				}
+				int strikes;
+				lock (WrittenBotAccounts)
+				{
+					MissingBotStrikes.TryGetValue(pair.Key, out strikes);
+					strikes++;
+					MissingBotStrikes[pair.Key] = strikes;
+				}
+				if (strikes < 2)
+				{
+					continue;
+				}
+				int at = account.LastIndexOf('@');
+				int colon = account.LastIndexOf(':');
+				if (at <= 0 || colon <= at || !int.TryParse(account.Substring(colon + 1), out int port))
+				{
+					continue;
+				}
+				string user = account.Substring(0, at);
+				ForgetDeletedBot(dir, user, port);
+				confirmed++;
+			}
+		}
+		if (confirmed > 0)
+		{
+			LogHelper.Log("[实例多开] 检测到用户在游戏内删除了 " + confirmed + " 个机器人账号，已同步删除对应卡片并打墓碑");
+		}
+		return confirmed;
+	}
+
+	/// <summary>用户在游戏内删掉账号：同步删掉脱盒这边的卡片，并打墓碑防止再写回。</summary>
+	private static void ForgetDeletedBot(string clientDir, string user, int listenPort)
+	{
+		try
+		{
+			ProxyCaptureService.StopNexusBinding(listenPort);
+			lock (WrittenBotAccounts)
+			{
+				WrittenBotAccounts.Remove(BotAccountSlot(clientDir, user, listenPort));
+				MissingBotStrikes.Remove(BotAccountSlot(clientDir, user, listenPort));
+			}
+			AddTombstone(TombstoneOfAccount(clientDir, user, listenPort));
+			string gameDir = ResolveGameDir();
+			List<Endpoint> all = string.IsNullOrWhiteSpace(gameDir) ? new List<Endpoint>() : Load(gameDir);
+			Endpoint? target = all.FirstOrDefault(e => e.ListenPort == listenPort
+				&& string.Equals(ClientDirOf(e), clientDir, StringComparison.OrdinalIgnoreCase));
+			AppSettings cfg = SettingsManager.Instance;
+			if (target != null)
+			{
+				AddTombstone(TombstoneOfCard(target.CardKey));
+				cfg.NexusHiddenCards ??= new List<string>();
+				if (!cfg.NexusHiddenCards.Any(x => string.Equals(x, target.CardKey, StringComparison.OrdinalIgnoreCase)))
+				{
+					cfg.NexusHiddenCards.Add(target.CardKey);
+				}
+				cfg.NexusEndpoints.RemoveAll(x => string.Equals(CardKeyOf(x), target.CardKey, StringComparison.OrdinalIgnoreCase)
+					|| (string.IsNullOrWhiteSpace(target.RoleName) && string.Equals(x.Key, target.Key, StringComparison.OrdinalIgnoreCase)
+						&& (x.ListenPort == target.ListenPort || x.ListenPort <= 0)));
+				RemoveQuickStartRole(target);
+				SettingsManager.Save(cfg);
+				LogHelper.Log("[实例多开] 游戏内已删除机器人：" + target.CardKey + "（客户端 "
+					+ Path.GetFileName(clientDir) + "）→ 卡片同步删除");
+			}
+			else
+			{
+				cfg.NexusEndpoints.RemoveAll(x => x.ListenPort == listenPort && string.Equals(x.Key.Split('@')[0], user, StringComparison.OrdinalIgnoreCase));
+				SettingsManager.Save(cfg);
+				LogHelper.Log("[实例多开] 游戏内已删除机器人账号：" + user + "@127.0.0.1:" + listenPort + "，脱盒侧无对应卡片");
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[实例多开] 同步删除游戏内已删机器人失败：" + ex.Message);
+		}
+	}
+
+	/// <summary>把某张卡的启用状态落盘：停止 = 停用，下次启动程序 / 下次游戏启动都不会再自动写回。</summary>
+	public static void SetCardEnabled(Endpoint e, bool enabled)
+	{
+		if (e == null || string.IsNullOrWhiteSpace(e.Key))
+		{
+			return;
+		}
+		try
+		{
+			AppSettings cfg = SettingsManager.Instance;
+			NexusEndpointSetting? item = cfg.NexusEndpoints
+				.FirstOrDefault(x => string.Equals(CardKeyOf(x), e.CardKey, StringComparison.OrdinalIgnoreCase));
+			if (item == null)
+			{
+				item = new NexusEndpointSetting
+				{
+					Key = e.Key,
+					RoleName = e.RoleName ?? "",
+					ListenPort = e.ListenPort,
+					AutoStart = e.AutoStart
+				};
+				cfg.NexusEndpoints.Add(item);
+			}
+			item.Enabled = enabled;
+			if (e.ListenPort > 0)
+			{
+				item.ListenPort = e.ListenPort;
+			}
+			e.Enabled = enabled;
+			SettingsManager.Save(cfg);
+			LogHelper.Log("[实例多开] 卡片" + (enabled ? "启用" : "停用") + "：" + e.CardKey);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[实例多开] 写卡片启用状态失败：" + ex.Message);
+		}
+	}
+
+	/// <summary>
+	/// 「显示组」的作用域：会话多开页选了某个组时，客户端里只挂这个组的机器人；
+	/// 空（全部组）= 不过滤。返回 null 表示不过滤，否则是组内角色键集合（账号@服务器:端口）。
+	/// </summary>
+	public static HashSet<string>? DisplayScopeCardKeys()
+	{
+		string groupName = SettingsManager.Instance.DisplayGroupName ?? "";
+		if (string.IsNullOrWhiteSpace(groupName))
+		{
+			return null;
+		}
+		ProxyGroup? group = (SettingsManager.Instance.ProxyGroups ?? new List<ProxyGroup>())
+			.FirstOrDefault(g => string.Equals(g.Name, groupName, StringComparison.OrdinalIgnoreCase));
+		if (group == null)
+		{
+			return null;
+		}
+		var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (ProxyGroupRole role in group.Roles ?? new List<ProxyGroupRole>())
+		{
+			if (role == null || string.IsNullOrWhiteSpace(role.Account))
+			{
+				continue;
+			}
+			keys.Add(KeyOf(role, group));
+		}
+		return keys;
+	}
+
+	/// <summary>该卡片是否在当前显示组的作用域内（组外机器人不写客户端、不自启）。</summary>
+	public static bool InDisplayScope(Endpoint e)
+	{
+		HashSet<string>? scope = DisplayScopeCardKeys();
+		return scope == null || (e != null && scope.Contains(e.Key));
+	}
+
+	/// <summary>
+	/// 显示组切换 / 启动后对齐客户端账号：
+	///  - 组内、客户端缺的账号 → 补写；
+	///  - 组外的账号 → 从客户端撤掉（模组 3 秒热加载后对应机器人会话自动下线）。
+	/// 只动「已启用的机器人代理卡」，删除墓碑照常生效；空组名 = 全部组，即全部补齐、不撤。
+	/// </summary>
+	public static void SyncClientAccountsToDisplayGroup()
+	{
+		try
+		{
+			string gameDir = ResolveGameDir();
+			if (string.IsNullOrWhiteSpace(gameDir))
+			{
+				return;
+			}
+			List<Endpoint> all = Load(gameDir);
+			HashSet<string>? scope = DisplayScopeCardKeys();
+			int added = 0, removed = 0;
+			foreach (IGrouping<string, Endpoint> grp in all
+				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0)
+				.GroupBy(e => ClientDirOf(e), StringComparer.OrdinalIgnoreCase))
+			{
+				string dir = grp.Key;
+				if (string.IsNullOrWhiteSpace(dir))
+				{
+					continue;
+				}
+				HashSet<string> have;
+				try
+				{
+					have = new HashSet<string>(
+						NexusConfigService.Load(dir).Accounts.Select(a => a.Key),
+						StringComparer.OrdinalIgnoreCase);
+				}
+				catch
+				{
+					continue;
+				}
+				foreach (Endpoint e in grp)
+				{
+					string user = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
+					string account = user + "@127.0.0.1:" + e.ListenPort;
+					bool inScope = scope == null || scope.Contains(e.Key);
+					if (inScope)
+					{
+						if (!have.Contains(account) && EnsureBotAccount(e.ServerHint, user, e.ListenPort, "机器人代理", e.CardKey, dir))
+						{
+							added++;
+						}
+					}
+					else if (have.Contains(account))
+					{
+						NexusConfigService.RemoveAccount(dir, account);
+						lock (WrittenBotAccounts)
+						{
+							WrittenBotAccounts.Remove(BotAccountSlot(dir, user, e.ListenPort));
+							MissingBotStrikes.Remove(BotAccountSlot(dir, user, e.ListenPort));
+						}
+						removed++;
+						LogHelper.Log("[实例多开] 显示组外机器人已撤下客户端：" + user + "@127.0.0.1:" + e.ListenPort
+							+ " → " + Path.GetFileName(dir));
+					}
+				}
+			}
+			if (added > 0 || removed > 0)
+			{
+				LogHelper.Log("[实例多开] 按显示组对齐客户端机器人账号：补写 " + added + "，撤下 " + removed);
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[实例多开] 按显示组对齐客户端账号失败：" + ex.Message);
+		}
+	}
+
+	/// <summary>该客户端目录上已启用的机器人会话数（一张卡片 = 一个会话）。</summary>
+	public static int CountBotSessions(List<Endpoint> all, string clientDir)
+	{
+		if (all == null || string.IsNullOrWhiteSpace(clientDir))
+		{
+			return 0;
+		}
+		return all.Count(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0
+			&& string.Equals(ClientDirOf(e), clientDir, StringComparison.OrdinalIgnoreCase));
+	}
+
+	/// <summary>
+	/// 单客户端 10 个会话是内存上限（第 11 个起 ChunkRenderDispatcher 的直存池会把游戏撑爆）。
+	/// 按要求不加锁：只提醒，并把超出上限的卡片自动过渡到第二个同服客户端继续增加会话数。
+	/// 返回本次实际过渡的卡片数。
+	/// </summary>
+	public static int ApplySessionOverflow(List<Endpoint> all)
+	{
+		try
+		{
+			if (all == null || all.Count == 0)
+			{
+				return 0;
+			}
+			int moved = 0;
+			List<IGrouping<string, Endpoint>> groups = all
+				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e))
+				.GroupBy(e => ClientDirOf(e), StringComparer.OrdinalIgnoreCase)
+				.ToList();
+			foreach (IGrouping<string, Endpoint> group in groups)
+			{
+				string dir = group.Key;
+				if (string.IsNullOrWhiteSpace(dir) || group.Count() <= SessionLimitPerClient)
+				{
+					continue;
+				}
+				List<Endpoint> overflow = group.OrderBy(e => e.ListenPort).Skip(SessionLimitPerClient).ToList();
+				LogHelper.Log("[会话上限] " + Path.GetFileName(dir) + " 已有 " + group.Count()
+					+ " 个会话（上限 " + SessionLimitPerClient + "），多余 " + overflow.Count + " 个准备过渡");
+				bool overflowed = false;
+				foreach (Endpoint e in overflow)
+				{
+					string? alt = FindOverflowClientDir(all, e, dir);
+					if (string.IsNullOrWhiteSpace(alt))
+					{
+						continue;
+					}
+					string user = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
+					string account = user + "@127.0.0.1:" + e.ListenPort;
+					// 原客户端要先把账号撤掉，否则两个客户端会同时挂这个会话（等于没搬家）。
+					NexusConfigService.RemoveAccount(dir, account);
+					PersistEndpointClientDir(e, alt!);
+					e.ClientDir = alt!;
+					EnsureBotAccount(e.ServerHint, user, e.ListenPort, "机器人代理", e.CardKey, alt!);
+					moved++;
+					overflowed = true;
+					LogHelper.Log("[会话上限] 已过渡「" + user + "」127.0.0.1:" + e.ListenPort + "："
+						+ Path.GetFileName(dir) + " → " + Path.GetFileName(alt!));
+				}
+				WarnSessionLimit(dir, group.Count(), overflowed);
+				if (!overflowed)
+				{
+					LogHelper.Log("[会话上限] " + Path.GetFileName(dir) + " 没有第二个同服客户端可过渡；"
+						+ "请在 PCL 里再复制一份同名挂号版实例，程序会自动把超出的会话分过去");
+				}
+			}
+			return moved;
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[会话上限] 过渡失败：" + ex.Message);
+			return 0;
+		}
+	}
+
+	/// <summary>找一个同服、还有空位的第二个客户端目录（单客户端不超过 10 个会话）。</summary>
+	private static string? FindOverflowClientDir(List<Endpoint> all, Endpoint e, string excludeDir)
+	{
+		string name = Path.GetFileName(excludeDir) ?? "";
+		string keyword = name.Contains("元素", StringComparison.Ordinal) ? "元素"
+			: name.Contains("失落", StringComparison.Ordinal) ? "失落" : "";
+		if (keyword.Length == 0)
+		{
+			return null;
+		}
+		foreach (string dir in EnumerateClientDirs())
+		{
+			if (string.Equals(dir, excludeDir, StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+			if (Path.GetFileName(dir).IndexOf(keyword, StringComparison.OrdinalIgnoreCase) < 0)
+			{
+				continue;
+			}
+			if (CountBotSessions(all, dir) >= SessionLimitPerClient)
+			{
+				continue;
+			}
+			return dir;
+		}
+		return null;
+	}
+
+	/// <summary>把卡片的「账号写到哪个客户端」落盘（自动过渡结果）。</summary>
+	private static void PersistEndpointClientDir(Endpoint e, string clientDir)
+	{
+		try
+		{
+			AppSettings cfg = SettingsManager.Instance;
+			NexusEndpointSetting? item = cfg.NexusEndpoints
+				.FirstOrDefault(x => string.Equals(CardKeyOf(x), e.CardKey, StringComparison.OrdinalIgnoreCase));
+			if (item == null)
+			{
+				item = new NexusEndpointSetting
+				{
+					Key = e.Key,
+					RoleName = e.RoleName ?? "",
+					ListenPort = e.ListenPort,
+					Enabled = e.Enabled,
+					AutoStart = e.AutoStart
+				};
+				cfg.NexusEndpoints.Add(item);
+			}
+			if (string.Equals(item.ClientDir ?? "", clientDir, StringComparison.OrdinalIgnoreCase))
+			{
+				return;
+			}
+			item.ClientDir = clientDir;
+			SettingsManager.Save(cfg);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[会话上限] 记录过渡客户端失败：" + ex.Message);
+		}
+	}
+
+	/// <summary>卡片启动时调用：该客户端已到 / 超过 10 个会话就提醒一次（不拦截）。</summary>
+	public static void WarnSessionLimitIfNeeded(string clientDir, int count)
+	{
+		if (count > SessionLimitPerClient)
+		{
+			WarnSessionLimit(clientDir, count, false);
+		}
+	}
+
+	/// <summary>单客户端会话达到上限的提醒：只提醒不拦截，每个客户端最多 3 次。</summary>
+	private static void WarnSessionLimit(string clientDir, int count, bool overflowed)	{
+		try
+		{
+			AppSettings cfg = SettingsManager.Instance;
+			cfg.SessionLimitWarnCount ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+			string key = Path.GetFileName(clientDir) ?? clientDir;
+			cfg.SessionLimitWarnCount.TryGetValue(key, out int shown);
+			if (shown >= 3)
+			{
+				return;
+			}
+			cfg.SessionLimitWarnCount[key] = shown + 1;
+			SettingsManager.Save(cfg);
+			ShowSessionLimitWarn(key, count, overflowed);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[会话上限] 提醒失败：" + ex.Message);
+		}
+	}
+
+	private static void ShowSessionLimitWarn(string clientName, int count, bool overflowed)
+	{
+		try
+		{
+			MainWindow? win = MainWindow.Instance;
+			if (win == null)
+			{
+				return;
+			}
+			win.DispatcherQueue.TryEnqueue(async () =>
+			{
+				try
+				{
+					if (win.Content?.XamlRoot == null)
+					{
+						return;
+					}
+					var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
+					{
+						Title = "单客户端会话已达上限",
+						Content = MhyunBox.Pages.NexusNotice.BuildSessionLimitContent(clientName, count, overflowed),
+						PrimaryButtonText = "知道了",
+						DefaultButton = Microsoft.UI.Xaml.Controls.ContentDialogButton.Primary,
+						XamlRoot = win.Content.XamlRoot
+					};
+					await DialogGate.ShowAsync(dialog);
+				}
+				catch (Exception ex)
+				{
+					LogHelper.Log("[会话上限] 弹窗失败：" + ex.Message);
+				}
+			});
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[会话上限] 弹窗失败：" + ex.Message);
+		}
+	}
+
 
 	/// <summary>
 	/// 读取 Nexus 花名册并与本地端口分配合并。
@@ -509,6 +1169,10 @@ public static class NexusEndpointService
 				}
 				sameBase.Enabled = savedItem.Enabled;
 				sameBase.AutoStart = savedItem.AutoStart;
+				if (string.IsNullOrWhiteSpace(sameBase.ClientDir))
+				{
+					sameBase.ClientDir = savedItem.ClientDir ?? "";
+				}
 				continue;
 			}
 			if (list.Any(x => string.Equals(x.CardKey, itemCardKey, StringComparison.OrdinalIgnoreCase)
@@ -535,7 +1199,8 @@ public static class NexusEndpointService
 				Enabled = savedItem.Enabled,
 				Group = "机器人代理",
 				RoleName = savedItem.RoleName ?? "",
-				ServerHint = InferServerHint(host)
+				ServerHint = InferServerHint(host),
+				ClientDir = savedItem.ClientDir ?? ""
 			});
 		}
 		// 快速启动分组里的角色即使还没启用 / 还没启动，也要先出现在实例多开卡片里；
@@ -625,7 +1290,8 @@ public static class NexusEndpointService
 				AutoStart = roleSaved?.AutoStart ?? false,
 				Group = groupTag,
 				RoleName = roleName,
-				ServerHint = InferServerHint(host)
+				ServerHint = InferServerHint(host),
+				ClientDir = roleSaved?.ClientDir ?? ""
 			});
 			}
 		}
@@ -701,6 +1367,8 @@ public static class NexusEndpointService
 			}
 		}
 		ResolvePortConflicts(list);
+		// 单客户端 10 个会话到顶：不锁功能，只提醒 + 把多出来的卡片过渡到第二个同服客户端。
+		ApplySessionOverflow(list);
 		LogAlignment(list);
 		return list;
 	}
@@ -755,7 +1423,7 @@ public static class NexusEndpointService
 				if (IsBotGroup(e) && e.Enabled)
 				{
 					string botUser = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
-					EnsureBotAccount(e.ServerHint, botUser, next);
+					EnsureBotAccount(e.ServerHint, botUser, next, "机器人代理", e.CardKey, ClientDirOf(e));
 				}
 			}
 			if (moved > 0)
@@ -809,7 +1477,9 @@ public static class NexusEndpointService
 			{
 				return;
 			}
-			int restored = hidden.RemoveAll(k => stillInGroups.Contains(k));
+			// 墓碑优先：用户明确删掉的卡片就算角色还留在分组里也不能放出来，
+			// 否则「删了又出现」永远停不下来。
+			int restored = hidden.RemoveAll(k => stillInGroups.Contains(k) && !IsBotTombstoned(k));
 			if (restored > 0)
 			{
 				SettingsManager.Save(cfg);
@@ -1330,46 +2000,6 @@ public static class NexusEndpointService
 		}
 	}
 
-	/// <summary>按启用的账号启动本地监听（127.0.0.1:端口 → 服务器）。返回启动数量。</summary>
-	public static int StartEnabled(string gameDir)
-	{
-		List<Endpoint> all = Load(gameDir);
-		PruneStaleBotAccounts(all);
-		int started = Start(all);
-		ApplyRoleFiles(all, ProxyCaptureService.ActiveBindingsSnapshot().Select(b => b.ListenPort).ToList());
-		return started;
-	}
-
-	/// <summary>
-	/// 清理客户端里已停用的机器人账号：这些账号是程序之前写进 mythosnexus.json 的
-	/// （绑定 note = MhyunBox 机器人号代理），端口已不在当前启用列表里。
-	/// 不清掉的话客户端每次启动都会一直重连一个没人监听的端口，日志和卡片全是连接失败。
-	/// </summary>
-	private static void PruneStaleBotAccounts(List<Endpoint> endpoints)
-	{
-		foreach (IGrouping<string, Endpoint> group in endpoints.GroupBy(e => ResolveClientDir(e.ServerHint)))
-		{
-			string dir = group.Key;
-			if (string.IsNullOrWhiteSpace(dir))
-			{
-				continue;
-			}
-			var allowed = new HashSet<int>(group.Where(e => e.Enabled).Select(e => e.ListenPort));
-			NexusConfigService.Snapshot snap = NexusConfigService.Load(dir);
-			foreach (NexusConfigService.Account account in snap.Accounts)
-			{
-				if (!IsPlaceholderHost(account.Host)
-					|| !string.Equals(account.Note, "MhyunBox 机器人号代理", StringComparison.Ordinal)
-					|| allowed.Contains(account.Port))
-				{
-					continue;
-				}
-				NexusConfigService.RemoveAccount(dir, account.Key);
-				LogHelper.Log("[实例多开] 清理已停用的机器人账号：" + account.Key + " → " + Path.GetFileName(dir));
-			}
-		}
-	}
-
 	/// <summary>
 	/// 只启动指定卡片（用于「实例多开」的卡片启动按钮）。按卡片键匹配，同一账号的其它角色不会被连带启动；
 	/// 旧调用方传入裸 Key（账号@服务器:端口）时按 baseKey 兜底匹配。
@@ -1426,16 +2056,16 @@ public static class NexusEndpointService
 			int count = 0;
 			foreach (Endpoint e in all)
 			{
-				if (!e.Enabled || !IsBotGroup(e) || e.ListenPort <= 0)
+				if (!e.Enabled || !IsBotGroup(e) || e.ListenPort <= 0 || !InDisplayScope(e))
 				{
 					continue;
 				}
-				if (!string.Equals(ResolveClientDir(e.ServerHint), clientDir, StringComparison.OrdinalIgnoreCase))
+				if (!string.Equals(ClientDirOf(e), clientDir, StringComparison.OrdinalIgnoreCase))
 				{
 					continue;
 				}
 				string botUser = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
-				if (EnsureBotAccount(e.ServerHint, botUser, e.ListenPort))
+				if (EnsureBotAccount(e.ServerHint, botUser, e.ListenPort, "机器人代理", e.CardKey, ClientDirOf(e)))
 				{
 					count++;
 				}
@@ -1473,8 +2103,8 @@ public static class NexusEndpointService
 			}
 			List<Endpoint> all = Load(gameDir);
 			List<Endpoint> targets = all
-				.Where(e => e.Enabled && e.AutoStart && IsBotGroup(e) && e.ListenPort > 0
-					&& string.Equals(ResolveClientDir(e.ServerHint), clientDir, StringComparison.OrdinalIgnoreCase))
+				.Where(e => e.Enabled && e.AutoStart && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e)
+					&& string.Equals(ClientDirOf(e), clientDir, StringComparison.OrdinalIgnoreCase))
 				.ToList();
 			if (targets.Count == 0)
 			{
@@ -1890,12 +2520,12 @@ public static class NexusEndpointService
 			if (isBot && !isMarket)
 			{
 				// 机器人号代理：把账号写进对应客户端的 Nexus 配置，端口用实际监听端口。
-				EnsureBotAccount(endpoint.ServerHint, loginName, actual);
+				EnsureBotAccount(endpoint.ServerHint, loginName, actual, "机器人代理", endpoint.CardKey, ClientDirOf(endpoint));
 			}
 			else if (isMarket)
 			{
 				// 行情角色必须由真人客户端连本端口，不能同时被机器人会话占用。
-				RemoveBotAccount(endpoint.ServerHint, loginName, actual);
+				RemoveBotAccount(endpoint.ServerHint, loginName, actual, ClientDirOf(endpoint));
 			}
 		}
 		return bindings.Count;
@@ -1979,7 +2609,7 @@ public static class NexusEndpointService
 			var dirs = new List<string>();
 			foreach (Endpoint e in list)
 			{
-				string dir = ResolveClientDir(e.ServerHint);
+				string dir = ClientDirOf(e);
 				if (!string.IsNullOrWhiteSpace(dir) && !dirs.Contains(dir, StringComparer.OrdinalIgnoreCase))
 				{
 					dirs.Add(dir);
@@ -1994,7 +2624,7 @@ public static class NexusEndpointService
 				}
 			}
 			List<string> marketDirs = market == null ? new List<string>() : ResolveMarketClientDirs(market);
-			string viewDir = view == null ? "" : ResolveClientDir(view.ServerHint);
+			string viewDir = view == null ? "" : ClientDirOf(view);
 			string viewName = view == null ? "" : (string.IsNullOrWhiteSpace(view.RoleName) ? view.User : view.RoleName);
 			string marketOwner = market == null ? "" : (string.IsNullOrWhiteSpace(market.RoleName) ? market.User : market.RoleName);
 			foreach (string dir in dirs)
@@ -2109,15 +2739,6 @@ public static class NexusEndpointService
 		}
 	}
 
-	public static void StopAll()
-	{
-		if (ProxyCaptureService.IsRunning)
-		{
-			// 只停机器人侧监听，脱盒原服务器代理不受影响。
-			ProxyCaptureService.StopNexusBindings();
-		}
-	}
-
 	/// <summary>
 	/// 程序启动时恢复机器人代理（与服务器代理自启 AutoStartProxyOnStartup 完全独立）：
 	/// 总开关 = AppSettings.AutoStartBotOnStartup，且只启动卡片上勾了「自启动」的机器人角色。
@@ -2144,11 +2765,22 @@ public static class NexusEndpointService
 			// 在模组界面里越重启越少、最后干脆建不出机器人，根因就是这条。
 			// 现在只有「被删除 / 被停用」的卡片才会被清理；关总开关时仍然全清（那是明确的关停语义）。
 			var keepPorts = new HashSet<int>();
+			// 「显示组」作用域：选了组就只挂组里的机器人，组外卡片不写客户端、不自启。
+			HashSet<string>? scope = DisplayScopeCardKeys();
+			if (scope != null)
+			{
+				LogHelper.Log("[实例多开] 显示组作用域生效：只挂「" + (cfg.DisplayGroupName ?? "")
+					+ "」组内的机器人（" + scope.Count + " 个角色键）");
+			}
 			// 将要自动运行的机器人：总开关关 = 空；开 = 勾了自启动且启用的机器人卡。
 			List<Endpoint> autoBots = new List<Endpoint>();
 			foreach (Endpoint e in all)
 			{
 				if (!e.Enabled || !IsBotGroup(e) || e.ListenPort <= 0)
+				{
+					continue;
+				}
+				if (scope != null && !scope.Contains(e.Key))
 				{
 					continue;
 				}
@@ -2205,7 +2837,7 @@ public static class NexusEndpointService
 	/// </summary>
 	private static void PruneBotAccountsByPorts(List<Endpoint> endpoints, HashSet<int> allowedPorts)
 	{
-		foreach (IGrouping<string, Endpoint> group in endpoints.GroupBy(e => ResolveClientDir(e.ServerHint)))
+		foreach (IGrouping<string, Endpoint> group in endpoints.GroupBy(e => ClientDirOf(e)))
 		{
 			string dir = group.Key;
 			if (string.IsNullOrWhiteSpace(dir))

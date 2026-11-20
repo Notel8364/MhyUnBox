@@ -69,10 +69,10 @@ public static class ModInjectService
 			new ModInjectRule
 			{
 				Keywords = { "元素芝士", "元素之诗", "失落世界" },
-				SourceFileName = "MhyCPTD-1.2.2.jar",
-				TargetFileName = "MhyCPTD-1.2.2.jar",
+				SourceFileName = "MhyCPTD-1.2.3.jar",
+				TargetFileName = "MhyCPTD-1.2.3.jar",
 				ModId = "mhcp",
-				ModVersion = "1.2.2",
+				ModVersion = "1.2.3",
 				Family = "mhycptd",
 				Kind = "cptd"
 			}

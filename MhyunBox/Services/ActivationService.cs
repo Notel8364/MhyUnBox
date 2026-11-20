@@ -20,16 +20,5 @@ public static class ActivationService
 		return (Ok: true, Days: 0, Message: "开源版本无需激活，所有功能已开放");
 	}
 
-	public static void Deactivate()
-	{
-		try
-		{
-			SecureStore.Delete("activation");
-		}
-		catch
-		{
-		}
-	}
-
 	public static event Action? StateChanged;
 }

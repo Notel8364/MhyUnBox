@@ -95,6 +95,9 @@ public static class NeteaseServerListService
 
 		[JsonPropertyName("brief_summary")]
 		public string BriefSummary { get; set; } = "";
+
+		/// <summary>服务器封面图 URL（列表接口不带图；由 /item-details/get_v2 的 brief_image_urls[0] 懒加载补齐并随缓存持久化）。</summary>
+		public string CoverUrl { get; set; } = "";
 	}
 
 	public sealed class ServerAddressInfo
@@ -140,6 +143,11 @@ public static class NeteaseServerListService
 			var (status, text) = await PostAsync(ListPath, body, userId, userToken, ct);
 			(int code, string? msg) = ParseCode(text);
 			LogHelper.Log($"[服务器列表] POST {ListPath} master_type={masterType} offset={offset} length={length} => HTTP {status} code={code} {msg}");
+			if (code == 22)
+			{
+				// 会话被顶（账号在别处登录）：直接抛出让页面层走自动重登，换 game_type 无意义
+				throw new NeteaseRoleService.NeteaseSessionKickedException(string.IsNullOrWhiteSpace(msg) ? "您的帐号在另一处登录" : msg);
+			}
 			if (code != 0)
 			{
 				continue;
@@ -255,6 +263,78 @@ public static class NeteaseServerListService
 			LogHelper.DebugError(ex, "[服务器列表] 地址解析异常");
 			info.Message = "地址解析异常：" + ex.Message;
 			return info;
+		}
+	}
+
+	// ---------- 封面 ----------
+
+	// 实测（2026-11-19 抓包+实调）：/item/query/available 响应不含任何图片字段，
+	// 封面在 /item-details/get_v2 的 entity.brief_image_urls[0]。懒加载 + 内存缓存。
+	private static readonly Dictionary<string, string> CoverCache = new Dictionary<string, string>(StringComparer.Ordinal);
+
+	public static async Task<string> GetCoverUrlAsync(string userId, string userToken, string gameId, CancellationToken ct = default(CancellationToken))
+	{
+		if (string.IsNullOrWhiteSpace(gameId))
+		{
+			return "";
+		}
+		lock (CoverCache)
+		{
+			if (CoverCache.TryGetValue(gameId, out string? hit))
+			{
+				return hit;
+			}
+		}
+		try
+		{
+			string body = "{\"item_id\":\"" + gameId + "\"}";
+			var (status, text) = await PostAsync(DetailPath, body, userId, userToken, ct);
+			(int code, string? msg) = ParseCode(text);
+			string url = "";
+			if (code == 0)
+			{
+				JsonElement? entity = TryGetEntity(text);
+				if (entity.HasValue && entity.Value.ValueKind == JsonValueKind.Object && entity.Value.TryGetProperty("brief_image_urls", out JsonElement arr) && arr.ValueKind == JsonValueKind.Array)
+				{
+					foreach (JsonElement el in arr.EnumerateArray())
+					{
+						string? u = el.GetString();
+						if (!string.IsNullOrWhiteSpace(u))
+						{
+							url = u;
+							break;
+						}
+					}
+				}
+			}
+			else
+			{
+				LogHelper.Log($"[服务器列表] 封面获取失败 item_id={gameId} HTTP {status} code={code} {msg}");
+				if (code == 22)
+				{
+					// 会话被顶：抛出让卡片懒加载层触发一次自动重登
+					throw new NeteaseRoleService.NeteaseSessionKickedException(string.IsNullOrWhiteSpace(msg) ? "您的帐号在另一处登录" : msg);
+				}
+			}
+			lock (CoverCache)
+			{
+				// 只缓存非空结果；空结果（接口暂无图/网络抖动）下次卡片重建时重试
+				if (!string.IsNullOrWhiteSpace(url))
+				{
+					CoverCache[gameId] = url;
+				}
+			}
+			return url;
+		}
+		catch (NeteaseRoleService.NeteaseSessionKickedException)
+		{
+			// 会话被顶：上抛给卡片懒加载层触发自动重登，不要吞掉
+			throw;
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[服务器列表] 封面获取异常 item_id=" + gameId + " => " + ex.Message);
+			return "";
 		}
 	}
 

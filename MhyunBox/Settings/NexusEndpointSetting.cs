@@ -19,4 +19,10 @@ public sealed class NexusEndpointSetting
 
 	/// <summary>该角色是否参与「程序启动时自动启动机器人代理」；总开关是 AppSettings.AutoStartBotOnStartup。</summary>
 	public bool AutoStart { get; set; }
+
+	/// <summary>
+	/// 机器人账号写进哪个客户端目录（空 = 按目标服务器自动解析）。
+	/// 单客户端 10 个会话到顶，超出的卡片会自动过渡到第二个同服客户端，结果记在这里。
+	/// </summary>
+	public string ClientDir { get; set; } = "";
 }

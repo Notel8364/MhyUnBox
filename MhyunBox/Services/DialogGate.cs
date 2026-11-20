@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,6 +24,31 @@ public static class DialogGate
 
 	public static bool IsDialogVisible => _dialogVisible;
 
+	/// <summary>弹窗跟随主窗口主题（避免深色程序界面弹出白底对话框）。</summary>
+	public static void ApplyTheme(ContentDialog dialog)
+	{
+		try
+		{
+			if (dialog == null)
+			{
+				return;
+			}
+			ElementTheme theme = MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default;
+			dialog.RequestedTheme = theme;
+			if (theme == ElementTheme.Dark)
+			{
+				Brush surface = MhyunBox.Services.ThemeHelper.CardBackground();
+				if (surface != null)
+				{
+					dialog.Background = surface;
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[弹窗] 应用主题失败");
+		}
+	}
 	public static async Task<ContentDialogResult> ShowAsync(ContentDialog dialog)
 	{
 		if (!await _gate.WaitAsync(TimeSpan.FromSeconds(5.0)))
@@ -36,6 +61,7 @@ public static class DialogGate
 			_dialogVisible = true;
 			try
 			{
+				ApplyTheme(dialog);
 				return await dialog.ShowAsync();
 			}
 			// HResult 是 int（0x8000FFFF 这类在 int 里是负数），直接和 uint 常量比较永远不成立，
@@ -65,35 +91,6 @@ public static class DialogGate
 			{
 			}
 		}
-	}
-
-	public static FrameworkElement CreateDragLabel(string title, string? hint = null)
-	{
-		StackPanel stackPanel = new StackPanel
-		{
-			Spacing = 6.0,
-			Margin = new Thickness(0.0, 0.0, 0.0, 8.0)
-		};
-		TextBlock item = new TextBlock
-		{
-			Text = title,
-			FontSize = 15.0,
-			FontWeight = FontWeights.SemiBold,
-			TextWrapping = TextWrapping.Wrap
-		};
-		stackPanel.Children.Add(item);
-		stackPanel.Children.Add(CreateDragBar("按住此条拖动窗口"));
-		if (!string.IsNullOrWhiteSpace(hint))
-		{
-			stackPanel.Children.Add(new TextBlock
-			{
-				Text = hint,
-				FontSize = 12.0,
-				Opacity = 0.7,
-				TextWrapping = TextWrapping.Wrap
-			});
-		}
-		return stackPanel;
 	}
 
 	public static FrameworkElement CreateDragBar(string hint = "按住此处拖动窗口")

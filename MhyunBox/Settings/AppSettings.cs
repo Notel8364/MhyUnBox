@@ -129,13 +129,81 @@ public class AppSettings
 	/// </summary>
 	public List<string> NexusHiddenCards { get; set; } = new List<string>();
 
+	/// <summary>
+	/// 用户明确删除过的机器人卡片（卡片键 = 账号@服务器:端口[#角色名]）与账号键。
+	///
+	/// 这是「墓碑」：删除后任何自动回写都要跳过它，否则游戏一启动
+	/// （GameSessionWatcher → RecreateBotCardsForClient / 启动补齐 / 端口自愈）
+	/// 就会把刚删掉的机器人账号重新写回 mythosnexus.json，
+	/// 表现就是「删掉了的卡片和角色会话反复出现」。
+	/// 只有用户在这张卡上再点一次「启动」才会清掉对应墓碑。
+	/// </summary>
+	public List<string> NexusBotTombstones { get; set; } = new List<string>();
+
+	/// <summary>已提示过「单客户端 10 会话上限」的客户端目录 → 已提示次数（最多 3 次）。</summary>
+	public Dictionary<string, int> SessionLimitWarnCount { get; set; } = new Dictionary<string, int>();
+
 	public string ConfigUrl { get; set; } = "";
 
 	public double FontSize { get; set; } = 14.0;
 
 	public bool FontBold { get; set; }
 
-	public string PclPath { get; set; } = "";
+	/// <summary>按服务器预设分别保存的客户端目录（key=预设名）。</summary>
+	public Dictionary<string, string> OfficialClientRootByPreset { get; set; } = new Dictionary<string, string>();
+
+	/// <summary>官方客户端 .minecraft 根目录（脱盒启动用；留空自动查找 C:\MCLDownload\Game\.minecraft）。</summary>
+	public string OfficialClientRoot { get; set; } = "";
+
+	/// <summary>启动时是否自动用脱盒方式拉起官方客户端并连接已启动的代理。</summary>
+	public bool AutoStartOfficialClient { get; set; }
+
+	/// <summary>简易模式：隐藏左侧导航的 首页/服务器列表/日志/会话多开/网速测试/商城/更新客户端，同时关闭调试模式。</summary>
+	public bool SimpleMode { get; set; }
+
+	/// <summary>简易模式下勾选要隐藏的导航页（key=页面 Tag）。默认隐藏 7 个进阶页；
+	/// "SettingsPage" 为特殊项：勾选后简易模式会临时隐藏设置入口，5 秒后自动复原（防止把自己锁在外面）。</summary>
+	public List<string> SimpleHiddenPages { get; set; } = new List<string>
+	{
+		"HomePage", "ServerListPage", "SessionLogPage", "InstancesPage", "SpeedTestPage", "ShopPage", "ClientUpdatePage"
+	};
+
+	/// <summary>脱盒启动使用的服务器预设名（空=自动按布吉岛/首个代理匹配）。</summary>
+	public string OfficialClientPreset { get; set; } = "";
+
+	/// <summary>
+	/// 兼容网易发烧启动器（2026-11-20 新增，仅在账号绑定页显示）。
+	/// 开 = MhyunBox 主动让出会话优先级：切断所有会自动建立新会话的自动链路
+	/// （账密定时保活 / 自动兜底重登 / code=22 自动恢复 / 自动角色刷新 / 认证启动重建会话），
+	/// 只复用已保存的会话（uni_sauth 校验通过即用），避免顶掉官方启动器的同账号会话；
+	/// 手动登录入口不受影响。关（默认）= 脱盒自主模式：自动链路全开，
+	/// 会话被顶（code=22）时立即自动重登抢回，优先级高于网易我的世界启动器。
+	/// </summary>
+	public bool CompatNeteaseLauncher { get; set; }
+
+	/// <summary>脱盒启动使用的 JRE 目录（空=自动查找）。</summary>
+	public string OfficialClientJavaHome { get; set; } = "";
+
+	/// <summary>客户端配置与启动下拉选中的 JRE 目录（2026-11-20 新增；空=自动。优先级：启动卡 JavaHome > 自选路径 OfficialClientJavaHome > 此下拉 > 自动）。</summary>
+	public string OfficialClientJreSelected { get; set; } = "";
+
+	/// <summary>PCL 客户端内存分配（MB；0 = 自动默认 2000M）。2026-11-20 新增「内存优化」选项。</summary>
+	public int OfficialClientMemoryMb { get; set; }
+
+	/// <summary>快速启动页「角色组 / 客户端卡」栏目布局（2026-11-20 新增）：Groups=只显示角色组，Cards=只显示客户端卡，Both=并排显示。</summary>
+	public string QuickCardsLayout { get; set; } = "Both";
+
+	/// <summary>直连房间地址（host:port）；留空则使用代理端口自动进服。</summary>
+	public string OfficialClientRoomOverride { get; set; } = "";
+
+	/// <summary>按服务器预设保存的客户端直连地址（host:port）；留空表示不自动进服，界面也不显示代理信息。</summary>
+	public Dictionary<string, string> OfficialClientDirectByPreset { get; set; } = new Dictionary<string, string>();
+
+	/// <summary>额外启动卡（每张卡 = 一份独立的客户端启动配置，允许同时多开）。</summary>
+	public List<ClientLaunchCard> ClientLaunchCards { get; set; } = new List<ClientLaunchCard>();
+
+	/// <summary>官方客户端脱盒启动时优先使用的角色名（留空用账号昵称）。</summary>
+	public string OfficialClientRole { get; set; } = "";	public string PclPath { get; set; } = "";
 
 	public bool PclAutoLaunchGame { get; set; }
 
@@ -161,11 +229,13 @@ public class AppSettings
 	public string LastResPkgUrl { get; set; } = "";
 
 	// —— 更新/合并裁剪后的自动清理 ——
-	// 主开关（默认关闭）：开启后，安装成功的资源包、合并成功的增量 zip 会被移入回收站（可还原，不做不可逆物理删除）
-	public bool AutoCleanupEnabled { get; set; }
+	// 2026-11-20：改为常开（设置页不再提供开关；Load 迁移会把旧值 false 修正为 true）
+	// 开启后，安装成功的资源包、合并成功的增量 zip 会被移入回收站（可还原，不做不可逆物理删除）
+	public bool AutoCleanupEnabled { get; set; } = true;
 
 	// DragonCore 冗余备份目录（DragonCore_冗余备份_*）保留天数，超期移入回收站；0 = 永不清理
-	public int RedundantBackupKeepDays { get; set; } = 7;
+	// 2026-11-20：默认值 7 → 3（Load 迁移会把旧默认 7 修正为 3）
+	public int RedundantBackupKeepDays { get; set; } = 3;
 
 	public bool AllowLanListen { get; set; }
 

@@ -69,22 +69,6 @@ public static class GameSessionWatcher
 		LogHelper.Log("[游戏监听] 已启动：按客户端 logs/latest.log 判断游戏是否运行 / 是否已进服");
 	}
 
-	/// <summary>当前是否有游戏实例在运行（任一客户端）。</summary>
-	public static bool AnyGameRunning()
-	{
-		lock (Sync)
-		{
-			foreach (ClientState s in States.Values)
-			{
-				if (s.Running)
-				{
-					return true;
-				}
-			}
-		}
-		return false;
-	}
-
 	private static async Task LoopAsync()
 	{
 		// 启动后先等一会儿，避免和主窗口初始化抢 IO
@@ -144,6 +128,16 @@ public static class GameSessionWatcher
 			{
 				States.Remove(key);
 			}
+		}
+		// 用户在游戏里的模组界面删掉机器人账号 → 同步删掉脱盒这边对应的卡片并打墓碑，
+		// 否则下一次「游戏启动」补写又会把它写回来（删了又出现）。
+		try
+		{
+			NexusEndpointService.DetectUserDeletedBots();
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[游戏监听] 检查已删机器人失败：" + ex.Message);
 		}
 	}
 

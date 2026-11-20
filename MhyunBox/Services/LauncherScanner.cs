@@ -461,11 +461,6 @@ public static class LauncherScanner
 		log?.Invoke($"[扫盘] 目录扫描完成：{result.Launchers.Count} 处官方启动器");
 	}
 
-	private static string Expand(string tpl)
-	{
-		return tpl.Replace("{d}", "C:");
-	}
-
 	private static int CompareVersionLocal(string a, string b)
 	{
 		try

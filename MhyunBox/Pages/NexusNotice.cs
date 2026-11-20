@@ -33,18 +33,6 @@ internal static class NexusNotice
 		+ "开启第 11 个时会出现游戏爆内存和崩溃的情形。使用此功能后默认自主承担以上风险。\n"
 		+ "· 如有任何疑惑、问题或建议，可加群 " + GroupNumber + " 提问群主，或添加 QQ " + OwnerQq + "。";
 
-	/// <summary>元素之诗机器人代理超限提醒（纯文本版）。</summary>
-	public static string ElementPoetryText(int willBeCount)
-	{
-		return "这是第 " + willBeCount + " 个元素之诗机器人代理。\n\n"
-			+ "元素之诗服务侧目前已知对同一个出口 IP、同一台客户端上的并发账号比较敏感，"
-			+ "上限为五个账号。超过后踢包返回信息是：「启动的账号已达上限！」，"
-			+ "此时全部已连账号都会一起被踢下线。\n\n"
-			+ "元素之诗服务器目前已知的敏感地带：恶性多开账号打金、多开号进服占用服务器资源、"
-			+ "多账号角色重连卡在等待大厅并多次重复重连 —— 均会遭到指定惩处以及封号。\n\n"
-			+ "本程序不会拦你，请自主控制节奏。使用此功能后默认自主承担以上风险。";
-	}
-
 	/// <summary>构造首次打开说明的弹窗内容（含两个复制按钮）。</summary>
 	public static UIElement BuildAgreementContent()
 	{
@@ -113,6 +101,46 @@ internal static class NexusNotice
 			TextWrapping = TextWrapping.Wrap,
 			FontSize = 13,
 			Opacity = 0.8
+		});
+		return panel;
+	}
+
+	/// <summary>单客户端会话达到 10 个时的提醒（不拦截，只说明风险与自动过渡结果）。</summary>
+	public static UIElement BuildSessionLimitContent(string clientName, int count, bool overflowed)
+	{
+		var panel = new StackPanel { Spacing = 9 };
+		panel.Children.Add(new TextBlock
+		{
+			Text = "「" + clientName + "」当前已有 " + count + " 个机器人会话。",
+			TextWrapping = TextWrapping.Wrap,
+			FontSize = 13,
+			FontWeight = FontWeights.SemiBold
+		});
+		panel.Children.Add(new TextBlock
+		{
+			Text = "单个客户端开满 10 个会话已经是实测极限：每个会话约 200MB，"
+				+ "第 11 个开始会让游戏渲染池的直存一次性吃满，表现就是爆内存后直接崩溃、"
+				+ "画面变蓝屏、之后连机器人都挂不上。",
+			TextWrapping = TextWrapping.Wrap,
+			FontSize = 13
+		});
+		panel.Children.Add(new TextBlock
+		{
+			Text = overflowed
+				? "本程序不会锁你的操作：超出的会话已经自动过渡到第二个同服客户端，"
+					+ "请到那台客户端里继续增加会话数。两台客户端都要保持运行，机器人才能全部在线。"
+				: "本程序不会锁你的操作，但当前没有第二个同服客户端可以承接超出的会话。"
+					+ "继续增加只会让这一台客户端爆内存；建议在 PCL 里再复制一份同名挂号版实例，"
+					+ "程序会自动把超出 10 个的会话过渡过去，会话数可以继续往上加。",
+			TextWrapping = TextWrapping.Wrap,
+			FontSize = 13
+		});
+		panel.Children.Add(new TextBlock
+		{
+			Text = "本提醒每个客户端最多出现 3 次。使用此功能后默认自主承担以上风险。",
+			TextWrapping = TextWrapping.Wrap,
+			FontSize = 12.5,
+			Opacity = 0.75
 		});
 		return panel;
 	}

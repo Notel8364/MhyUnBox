@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -915,7 +915,8 @@ public sealed partial class ToolsPage : Page
 			Content = "将执行下一代威胁扫描（仅检测，不修改系统）：\n1. LOLBins 滥用（powershell/mshta/rundll32/certutil 等被木马拿来用的合法程序）\n2. 进程伪装与异常亲缘（svchost 不在 System32、Office 拉起 powershell 等）\n3. WMI 持久化订阅、计划任务隐藏载荷、可疑启动项\n4. BYOVD 恶意驱动（带漏洞的第三方驱动被用来打穿内核防护）\n5. 系统 DLL 签名/注入、启动配置（bcdedit）与 hosts/DNS 劫持\n\n需要管理员权限（将弹出 UAC 授权）。是否继续？",
 			PrimaryButtonText = "开始扫描",
 			CloseButtonText = "取消",
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			await RunEvoScanFlowAsync();
@@ -983,7 +984,8 @@ public sealed partial class ToolsPage : Page
 			Content = "将注册开机自启的「命令守卫」计划任务（隐藏后台运行）：\n1. 实时监控全系统的进程创建与命令行\n2. 发现危险指令（加密/编码的 powershell、mshta 远程脚本、杀软对抗、删除卷影副本、高危 LOLBins 等）立即击杀进程树、隔离样本、防火墙阻断出网\n3. 同时弹出置顶警示对话框，需要你确认\n\n需要管理员权限（UAC）。监控日志会写入本机日志目录，可在「布防日志」查看告警。",
 			PrimaryButtonText = "开启监控",
 			CloseButtonText = "取消",
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			await RunCommandGuardAsync("install");
@@ -998,7 +1000,8 @@ public sealed partial class ToolsPage : Page
 			Content = "将注销「命令守卫」计划任务并停止已在运行的监控进程。\n\n确定关闭吗？",
 			PrimaryButtonText = "关闭监控",
 			CloseButtonText = "取消",
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			await RunCommandGuardAsync("uninstall");
@@ -1679,7 +1682,8 @@ public sealed partial class ToolsPage : Page
 			Content = "即将执行银狐木马综合威胁清理（需要管理员权限，将弹出 UAC 授权）：\n\n1. 清空被恶意启用的 WDAC 策略，解除杀毒软件禁用\n2. 删除旧版银狐驱动与 wow64log.dll\n3. 禁用根目录计划任务\n4. 劫持并终止隐藏进程\n5. 禁用可疑服务\n\n本工具会修改系统，请确认你的电脑感染了银狐木马。",
 			PrimaryButtonText = "继续清理",
 			CloseButtonText = "取消",
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			await RunSilverFoxAsync("kill");
@@ -1777,7 +1781,8 @@ public sealed partial class ToolsPage : Page
 			Content = "将执行主力杀毒扫描：\n1. Defender 病毒库更新 + 快速扫描（MpCmdRun）\n2. 自研特征扫描（随机名/乱码名进程、高占用与外联、可疑启动项与计划任务、载荷目录、特征库样本比对）\n\n发现威胁时会自动调用「威胁清理」脚本清理，清理环节需要管理员权限（将弹出 UAC 授权框）。是否继续？",
 			PrimaryButtonText = "开始扫描",
 			CloseButtonText = "取消",
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			await RunAntivirusScanFlowAsync();
@@ -2069,7 +2074,8 @@ public sealed partial class ToolsPage : Page
 			PrimaryButtonText = "立即断网",
 			CloseButtonText = "取消",
 			DefaultButton = ContentDialogButton.Close,
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			string line = DefenseService.Instance.DisconnectNetwork();
@@ -2087,7 +2093,8 @@ public sealed partial class ToolsPage : Page
 			PrimaryButtonText = "恢复网络",
 			CloseButtonText = "取消",
 			DefaultButton = ContentDialogButton.Close,
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			string line = DefenseService.Instance.ReconnectNetwork();
@@ -2110,7 +2117,8 @@ public sealed partial class ToolsPage : Page
 			PrimaryButtonText = "开启",
 			CloseButtonText = "取消",
 			DefaultButton = ContentDialogButton.Close,
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			await RunMiningIsolationAsync("on");
@@ -2126,7 +2134,8 @@ public sealed partial class ToolsPage : Page
 			PrimaryButtonText = "关闭",
 			CloseButtonText = "取消",
 			DefaultButton = ContentDialogButton.Close,
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			await RunMiningIsolationAsync("off");
@@ -2285,7 +2294,8 @@ public sealed partial class ToolsPage : Page
 			PrimaryButtonText = "运行威胁清理",
 			CloseButtonText = "暂不处理",
 			DefaultButton = ContentDialogButton.Primary,
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() != ContentDialogResult.Primary)
 		{
 			AppendDefenseLog("用户选择暂不处理，可稍后在「恶意木马与威胁清理」手动运行。");
@@ -2298,7 +2308,8 @@ public sealed partial class ToolsPage : Page
 			PrimaryButtonText = "我已了解，继续清理",
 			CloseButtonText = "取消",
 			DefaultButton = ContentDialogButton.Close,
-			XamlRoot = base.XamlRoot
+			XamlRoot = base.XamlRoot,
+			RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 		}.ShowAsync() == ContentDialogResult.Primary)
 		{
 			AppendDefenseLog("用户已二次确认，开始运行威胁清理...");

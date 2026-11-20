@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -16,7 +16,7 @@ public static class CliArgs
 	private static readonly HashSet<string> ValueArgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
 		"--source", "--music", "--music-folder", "--video-folder", "--bg", "--bg-opacity", "--swing", "--mode", "--theme", "--volume",
-		"--listen", "--capture", "--minimize-to-tray", "--show-tray-icon", "--close-keeps-running", "--auth-account", "--login-name", "--config-url"
+		"--listen", "--capture", "--minimize-to-tray", "--show-tray-icon", "--close-keeps-running", "--auth-account", "--login-name", "--config-url", "--launch-official", "--official-root", "--fake-launcher", "--uid", "--game-type"
 	};
 
 	public static string? CapturePresetName { get; private set; }
@@ -24,6 +24,21 @@ public static class CliArgs
 	public static int AuthAccountIndex { get; private set; } = -1;
 
 	public static string? LoginNameOverride { get; private set; }
+
+	/// <summary>--launch-official：启动后自动用脱盒方式拉起官方客户端并连接该代理端口。</summary>
+	public static int LaunchOfficialPort { get; private set; }
+
+	/// <summary>--fake-launcher：启动该端口对应的假启动器（GameType=2 脱盒实验）。</summary>
+	public static int FakeLauncherProxyPort { get; private set; }
+
+	/// <summary>--uid：脱盒启动时传给客户端的网易 uid（userProperties.uid / -DuserId）。</summary>
+	public static long Uid { get; private set; }
+
+	/// <summary>--game-type：userPropertiesEx.GameType（默认 1=免启动器，2=官方认证路径）。</summary>
+	public static int GameType { get; private set; } = 1;
+
+	/// <summary>--official-root：官方客户端 .minecraft 根目录。</summary>
+	public static string? OfficialClientRootOverride { get; private set; }
 
 	public static bool Process(string[] args)
 	{
@@ -109,7 +124,43 @@ public static class CliArgs
 					LogHelper.Log($"[CLI] --auth-account 解析: {result}");
 				}
 			}
-			else if (string.Equals(item.Key, "--login-name", StringComparison.OrdinalIgnoreCase))
+			else if (string.Equals(item.Key, "--launch-official", StringComparison.OrdinalIgnoreCase))
+			{
+				if (int.TryParse(item.Value, out var port) && port > 0 && port <= 65535)
+				{
+					LaunchOfficialPort = port;
+					LogHelper.Log("[CLI] --launch-official 解析: " + port);
+				}
+			}
+			else if (string.Equals(item.Key, "--fake-launcher", StringComparison.OrdinalIgnoreCase))
+			{
+				if (int.TryParse(item.Value, out var flPort) && flPort > 0 && flPort <= 65535)
+				{
+					FakeLauncherProxyPort = flPort;
+					LogHelper.Log("[CLI] --fake-launcher 解析: " + flPort);
+				}
+			}
+			else if (string.Equals(item.Key, "--uid", StringComparison.OrdinalIgnoreCase))
+			{
+				if (long.TryParse(item.Value, out var uidVal) && uidVal >= 0)
+				{
+					Uid = uidVal;
+					LogHelper.Log("[CLI] --uid 解析: " + uidVal);
+				}
+			}
+			else if (string.Equals(item.Key, "--game-type", StringComparison.OrdinalIgnoreCase))
+			{
+				if (int.TryParse(item.Value, out var gt))
+				{
+					GameType = gt;
+					LogHelper.Log("[CLI] --game-type 解析: " + gt);
+				}
+			}			else if (string.Equals(item.Key, "--official-root", StringComparison.OrdinalIgnoreCase))
+			{
+				OfficialClientRootOverride = (string.IsNullOrWhiteSpace(item.Value) ? null : item.Value.Trim());
+				appSettings.OfficialClientRoot = OfficialClientRootOverride ?? "";
+				LogHelper.Log("[CLI] --official-root 解析: " + (OfficialClientRootOverride ?? "(空)"));
+			}			else if (string.Equals(item.Key, "--login-name", StringComparison.OrdinalIgnoreCase))
 			{
 				LoginNameOverride = (string.IsNullOrWhiteSpace(item.Value) ? null : item.Value.Trim());
 				LogHelper.Log("[CLI] --login-name 解析: " + (LoginNameOverride ?? "(空)"));

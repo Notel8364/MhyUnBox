@@ -513,26 +513,9 @@ public static class AccountStore
 		}
 	}
 
-	public static void LogoutAll()
-	{
-		List<LocalAccount> list = _list ?? (_list = LoadList());
-		bool flag = false;
-		foreach (LocalAccount item in list)
-		{
-			if (item.LoggedIn != false)
-			{
-				item.LoggedIn = false;
-				flag = true;
-			}
-		}
-		if (flag)
-		{
-			SaveList(list);
-			Changed?.Invoke();
-		}
-	}
-
-	public static void UpdateRoles<T>(string channel, string account, IReadOnlyDictionary<string, T> serverRoles) where T : IReadOnlyList<string>
+	/// <param name="replace">false=合并（登录后全量抓取用，保留旧值）；true=用传入列表精确替换该服务器的角色集
+	/// （角色管理弹窗创建/删除后回写用：删除的角色要真正从树里消失；空列表则移除该服务器键）。</param>
+	public static void UpdateRoles<T>(string channel, string account, IReadOnlyDictionary<string, T> serverRoles, bool replace = false) where T : IReadOnlyList<string>
 	{
 		List<LocalAccount> list = _list ?? (_list = LoadList());
 		LocalAccount localAccount = list.FirstOrDefault((LocalAccount a) => string.Equals(a.Channel, channel, StringComparison.Ordinal) && string.Equals(a.Account, account, StringComparison.OrdinalIgnoreCase));
@@ -555,11 +538,12 @@ public static class AccountStore
 			if (text.Length != 0)
 			{
 				List<string> list2 = new List<string>();
-				if (localAccount.ServerRoles != null && localAccount.ServerRoles.TryGetValue(text, out var value) && value != null)
+				if (!replace && localAccount.ServerRoles != null && localAccount.ServerRoles.TryGetValue(text, out var value) && value != null)
 				{
 					list2.AddRange(value);
 				}
 				list2.AddRange(serverRole.Value.Where((string r) => !string.IsNullOrWhiteSpace(r)));
+				// replace 模式下空列表：该键保留为空集（旧值不并入，等效于树里清空该服务器角色）
 				dictionary[text] = list2.Distinct().Take(20).ToList();
 			}
 		}

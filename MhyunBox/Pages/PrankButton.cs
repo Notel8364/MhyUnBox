@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using Microsoft.UI;
@@ -8,6 +8,8 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
+
+using MhyunBox.Services;
 
 namespace MhyunBox.Pages;
 
@@ -202,7 +204,11 @@ public sealed class PrankButton : UserControl
 			return;
 		}
 
-		const double danger = 114.0;   // 鼠标进入这个半径就开始跑（按需求取 114 px）
+		// 2026-11-20 修复「按钮躲鼠标只在特定区域里生效」：
+		// 以前 danger 只有 114px，鼠标不贴近到它身边它毫无反应，看起来就像只在那一小块区域活着。
+		// 现在感应半径扩大到 300px（覆盖整个卡片区域），鼠标离得越近推力越急（平方衰减），
+		// 且监听挂在窗口根容器上，整个界面范围内都能感知鼠标逼近。
+		const double danger = 300.0;   // 鼠标进入这个半径就开始跑
 		double dist = Math.Sqrt(_mouseDx * _mouseDx + _mouseDy * _mouseDy);
 
 		if (_mouseInside && dist < danger && dist > 0.001)
@@ -359,7 +365,7 @@ public sealed class PrankButton : UserControl
 				DefaultButton = ContentDialogButton.Close,
 				XamlRoot = XamlRoot
 			};
-			ContentDialogResult r = await dlg.ShowAsync();
+			ContentDialogResult r = await DialogGate.ShowAsync(dlg);
 			return r == ContentDialogResult.Primary;
 		}
 		catch
@@ -457,8 +463,6 @@ public sealed class PrankButton : UserControl
 	/// <summary>当前是否已经投降（供宿主判断是否提示）。</summary>
 	public bool HasSurrendered => _gaveUp;
 
-	/// <summary>随机一句嘲讽提示。</summary>
-	public string NextHint() => Hints[_rnd.Next(Hints.Length)];
 
 	private static double Clamp(double v, double lo, double hi)
 	{

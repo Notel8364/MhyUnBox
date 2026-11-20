@@ -92,39 +92,6 @@ public static class OfficialTrafficCapture
 		return null;
 	}
 
-	/// <summary>列出 tshark 可见的抓包接口（含索引与描述），失败返回空串。</summary>
-	public static async Task<string> ListInterfacesAsync()
-	{
-		string? tshark = FindTshark();
-		if (tshark == null)
-		{
-			return "(未找到 tshark.exe)";
-		}
-		try
-		{
-			ProcessStartInfo psi = new ProcessStartInfo(tshark)
-			{
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				UseShellExecute = false,
-				CreateNoWindow = true
-			};
-			psi.ArgumentList.Add("-D");
-			using Process p = Process.Start(psi);
-			if (p == null)
-			{
-				return "(启动 tshark 失败)";
-			}
-			string outp = await p.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
-			p.WaitForExit(8000);
-			return outp.Trim();
-		}
-		catch (Exception ex)
-		{
-			return "列出接口失败: " + ex.Message;
-		}
-	}
-
 	/// <summary>当前正在跑的 tshark 进程（用于「主动停止」）。</summary>
 	private static Process? _currentProcess;
 

@@ -24,6 +24,15 @@ public static class SettingsManager
 				AppSettings appSettings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath));
 				if (appSettings != null)
 				{
+					// 2026-11-20 迁移：「更新后自动清理」改为常开（开关已从设置页移除）；旧默认保留天数 7 → 3
+					if (!appSettings.AutoCleanupEnabled)
+					{
+						appSettings.AutoCleanupEnabled = true;
+					}
+					if (appSettings.RedundantBackupKeepDays == 7)
+					{
+						appSettings.RedundantBackupKeepDays = 3;
+					}
 					return appSettings;
 				}
 				try

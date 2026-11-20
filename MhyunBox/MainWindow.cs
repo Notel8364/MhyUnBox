@@ -122,7 +122,6 @@ public sealed partial class MainWindow : Window
 	private Button? _instancesBackButton;
 
 	// 页面切换动画：ContentCard 整体位移/缩放/透明度过渡（进入实例多开从右飞入，返回时反向）
-	private CompositeTransform? _contentTransition;
 
 
 	private AppWindow? _appWindow;
@@ -485,13 +484,9 @@ public sealed partial class MainWindow : Window
 		}
 		base.ExtendsContentIntoTitleBar = true;
 		SetTitleBar(AppTitleBar);
-		// 页面切换动画用的变换（XAML 里是 TranslateTransform，这里替换成 CompositeTransform 以支持缩放）
 		try
 		{
-			_contentTransition = new CompositeTransform();
-			ContentCard.RenderTransform = _contentTransition;
-			ContentCard.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
-			// 标题栏在 ContentCard 之上，沉浸模式下「回到程序界面」按钮才不会被内容盖住
+			// 标题栏在 ContentCard 之上，避免被内容盖住
 			Canvas.SetZIndex(AppTitleBar, 100);
 		}
 		catch (Exception ex)
@@ -668,14 +663,21 @@ public sealed partial class MainWindow : Window
 		if (flag)
 		{
 			// black（黑底深色）按深色主题渲染（白字/深色控件），差异只在背景不透明度
-			ElementTheme elementTheme = (RootGrid.RequestedTheme = ((text == "dark" || text == "black") ? ElementTheme.Dark : ((text == "light") ? ElementTheme.Light : ElementTheme.Default)));
+			ElementTheme elementTheme = (text == "light") ? ElementTheme.Light : ElementTheme.Dark;
+			try
+			{
+				RootGrid.RequestedTheme = elementTheme;
+				ContentCard.RequestedTheme = elementTheme;
+			}
+			catch
+			{
+			}
 			ElementTheme elementTheme3 = elementTheme;
 			ElementTheme elementTheme4 = elementTheme3;
 			try
 			{
 				if (elementTheme4 != ElementTheme.Default)
 				{
-					Application.Current.RequestedTheme = ((elementTheme4 == ElementTheme.Dark) ? ApplicationTheme.Dark : ApplicationTheme.Light);
 				}
 			}
 			catch
@@ -1275,7 +1277,8 @@ public sealed partial class MainWindow : Window
 		if ((object)_appWindow != null)
 		{
 			AppWindowTitleBar titleBar = _appWindow.TitleBar;
-			if (RootGrid.ActualTheme == ElementTheme.Dark || RootGrid.RequestedTheme == ElementTheme.Dark)
+			bool darkBar = RootGrid.ActualTheme == ElementTheme.Dark;
+			if (darkBar)
 			{
 				titleBar.ButtonForegroundColor = Colors.White;
 				titleBar.ButtonBackgroundColor = Color.FromArgb(38, 0, 0, 0);
@@ -1341,99 +1344,10 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	private Task AnimateContentCardAsync(double translateX, double scale, double opacity, int durationMs, double? paneOpacity = null)
-	{
-		var completion = new TaskCompletionSource<bool>();
-		try
-		{
-			var storyboard = new Storyboard();
-			var duration = new Duration(TimeSpan.FromMilliseconds(durationMs));
-			if (_contentTransition != null)
-			{
-				AddTransitionAnimation(storyboard, _contentTransition, "TranslateX", translateX, duration);
-				AddTransitionAnimation(storyboard, _contentTransition, "ScaleX", scale, duration);
-				AddTransitionAnimation(storyboard, _contentTransition, "ScaleY", scale, duration);
-			}
-			AddTransitionAnimation(storyboard, ContentCard, "Opacity", opacity, duration);
-			if (paneOpacity.HasValue && PaneBackdrop != null)
-			{
-				AddTransitionAnimation(storyboard, PaneBackdrop, "Opacity", paneOpacity.Value, duration);
-			}
-			storyboard.Completed += (_, _) => completion.TrySetResult(true);
-			storyboard.Begin();
-		}
-		catch
-		{
-			completion.TrySetResult(true);
-		}
-		return completion.Task;
-	}
-
-	private static void AddTransitionAnimation(Storyboard storyboard, DependencyObject target, string property, double to, Duration duration)
-	{
-		var animation = new DoubleAnimation
-		{
-			To = to,
-			Duration = duration,
-			EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-			EnableDependentAnimation = true
-		};
-		Storyboard.SetTarget(animation, target);
-		Storyboard.SetTargetProperty(animation, property);
-		storyboard.Children.Add(animation);
-	}
-
-	/// <summary>进入实例多开沉浸模式：隐藏左侧主导航，页面右侧栏接管功能入口。</summary>
-	public void EnterInstancesMode()
-	{
-		base.DispatcherQueue.TryEnqueue(delegate
-		{
-			SetInstancesMode(true);
-		});
-	}
-
 	/// <summary>回到程序界面：恢复左侧主导航并切回首页（带反向过渡动画）。</summary>
 	public void ExitInstancesMode()
 	{
 		NavigateTo("HomePage");
-	}
-
-	private void SetInstancesMode(bool on)
-	{
-		try
-		{
-			_instancesMode = on;
-			NavView.IsPaneVisible = !on;
-			NavView.IsPaneToggleButtonVisible = !on;
-			ApplyPaneLayout(on);
-			if (_instancesBackButton != null)
-			{
-				_instancesBackButton.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-			}
-		}
-		catch (Exception ex)
-		{
-			LogHelper.LogError(ex, "[界面] 实例多开模式切换失败");
-		}
-	}
-
-	/// <summary>沉浸模式把左侧导航的背景面板与内容左边距一起收掉，恢复时还原。</summary>
-	private void ApplyPaneLayout(bool instances)
-	{
-		double pane = NavView.OpenPaneLength;
-		double left = instances ? 0.0 : Math.Max(0.0, pane - 3.0);
-		if (PaneBackdrop != null)
-		{
-			PaneBackdrop.Width = instances ? 0.0 : pane;
-		}
-		if (ContentCard != null)
-		{
-			ContentCard.Margin = new Thickness(left, -2.0, -1.0, -3.0);
-		}
-		if (ContentBackgroundClipper != null)
-		{
-			ContentBackgroundClipper.Margin = new Thickness(left, -2.0, -1.0, -3.0);
-		}
 	}
 
 	/// <summary>主题切换后刷新页面：清空页面缓存并按新主题重建当前页，使代码后置的界面立即跟随主题。</summary>
@@ -1484,9 +1398,10 @@ public sealed partial class MainWindow : Window
 		AddNavItem(Symbol.Shop, "ShopPage");
 		AddNavItem(Symbol.Download, "ClientUpdatePage");
 		AddNavItem(Symbol.World, "SpeedTestPage");
-		AddNavItem(Symbol.ContactInfo, "AboutPage");
 		AddNavItem(Symbol.Repair, "ToolsPage");
+		AddNavItem(Symbol.ContactInfo, "AboutPage");
 		AddNavItem(Symbol.Document, "SessionLogPage");
+		ApplySimpleModeToNav();
 		if (NavView.SettingsItem is NavigationViewItem navigationViewItem)
 		{
 			navigationViewItem.FontWeight = FontWeights.SemiBold;
@@ -1517,6 +1432,93 @@ public sealed partial class MainWindow : Window
 				MinHeight = 48.0,
 				FontWeight = FontWeights.SemiBold
 			});
+		}
+	}
+
+	/// <summary>简易模式隐藏页配置已变化（勾选项增删或设置入口自动复原），供设置页刷新勾选框。</summary>
+	public static event Action? SimpleModeHiddenChanged;
+
+	/// <summary>设置入口隐藏后的 5 秒自动复原定时器（简易模式不允许把「设置」永久藏起来）。</summary>
+	private Microsoft.UI.Dispatching.DispatcherQueueTimer? _simpleModeSettingsRestoreTimer;
+
+	/// <summary>设置入口被隐藏时启动 5 秒倒计时；到点后把「SettingsPage」从隐藏清单移除、恢复导航并通知设置页刷新勾选框。</summary>
+	private void ScheduleSimpleModeSettingsRestore(bool settingsHidden)
+	{
+		if (!settingsHidden)
+		{
+			_simpleModeSettingsRestoreTimer?.Stop();
+			return;
+		}
+		if (_simpleModeSettingsRestoreTimer == null)
+		{
+			_simpleModeSettingsRestoreTimer = DispatcherQueue.CreateTimer();
+			_simpleModeSettingsRestoreTimer.Interval = TimeSpan.FromSeconds(5);
+			_simpleModeSettingsRestoreTimer.IsRepeating = false;
+			_simpleModeSettingsRestoreTimer.Tick += delegate
+			{
+				try
+				{
+					AppSettings instance = SettingsManager.Instance;
+					if (instance.SimpleMode && instance.SimpleHiddenPages.Contains("SettingsPage"))
+					{
+						instance.SimpleHiddenPages.Remove("SettingsPage");
+						SettingsManager.Save(instance);
+						LogHelper.Log("[简易模式] 设置入口已按规则在 5 秒后自动复原");
+					}
+					ApplySimpleModeToNav();
+					SimpleModeHiddenChanged?.Invoke();
+					ShowToast("设置入口已自动恢复显示（简易模式不会隐藏「设置」）");
+				}
+				catch (Exception exRestore)
+				{
+					LogHelper.LogError(exRestore, "[简易模式] 设置入口自动复原失败");
+				}
+			};
+		}
+		_simpleModeSettingsRestoreTimer.Stop();
+		_simpleModeSettingsRestoreTimer.Start();
+	}
+
+	/// <summary>把简易模式状态应用到左侧导航（按设置里勾选的隐藏页隐藏对应项；当前选中项被隐藏时切到快速启动）。</summary>
+	public void ApplySimpleModeToNav()
+	{
+		try
+		{
+			bool simple = SettingsManager.Instance.SimpleMode;
+			List<string> hiddenPages = SettingsManager.Instance.SimpleHiddenPages ?? new List<string>();
+			NavigationViewItem? selectedItem = null;
+			foreach (object item in NavView.MenuItems)
+			{
+				if (item is NavigationViewItem nvi && nvi.Tag is string tag)
+				{
+					bool hidden = simple && hiddenPages.Contains(tag);
+					nvi.Visibility = hidden ? Visibility.Collapsed : Visibility.Visible;
+					if (ReferenceEquals(NavView.SelectedItem, nvi))
+					{
+						selectedItem = nvi;
+					}
+				}
+			}
+			// 「设置」入口（NavView 底部 SettingsItem）：勾选后简易模式临时隐藏，5 秒后自动复原
+			bool settingsHidden = false;
+			if (NavView.SettingsItem is NavigationViewItem settingsItem)
+			{
+				settingsHidden = simple && hiddenPages.Contains("SettingsPage");
+				settingsItem.Visibility = settingsHidden ? Visibility.Collapsed : Visibility.Visible;
+				if (settingsHidden && ReferenceEquals(NavView.SelectedItem, settingsItem))
+				{
+					NavigateTo("GroupsQuickPage");
+				}
+			}
+			if (selectedItem != null && selectedItem.Visibility == Visibility.Collapsed)
+			{
+				NavigateTo("GroupsQuickPage");
+			}
+			ScheduleSimpleModeSettingsRestore(settingsHidden);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[简易模式] 导航应用失败");
 		}
 	}
 
@@ -1682,7 +1684,15 @@ public sealed partial class MainWindow : Window
 		}
 		else if (e.Key == VirtualKey.Z && IsCtrlDown())
 		{
-			NavigateBack();
+			// 快速启动页 = 撤销上次删除；其他页 = 返回上一页（页面级加速键已移除，避免 WinUI 悬停显示「Ctrl+Z」提示）
+			if (ContentFrame.Content is Pages.GroupsQuickPage quick)
+			{
+				quick.RequestUndoLastDelete();
+			}
+			else
+			{
+				NavigateBack();
+			}
 			e.Handled = true;
 		}
 	}
@@ -2321,18 +2331,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	private void ToggleTrayWindow()
-	{
-		if (_trayHidden)
-		{
-			BringToFront("trayToggle");
-		}
-		else
-		{
-			HideToTray();
-		}
-	}
-
 	public void HideToTrayOnStartup()
 	{
 		HideToTray();
@@ -2790,20 +2788,6 @@ public sealed partial class MainWindow : Window
 		SyncBackgroundVideo();
 	}
 
-	/// <summary>音乐列表顺序变更后重建背景视频轮播顺序，保证设置页列表与实际轮播一致。</summary>
-	public void OnMusicOrderChanged()
-	{
-		try
-		{
-			_bgPlaylistKey = null;
-			SyncBackgroundVideo();
-		}
-		catch (Exception ex)
-		{
-			LogHelper.LogError(ex, "[背景视频] 音乐顺序变更后刷新失败");
-		}
-	}
-
 	public void UpdateMiniPlayer()
 	{
 		MiniPlayPauseButton.Content = (MusicService.IsPlaying ? "暂停" : "播放");
@@ -3109,7 +3093,7 @@ public sealed partial class MainWindow : Window
 				CloseButtonText = "忽略",
 				DefaultButton = ContentDialogButton.Primary,
 				RequestedTheme = AppElementTheme,
-				XamlRoot = RootGrid.XamlRoot
+				XamlRoot = RootGrid.XamlRoot,
 			}.ShowAsync() == ContentDialogResult.Primary)
 			{
 				await Task.Run(delegate

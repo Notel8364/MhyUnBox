@@ -477,32 +477,6 @@ public static class MusicService
 		KnownMusic.AddRange(ordered);
 	}
 
-	public static void ReorderKnownMusic(IReadOnlyList<string> ordered)
-	{
-		// 拖拽结果优先；未出现在拖拽列表里的项按当前相对顺序 + 文件名排序追加，保证结果确定。
-		List<string> original = new List<string>(KnownMusic);
-		HashSet<string> remaining = new HashSet<string>(original, StringComparer.OrdinalIgnoreCase);
-		List<string> list = new List<string>(original.Count);
-		foreach (string item in ordered)
-		{
-			if (remaining.Remove(item))
-			{
-				list.Add(item);
-			}
-		}
-		List<string> rest = original.Where(remaining.Contains).ToList();
-		rest.Sort((string a, string b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(a), Path.GetFileName(b)));
-		list.AddRange(rest);
-		KnownMusic.Clear();
-		KnownMusic.AddRange(list);
-		AppSettings instance = SettingsManager.Instance;
-		instance.MusicOrder = new List<string>(KnownMusic);
-		SettingsManager.Save(instance);
-		// 背景视频轮播列表按 MusicOrder 排序，拖拽后必须重建，否则两处顺序不一致。
-		MainWindow.Instance?.OnMusicOrderChanged();
-		LogHelper.Log($"音乐顺序已调整: {KnownMusic.Count} 首");
-	}
-
 	public static void Play(string path)
 	{
 		string text = NormalizeAudioPath(path);

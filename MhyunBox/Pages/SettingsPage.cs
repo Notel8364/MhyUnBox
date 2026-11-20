@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using MhyunBox.Services;
+using MhyunBox.Services.BjdProxy;
 using MhyunBox.Settings;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
@@ -25,6 +26,7 @@ using WinRT.Interop;
 using Windows.Foundation;
 using Windows.Storage;
 using Windows.Storage.Pickers;
+using Windows.ApplicationModel.DataTransfer;
 
 namespace MhyunBox.Pages;
 
@@ -174,13 +176,33 @@ public sealed partial class SettingsPage : Page
 
 	private ToggleSwitch? _settingsDebugSwitch;
 
+	private ToggleSwitch? _simpleModeSwitch;
+
+	/// <summary>简易模式收缩栏（开关 + 导航项勾选列表）。</summary>
+	private Expander? _simpleModeExpander;
+
+	/// <summary>简易模式导航项勾选框（Tag = 页面 key）。</summary>
+	private readonly List<CheckBox> _simplePageChecks = new List<CheckBox>();
+
+	/// <summary>程序化刷新勾选框时的防递归保护。</summary>
+	private bool _simplePageChecksLoading;
+
+	/// <summary>简易模式可勾选隐藏的导航项（key = MainWindow 页面 Tag；SettingsPage 为特殊项，5 秒后自动复原）。</summary>
+	private static readonly (string Key, string Label)[] SimpleModeCheckablePages = new (string, string)[8]
+	{
+		("HomePage", "首页"),
+		("ServerListPage", "服务器列表"),
+		("InstancesPage", "会话多开"),
+		("SpeedTestPage", "网速测试"),
+		("ShopPage", "商城"),
+		("ClientUpdatePage", "更新客户端"),
+		("SessionLogPage", "日志"),
+		("SettingsPage", "设置")
+	};
+
 	private Button? _exportLogButton;
 
-	private ToggleSwitch? _settingsCleanupSwitch;
-
 	private NumberBox? _settingsBackupDaysBox;
-
-	private ToggleSwitch? _settingsProxyModeSwitch;
 
 	/// <summary>最近已知的播放模式，用于跨入口同步播放模式下拉框。</summary>
 	private string _lastKnownPlaybackMode = "";
@@ -201,12 +223,16 @@ public sealed partial class SettingsPage : Page
 		{
 			MusicService.StateChanged -= OnMusicStateChanged;
 			SettingsManager.Saved -= OnSettingsSaved;
+			MainWindow.SimpleModeHiddenChanged -= OnSimpleModeHiddenChanged;
 		};
 		base.Loaded += delegate
 		{
 			// 页面是缓存复用的，Unloaded 会退订；重新进入时先退订再订阅，避免重复订阅或漏订阅。
 			SettingsManager.Saved -= OnSettingsSaved;
 			SettingsManager.Saved += OnSettingsSaved;
+			MainWindow.SimpleModeHiddenChanged -= OnSimpleModeHiddenChanged;
+			MainWindow.SimpleModeHiddenChanged += OnSimpleModeHiddenChanged;
+			SyncSimpleModeCheckboxes();
 			OnLoaded();
 			RelayoutSettings(base.ActualWidth);
 			EnsureVersionFooter();
@@ -219,14 +245,96 @@ public sealed partial class SettingsPage : Page
 		{
 			if (!(_versionFooterText != null))
 			{
-				_versionFooterText = new TextBlock
+				// —— 简易模式：收缩栏（开关 + 导航项勾选列表），挂在「界面」分区「字体加粗」下方 ——
+				_simpleModeSwitch = new ToggleSwitch
 				{
-					Text = "当前版本 " + AppVersion.Display,
-					FontSize = 12.0,
-					Opacity = 0.75,
-					Margin = new Thickness(0.0, 18.0, 0.0, 0.0)
+					Header = "开启简易模式",
+					OnContent = "开",
+					OffContent = "关",
+					IsOn = SettingsManager.Instance.SimpleMode,
+					Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
 				};
-				SettingsRoot.Children.Add(_versionFooterText);
+				ToolTipService.SetToolTip(_simpleModeSwitch, "开启后按下方勾选隐藏左侧导航项，并自动关闭调试模式。");
+				_simpleModeSwitch.Toggled += SimpleModeSwitch_Toggled;
+
+				// 2026-11-20 收缩版二改：开关在最左，勾选项在其右侧两行四列往右排
+				Grid checksGrid = new Grid
+				{
+					ColumnSpacing = 4.0,
+					RowSpacing = 0.0,
+					VerticalAlignment = VerticalAlignment.Center
+				};
+				for (int c = 0; c < 4; c++)
+				{
+					checksGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+				}
+				for (int r = 0; r < (SimpleModeCheckablePages.Length + 3) / 4; r++)
+				{
+					checksGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+				}
+				for (int i = 0; i < SimpleModeCheckablePages.Length; i++)
+				{
+					(string Key, string Label) item = SimpleModeCheckablePages[i];
+					CheckBox check = new CheckBox
+					{
+						Content = item.Label,
+						Tag = item.Key,
+						IsChecked = SettingsManager.Instance.SimpleHiddenPages.Contains(item.Key),
+						MinWidth = 0.0,
+						Padding = new Thickness(4.0, 0.0, 4.0, 0.0)
+					};
+					ToolTipService.SetToolTip(check, item.Key == "SettingsPage" ? "勾选后简易模式隐藏设置入口，5 秒后自动复原。" : "简易模式下隐藏该导航页。");
+					check.Checked += SimplePageCheck_Changed;
+					check.Unchecked += SimplePageCheck_Changed;
+					_simplePageChecks.Add(check);
+					Grid.SetRow(check, i / 4);
+					Grid.SetColumn(check, i % 4);
+					checksGrid.Children.Add(check);
+				}
+
+				// 横排容器：左 = 开关，右 = 两行四列勾选
+				Grid simpleRow = new Grid { ColumnSpacing = 16.0, Margin = new Thickness(4.0, 2.0, 0.0, 6.0) };
+				simpleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+				simpleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+				_simpleModeSwitch.Margin = new Thickness(0.0, 0.0, 0.0, 0.0);
+				_simpleModeSwitch.VerticalAlignment = VerticalAlignment.Center;
+				Grid.SetColumn(_simpleModeSwitch, 0);
+				Grid.SetColumn(checksGrid, 1);
+				simpleRow.Children.Add(_simpleModeSwitch);
+				simpleRow.Children.Add(checksGrid);
+				_simpleModeExpander = new Expander
+				{
+					Header = "简易模式",
+					Content = simpleRow,
+					IsExpanded = false,
+					HorizontalAlignment = HorizontalAlignment.Stretch,
+					Margin = new Thickness(0.0, 10.0, 0.0, 0.0)
+				};
+				Panel? boldHost = FontBoldSwitch?.Parent as Panel;
+				if (boldHost != null && FontBoldSwitch != null)
+				{
+					int boldIndex = boldHost.Children.IndexOf(FontBoldSwitch);
+					boldHost.Children.Insert(boldIndex + 1, _simpleModeExpander);
+				}
+				else
+				{
+					SettingsRoot.Children.Add(_simpleModeExpander);
+				}
+				// 2026-11-20 底部排版定版（自上而下）：
+				// 冗余备份保留天数 → 调试模式 → 一键导出问题日志 → 当前版本（最底部）
+				// （代理流模式已移回账号绑定页；布吉岛 payload 日志区块已移除；「更新后自动清理」改为常开，不再提供开关）
+				// 「更新后自动清理」已改为常开（设置里强制 true），只保留保留天数输入框
+				_settingsBackupDaysBox = new NumberBox
+				{
+					Header = "冗余备份保留天数（超期移入回收站，0 = 永不清理）",
+					Value = SettingsManager.Instance.RedundantBackupKeepDays,
+					Minimum = 0.0,
+					Maximum = 365.0,
+					SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+					Margin = new Thickness(0.0, 10.0, 0.0, 0.0)
+				};
+				_settingsBackupDaysBox.ValueChanged += SettingsBackupDays_ValueChanged;
+				SettingsRoot.Children.Add(_settingsBackupDaysBox);
 				_settingsDebugSwitch = new ToggleSwitch
 				{
 					Header = "调试模式",
@@ -245,45 +353,18 @@ public sealed partial class SettingsPage : Page
 					IsEnabled = SettingsManager.Instance.DebugMode,
 					Opacity = (SettingsManager.Instance.DebugMode ? 1.0 : 0.4)
 				};
-				ToolTipService.SetToolTip(_exportLogButton, "把最近 3 天日志打包成 zip 保存到桌面，反馈问题时直接发送。需先开启调试模式。");
+				ToolTipService.SetToolTip(_exportLogButton, "把最近 3 天日志（含布吉岛代理 payload 日志）打包成 zip 保存到桌面，反馈问题时直接发送。需先开启调试模式。");
 				_exportLogButton.Click += ExportLog_Click;
 				SettingsRoot.Children.Add(_exportLogButton);
-				// —— 更新 / 合并裁剪之后的自动清理（默认关闭；开启后删除的东西一律先进回收站）——
-				_settingsCleanupSwitch = new ToggleSwitch
+				// 当前版本：最底部
+				_versionFooterText = new TextBlock
 				{
-					Header = "更新后自动清理（资源包 / 增量包 → 移入回收站，可还原）",
-					OnContent = "开",
-					OffContent = "关（保留文件）",
-					IsOn = SettingsManager.Instance.AutoCleanupEnabled,
-					Margin = new Thickness(0.0, 10.0, 0.0, 0.0)
+					Text = "当前版本 " + AppVersion.Display,
+					FontSize = 12.0,
+					Opacity = 0.75,
+					Margin = new Thickness(0.0, 18.0, 0.0, 0.0)
 				};
-			_settingsCleanupSwitch.Toggled += SettingsCleanupSwitch_Toggled;
-			SettingsRoot.Children.Add(_settingsCleanupSwitch);
-			// —— 网易登录出口已固定为「跟随系统代理」（对齐 v3.8.0 行为，不再提供开关）；
-			//    自动登录的保活机制已内置为账密每 6 小时重登，也不再提供开关。 ——
-			// —— 代理模式（正常代理登录 / 防DDOS）：与首页 / 代理启动 / 快速启动共用同一组件 ——
-			_settingsProxyModeSwitch = CreateProxyModeSelector();
-			_settingsProxyModeSwitch.Margin = new Thickness(0.0, 10.0, 0.0, 0.0);
-			SettingsRoot.Children.Add(_settingsProxyModeSwitch);
-			SettingsRoot.Children.Add(new TextBlock
-			{
-				Text = "正常代理登录：单目标直连、不带连接节流与探测流量，避免被网易判为异常登录环境。防DDOS模式：节点轮换、预设 IP 池、健康探测与地址安全策略，适合被攻击时使用。切换后对新连接立即生效。",
-				FontSize = 12.0,
-				Opacity = 0.75,
-				TextWrapping = TextWrapping.Wrap,
-				Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
-			});
-			_settingsBackupDaysBox = new NumberBox
-				{
-					Header = "冗余备份保留天数（超期移入回收站，0 = 永不清理）",
-					Value = SettingsManager.Instance.RedundantBackupKeepDays,
-					Minimum = 0.0,
-					Maximum = 365.0,
-					SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-					Margin = new Thickness(0.0, 6.0, 0.0, 0.0)
-				};
-				_settingsBackupDaysBox.ValueChanged += SettingsBackupDays_ValueChanged;
-				SettingsRoot.Children.Add(_settingsBackupDaysBox);
+				SettingsRoot.Children.Add(_versionFooterText);
 				// 用户定版（2026-11-01）：设置页底部「本机锁（程序账号）」区块移除，
 				// 本机锁机制（程序账号/解锁弹窗/验证通道）已整体移除，启动不再要求解锁
 				AppVersion.ApplyTo(SettingsRoot);
@@ -321,12 +402,13 @@ public sealed partial class SettingsPage : Page
 	/// <summary>
 	/// 构建可复用的「代理流模式」开关（设置页 / 首页 / 代理启动 / 快速启动 / 账号绑定共用）。
 	/// 选项格式与「调试模式」一致：一个 ToggleSwitch，关 = 正常代理登录，开 = 防DDOS模式。
+	/// withHeader=false 时不带「代理流模式」标题（账号绑定页样式，状态文字直接显示在开关右侧）。
 	/// </summary>
-	public static ToggleSwitch CreateProxyModeSelector()
+	public static ToggleSwitch CreateProxyModeSelector(bool withHeader = true)
 	{
 		ToggleSwitch toggle = new ToggleSwitch
 		{
-			Header = "代理流模式",
+			Header = withHeader ? "代理流模式" : null,
 			OffContent = "正常代理登录",
 			OnContent = "防DDOS模式",
 			IsOn = string.Equals(SettingsManager.Instance.ProxyMode, "ddos", StringComparison.OrdinalIgnoreCase),
@@ -350,9 +432,137 @@ public sealed partial class SettingsPage : Page
 		return toggle;
 	}
 
-	private void SettingsDebugSwitch_Toggled(object sender, RoutedEventArgs e)
+	/// <summary>简易模式：写回设置并即时生效。开启时强制关闭调试模式（并同步调试开关 UI 与日志清理逻辑）。</summary>
+	private void SimpleModeSwitch_Toggled(object sender, RoutedEventArgs e)
 	{
-		if (_exportLogButton != null)
+		if (_loading || _simpleModeSwitch == null)
+		{
+			return;
+		}
+		try
+		{
+			AppSettings instance = SettingsManager.Instance;
+			instance.SimpleMode = _simpleModeSwitch.IsOn;
+			if (instance.SimpleMode && instance.DebugMode)
+			{
+				// 简易模式同时关掉调试模式
+				instance.DebugMode = false;
+				ProxyCaptureService.SetCaptureLogEnabled(false);
+				LogHelper.ClearLogs();
+				SessionLogStore.Clear();
+				SessionLogPage.SyncDebugMode();
+				try
+				{
+					BjdPayloadLog.SetEnabled(false);
+				}
+				catch
+				{
+				}
+			}
+			SettingsManager.Save(instance);
+			if (_settingsDebugSwitch != null && _settingsDebugSwitch.IsOn != instance.DebugMode)
+			{
+				_settingsDebugSwitch.IsOn = instance.DebugMode;
+			}
+			if (_exportLogButton != null)
+			{
+				_exportLogButton.IsEnabled = instance.DebugMode;
+				_exportLogButton.Opacity = (instance.DebugMode ? 1.0 : 0.4);
+			}
+			MainWindow.Instance?.ApplySimpleModeToNav();
+			MainWindow.Instance?.ShowToast(instance.SimpleMode ? "已开启简易模式：进阶导航页已隐藏，调试模式已关闭" : "已关闭简易模式：完整导航已恢复");
+		}
+		catch (Exception exSimple)
+		{
+			LogHelper.LogError(exSimple, "[设置页] 切换简易模式失败");
+		}
+	}
+
+	/// <summary>简易模式导航项勾选变化：写回 SimpleHiddenPages 并即时应用到导航。</summary>
+	private void SimplePageCheck_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_loading || _simplePageChecksLoading)
+		{
+			return;
+		}
+		try
+		{
+			if (sender is not CheckBox check || check.Tag is not string key)
+			{
+				return;
+			}
+			AppSettings instance = SettingsManager.Instance;
+			instance.SimpleHiddenPages ??= new List<string>();
+			if (check.IsChecked == true)
+			{
+				if (!instance.SimpleHiddenPages.Contains(key))
+				{
+					instance.SimpleHiddenPages.Add(key);
+				}
+			}
+			else
+			{
+				instance.SimpleHiddenPages.Remove(key);
+			}
+			SettingsManager.Save(instance);
+			MainWindow.Instance?.ApplySimpleModeToNav();
+			LogHelper.Log("[简易模式] 隐藏导航项「" + key + "」：" + (check.IsChecked == true ? "勾选（简易模式隐藏）" : "取消勾选"));
+		}
+		catch (Exception exCheck)
+		{
+			LogHelper.LogError(exCheck, "[设置页] 更新简易模式隐藏导航项失败");
+		}
+	}
+
+	/// <summary>按当前设置刷新勾选框（页面 Loaded / 设置入口 5 秒自动复原后调用）。</summary>
+	private void SyncSimpleModeCheckboxes()
+	{
+		if (_simplePageChecks.Count == 0)
+		{
+			return;
+		}
+		_simplePageChecksLoading = true;
+		try
+		{
+			List<string> hiddenPages = SettingsManager.Instance.SimpleHiddenPages ?? new List<string>();
+			foreach (CheckBox check in _simplePageChecks)
+			{
+				bool target = check.Tag is string key && hiddenPages.Contains(key);
+				if (check.IsChecked != target)
+				{
+					check.IsChecked = target;
+				}
+			}
+		}
+		finally
+		{
+			_simplePageChecksLoading = false;
+		}
+	}
+
+	/// <summary>MainWindow 简易模式隐藏配置变化（如设置入口 5 秒自动复原）后刷新勾选框。</summary>
+	private void OnSimpleModeHiddenChanged()
+	{
+		try
+		{
+			SyncSimpleModeCheckboxes();
+			if (_simpleModeSwitch != null)
+			{
+				bool on = SettingsManager.Instance.SimpleMode;
+				if (_simpleModeSwitch.IsOn != on)
+				{
+					_simpleModeSwitch.IsOn = on;
+				}
+			}
+		}
+		catch (Exception exSync)
+		{
+			LogHelper.LogError(exSync, "[设置页] 同步简易模式勾选状态失败");
+		}
+	}
+
+	private void SettingsDebugSwitch_Toggled(object sender, RoutedEventArgs e)
+	{		if (_exportLogButton != null)
 		{
 			_exportLogButton.IsEnabled = _settingsDebugSwitch.IsOn;
 			_exportLogButton.Opacity = (_settingsDebugSwitch.IsOn ? 1.0 : 0.4);
@@ -372,8 +582,17 @@ public sealed partial class SettingsPage : Page
 				LogHelper.ClearLogs();
 				SessionLogStore.Clear();
 			}
-			MainWindow.Instance?.ShowToast(instance.DebugMode ? "已开启调试模式（详细日志 + 抓包日志）" : "已关闭调试模式，冗余日志已停止产出并清空（仅保留错误日志）");
+			MainWindow.Instance?.ShowToast(instance.DebugMode ? "已开启调试模式（详细日志 + 抓包日志 + 布吉岛代理 payload 日志）" : "已关闭调试模式，冗余日志已停止产出并清空（仅保留错误日志）");
 			SessionLogPage.SyncDebugMode();
+			// 布吉岛代理 payload（游戏进程内原生 DLL）日志接入：开=开始镜像到本程序日志，关=停止
+			try
+			{
+				BjdPayloadLog.SetEnabled(instance.DebugMode);
+			}
+			catch (Exception exBjd)
+			{
+				LogHelper.LogError(exBjd, "[设置页] 切换 payload 日志镜像失败");
+			}
 		}
 		catch (Exception ex)
 		{
@@ -407,27 +626,6 @@ public sealed partial class SettingsPage : Page
 		}
 	}
 
-	private void SettingsCleanupSwitch_Toggled(object sender, RoutedEventArgs e)
-	{
-		if (_loading || _settingsCleanupSwitch == null)
-		{
-			return;
-		}
-		try
-		{
-			AppSettings instance = SettingsManager.Instance;
-			instance.AutoCleanupEnabled = _settingsCleanupSwitch.IsOn;
-			SettingsManager.Save(instance);
-			MainWindow.Instance?.ShowToast(_settingsCleanupSwitch.IsOn
-				? "已开启自动清理：更新/合并后，资源包与增量包会移入回收站（可还原）"
-				: "已关闭自动清理：更新/合并后保留资源包与增量包");
-		}
-		catch (Exception ex)
-		{
-			LogHelper.LogError(ex, "[设置页] 切换自动清理失败");
-		}
-	}
-
 	private void SettingsBackupDays_ValueChanged(object sender, NumberBoxValueChangedEventArgs e)
 	{
 		if (_loading || _settingsBackupDaysBox == null)
@@ -440,7 +638,7 @@ public sealed partial class SettingsPage : Page
 			double num2 = e.NewValue;
 			if (double.IsNaN(num2))
 			{
-				num2 = 7.0;
+				num2 = 3.0;
 			}
 			int num = (int)Math.Round(num2);
 			if (num < 0)
@@ -1200,7 +1398,8 @@ public sealed partial class SettingsPage : Page
 				PrimaryButtonText = "立即重启",
 				CloseButtonText = "暂不重启",
 				DefaultButton = ContentDialogButton.Primary,
-				XamlRoot = base.XamlRoot
+				XamlRoot = base.XamlRoot,
+				RequestedTheme = (MainWindow.Instance?.AppElementTheme ?? ElementTheme.Default),
 			}.ShowAsync() == ContentDialogResult.Primary)
 			{
 				MainWindow.RestartApplication();
@@ -1380,90 +1579,6 @@ public sealed partial class SettingsPage : Page
 		}
 		_reorderStartPos = currentPoint.Position;
 		LogHelper.Log($"音乐列表按下: index={_reorderIndex}, items={MusicListBox.Items.Count}");
-		e.Handled = true;
-	}
-
-	private void MusicListBox_PointerMoved(object sender, PointerRoutedEventArgs e)
-	{
-		if (!_reorderPointerDown)
-		{
-			return;
-		}
-		Point position = e.GetCurrentPoint(MusicListBox).Position;
-		if (!_reordering)
-		{
-			double value = position.X - _reorderStartPos.X;
-			double value2 = position.Y - _reorderStartPos.Y;
-			if (Math.Abs(value) + Math.Abs(value2) < 8.0)
-			{
-				return;
-			}
-			if (_reorderIndex < 0)
-			{
-				double itemHeight = GetItemHeight();
-				if (itemHeight <= 0.0)
-				{
-					return;
-				}
-				_reorderIndex = Math.Clamp((int)(position.Y / itemHeight), 0, MusicListBox.Items.Count - 1);
-			}
-			if (IsNoMusicItem(_reorderIndex))
-			{
-				return;
-			}
-			_reordering = true;
-			MusicListBox.CapturePointer(e.Pointer);
-			LogHelper.Log($"音乐拖拽开始: index={_reorderIndex}, y={position.Y:0}, itemHeight={GetItemHeight():0}, items={MusicListBox.Items.Count}");
-		}
-		double itemHeight2 = GetItemHeight();
-		if (!(itemHeight2 <= 0.0) && MusicListBox.Items.Count >= 2)
-		{
-			double num = (_listScrollViewer ?? (_listScrollViewer = FindDescendant<ScrollViewer>(MusicListBox)))?.VerticalOffset ?? 0.0;
-			int num2 = Math.Max(1, Math.Clamp((int)((position.Y + num) / itemHeight2), 0, MusicListBox.Items.Count - 1));
-			if (num2 != _reorderIndex)
-			{
-				object item = MusicListBox.Items[_reorderIndex];
-				MusicListBox.Items.RemoveAt(_reorderIndex);
-				MusicListBox.Items.Insert(num2, item);
-				_reorderIndex = num2;
-				MusicListBox.SelectedIndex = num2;
-			}
-			e.Handled = true;
-		}
-	}
-
-	private void MusicListBox_PointerReleased(object sender, PointerRoutedEventArgs e)
-	{
-		FinishReorder(e);
-	}
-
-	private void MusicListBox_PointerCanceled(object sender, PointerRoutedEventArgs e)
-	{
-		FinishReorder(e);
-	}
-
-	private void FinishReorder(PointerRoutedEventArgs e)
-	{
-		MusicListBox.ReleasePointerCapture(e.Pointer);
-		_reorderPointerDown = false;
-		if (_reordering)
-		{
-			List<string> list = new List<string>();
-			foreach (object item in MusicListBox.Items)
-			{
-				if (item is ListViewItem { Tag: string tag } && tag != "<no-music>")
-				{
-					list.Add(tag);
-				}
-			}
-			if (list.Count > 0)
-			{
-				MusicService.ReorderKnownMusic(list);
-				LogHelper.Log($"音乐拖拽完成: 新顺序 {list.Count} 首");
-			}
-		}
-		_reordering = false;
-		_reorderIndex = -1;
 		e.Handled = true;
 	}
 

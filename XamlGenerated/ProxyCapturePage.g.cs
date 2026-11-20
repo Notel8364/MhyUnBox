@@ -2,6 +2,8 @@
 // 依据 Pages/ProxyCapturePage.xaml 生成；名称后置绑定 + 启发式事件挂接。
 // 说明：
 // - PclPathBox.TextChanged / base.Loaded / base.Unloaded 已在构造函数挂接；
+// - 2026-11-20：启动PCL我的世界 / 注入元素之诗模组 / 允许局域网设备连接 / 指定端口已移除，
+//   新增 PclMoreLinkButton（打开模组下载页）与 PclCopyCptdButton（内置 CPTD 复制到桌面）；
 // - Preset_Checked / GenshinTrap_Click / TargetAddressBox_TextChanged / PclOption_Changed(PclInjectCptdCheck)
 //   挂在代码构建的控件上（RebuildPresetChips / BuildTrapButton / BuildTargetAddressBox）；
 // - AccountGroup/CopyRoleAddress/StartRoleProxy/StopRoleProxy/StatusCopy 系列按钮为代码构建（sender.Tag 取数）。
@@ -33,18 +35,16 @@ public sealed partial class ProxyCapturePage : Page, IComponentConnector
 		XamlScope.Wire(this, "SizeChanged", this, nameof(Page_SizeChanged));
 		XamlScope.Wire(XamlScope.Find(this, "GoHomeButton"), "Click", this, nameof(GoHome_Click));
 		XamlScope.Wire(XamlScope.Find(this, "StartButton"), "Click", this, nameof(StartButton_Click));
-		XamlScope.Wire(XamlScope.Find(this, "PclInjectButton"), "Click", this, nameof(PclInject_Click));
+		XamlScope.Wire(XamlScope.Find(this, "PclMoreLinkButton"), "Click", this, nameof(PclMoreLink_Click));
 		XamlScope.Wire(XamlScope.Find(this, "PclFindButton"), "Click", this, nameof(PclFind_Click));
 		XamlScope.Wire(XamlScope.Find(this, "OpenCaptureDirButton"), "Click", this, nameof(OpenCaptureDir_Click));
 		XamlScope.Wire(XamlScope.Find(this, "OneClickStartButton"), "Click", this, nameof(OneClickStart_Click));
 		XamlScope.Wire(XamlScope.Find(this, "PclBrowseButton"), "Click", this, nameof(PclBrowse_Click));
-		XamlScope.Wire(XamlScope.Find(this, "PclGameLaunchButton"), "Click", this, nameof(PclGameLaunch_Click));
+		XamlScope.Wire(XamlScope.Find(this, "PclCopyCptdButton"), "Click", this, nameof(PclCopyCptd_Click));
 		XamlScope.Wire(XamlScope.Find(this, "StopAllButton"), "Click", this, nameof(StopAllButton_Click));
 		XamlScope.Wire(XamlScope.Find(this, "PclModsButton"), "Click", this, nameof(PclMods_Click));
 		XamlScope.Wire(XamlScope.Find(this, "ListenPortBox"), "LostFocus", this, nameof(PortBox_LostFocus));
 		XamlScope.Wire(XamlScope.Find(this, "RestartButton"), "Click", this, nameof(RestartButton_Click));
-		XamlScope.Wire(XamlScope.Find(this, "LanListenCheck"), "Checked", this, nameof(LanListen_Changed));
-		XamlScope.Wire(XamlScope.Find(this, "LanListenCheck"), "Unchecked", this, nameof(LanListen_Changed));
 		XamlScope.Wire(XamlScope.Find(this, "PclAutoLaunchCheck"), "Checked", this, nameof(PclOption_Changed));
 		XamlScope.Wire(XamlScope.Find(this, "PclAutoLaunchCheck"), "Unchecked", this, nameof(PclOption_Changed));
 		XamlScope.Wire(XamlScope.Find(this, "PclAutoStartCheck"), "Checked", this, nameof(PclOption_Changed));

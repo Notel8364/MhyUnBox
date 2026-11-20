@@ -25,6 +25,10 @@ public static class ServerPresets
 			GameId = 4624172676215685077L,
 			IpPool = new string[3] { "1.95.232.232", "1.95.232.233", "1.95.232.231" }
 		}
+		// 2026-11-20 用户定版：布吉岛不再内置为默认预设，只保留 元素之诗 / 失落世界 两个内置预选。
+		// 布吉岛改由「服务器列表」页手动添加，添加时必须通过「责任协议书」弹窗确认；
+		// 确认后走 RegisterDiscovered 持久化到 discovered_servers.json（之后可随时移除）。
+		// 布吉岛 A/B 代理的门禁（BjdGate）不依赖内置注册：预设注册后按 GameId 匹配即可。
 	};
 
 	static ServerPresets()
@@ -102,7 +106,7 @@ public static class ServerPresets
 		return false;
 	}
 
-	/// <summary>内置默认预设（元素之诗 / 失落世界），不可删除。</summary>
+	/// <summary>内置默认预设（元素之诗 / 失落世界），不可删除。布吉岛为用户手动添加（需通过责任协议），可移除。</summary>
 	public static bool IsBuiltin(ServerPreset preset)
 	{
 		return preset != null && (preset.GameId == 4658261307332877912L || preset.GameId == 4624172676215685077L);
@@ -171,8 +175,8 @@ public static class ServerPresets
 			List<ServerPreset> discovered = new List<ServerPreset>();
 			foreach (ServerPreset p in All)
 			{
-				// 内置两个预设不入盘
-				if (p.GameId == 4658261307332877912L || p.GameId == 4624172676215685077L)
+			// 内置预设不入盘（元素之诗 / 失落世界）；布吉岛为用户添加的动态预设，入盘便于跨启动保留
+			if (p.GameId == 4658261307332877912L || p.GameId == 4624172676215685077L)
 				{
 					continue;
 				}

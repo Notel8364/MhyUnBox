@@ -8,8 +8,9 @@ namespace MhyunBox.Services;
 
 /// <summary>
 /// 程序内存诊断：每 60 秒把进程工作集 / 私有内存 / GC 各代 / LOH / 线程句柄 /
-/// 代理会话数写成一行，追加到 MhyUnBox_Logs\MemoryDiag.log（独立文件，不受调试开关门控）。
+/// 代理会话数写成一行，追加到 MhyUnBox_Logs\MemoryDiag.log（独立文件）。
 /// 目的：定位多会话时 193MB 工作集的构成——托管堆、本机（WinUI/驱动）、线程栈哪一块大。
+/// 写盘受设置里的调试模式门控（与全站日志统一口径，关调试不产出文件）。
 /// </summary>
 public static class MemoryDiagnosticsService
 {
@@ -41,7 +42,12 @@ public static class MemoryDiagnosticsService
 		{
 			try
 			{
-				Write(snapshot());
+				// 接入设置里的调试模式（与其他日志统一口径）：关调试时不写盘，
+				// 循环保留以便开调试后下一轮（≤60 秒）立即恢复采样。
+				if (LogHelper.DebugEnabled)
+				{
+					Write(snapshot());
+				}
 			}
 			catch
 			{

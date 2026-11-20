@@ -189,7 +189,6 @@
                                         </Border>
                                         <StackPanel x:Name="StatusSection" Row="1" Column="0" Spacing="4">
                                             <StackPanel.Children>
-                                                <TextBlock Text="角色端口栏 / 状态" FontWeight="SemiBold" />
                                                 <Border
                                                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
@@ -246,21 +245,14 @@
                                                                 </StackPanel>
                                                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                                                     <StackPanel.Children>
-                                                                        <Button x:Name="PclGameLaunchButton" Content="启动PCL我的世界" IsEnabled="False" />
-                                                                        <Button x:Name="PclInjectButton" Content="注入元素之诗模组" IsEnabled="False" />
+                                                                        <Button x:Name="PclMoreLinkButton" Content="打开链接" />
+                                                                        <Button x:Name="PclCopyCptdButton" Content="复制到桌面" />
                                                                     </StackPanel.Children>
                                                                 </StackPanel>
                                                                 <StackPanel Orientation="Horizontal" Spacing="16">
                                                                     <StackPanel.Children>
                                                                         <CheckBox x:Name="PclAutoLaunchCheck" Content="我的世界自加入指定端口" IsEnabled="False" />
                                                                         <CheckBox x:Name="PclAutoStartCheck" Content="自启动选中PCL" IsEnabled="False" />
-                                                                        <CheckBox x:Name="LanListenCheck" Content="允许局域网设备连接（手机连接脱盒）" />
-                                                                    </StackPanel.Children>
-                                                                </StackPanel>
-                                                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                                                    <StackPanel.Children>
-                                                                        <TextBlock Text="指定端口" VerticalAlignment="Center" Opacity="0.8" />
-                                                                        <TextBox x:Name="PclJoinPortBox" Width="110" PlaceholderText="留空自动" IsEnabled="False" />
                                                                     </StackPanel.Children>
                                                                 </StackPanel>
                                                                 <TextBlock x:Name="PclPathHint" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />

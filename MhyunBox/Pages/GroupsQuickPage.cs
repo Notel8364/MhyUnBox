@@ -45,13 +45,11 @@ public sealed class GroupsQuickPage : Page
 
 	private readonly List<Action> _runningStateRefreshers = new List<Action>();
 
-	private StackPanel? _groupsSection;
-
-	private TextBlock? _groupsHint;
+	private StackPanel? _groupsListPanel;
 
 	private Border? _groupsPanel;
 
-	private StackPanel? _groupsListPanel;
+	private TextBlock? _groupsHint;
 
 	private Button? _serverIpPortButton;
 
@@ -70,8 +68,6 @@ public sealed class GroupsQuickPage : Page
 	private TextBlock? _lastLaunchText;
 
 	private bool _syncingAutoStartSwitch;
-
-	public StackPanel GroupsSection => _groupsSection ?? (_groupsSection = CreateGroupsSection());
 
 	public TextBlock GroupsHint
 	{
@@ -215,21 +211,415 @@ public sealed class GroupsQuickPage : Page
 	{
 		_queue = base.DispatcherQueue;
 		base.Content = BuildPageUi();
+		TryAddClientLauncherSection();
 		base.Unloaded += OnUnloaded;
 		base.Loaded += OnLoaded;
-		KeyboardAccelerator keyboardAccelerator = new KeyboardAccelerator
-		{
-			Key = VirtualKey.Z,
-			Modifiers = VirtualKeyModifiers.Control
-		};
-		keyboardAccelerator.Invoked += delegate(KeyboardAccelerator _, KeyboardAcceleratorInvokedEventArgs args)
-		{
-			RequestUndoLastDelete();
-			args.Handled = true;
-		};
-		base.KeyboardAccelerators.Add(keyboardAccelerator);
+		// 2026-11-20：不再挂页面级 Ctrl+Z KeyboardAccelerator——WinUI 会把页面加速键
+		// 显示成悬停提示（快速启动页上一直飘着「Ctrl+Z」），已移到 MainWindow 全局按键
+		// 处理里（当前页是快速启动 = 撤销删除，其他页 = 返回上一页），功能不变、提示消失。
 	}
 
+	/// <summary>把「客户端启动与配置」区块插到快速启动页最上方。</summary>
+	private void TryAddClientLauncherSection()
+	{
+		try
+		{
+			// 快速启动页的 Content 是 ScrollViewer(内含 StackPanel)，之前只判断 StackPanel
+			// 导致区块一直被跳过、页面上看不到。这里把两种形态都取到 StackPanel。
+			if (base.Content is ScrollViewer scroll && scroll.Content is StackPanel inner)
+			{
+				InsertClientLauncherCard(inner);
+			}
+			else if (base.Content is StackPanel panel)
+			{
+				InsertClientLauncherCard(panel);
+			}
+			else
+			{
+				LogHelper.Log("[启动客户端] 快速启动页根容器不是 StackPanel/ScrollViewer，跳过插入");
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[启动客户端] 快速启动页插入失败");
+		}
+	}
+
+	private RoleLauncherPanel? _launcherPanel;
+
+	private StackPanel? _clientCardsHost;
+
+	private TextBlock? _clientCardsEmptyHint;
+
+	private void InsertClientLauncherCard(StackPanel panel)
+	{
+		_launcherPanel = new RoleLauncherPanel();
+		Border border = new Border
+		{
+			Background = ThemeHelper.CardBackground(),
+			BorderBrush = ThemeHelper.Resolve("CardStrokeColorDefaultBrush"),
+			BorderThickness = new Thickness(1.0),
+			CornerRadius = new CornerRadius(12.0),
+			Padding = new Thickness(14.0, 12.0, 14.0, 12.0),
+			Child = _launcherPanel.Root
+		};
+		// 2026-11-20：代理设置卡移到「客户端配置与启动」卡**右边并排**（仅快速启动页有这张卡，
+		// 其他页面复用的 RoleLauncherPanel 不含代理设置），左卡自适应宽、右卡定宽。
+		FrameworkElement proxyCard = BuildProxySettingsCard();
+		Grid pair = new Grid
+		{
+			ColumnSpacing = 12.0,
+			VerticalAlignment = VerticalAlignment.Top
+		};
+		pair.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
+		pair.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star), MaxWidth = 420.0 });
+		Grid.SetColumn(border, 0);
+		Grid.SetColumn(proxyCard, 1);
+		proxyCard.VerticalAlignment = VerticalAlignment.Stretch;
+		pair.Children.Add(border);
+		pair.Children.Add(proxyCard);
+		panel.Children.Insert(0, pair);
+		// 2026-11-20 三卡布局：1) 客户端配置与启动 + 代理设置（并排）  2) 角色组与客户端卡（共享栏目）
+		panel.Children.Insert(Math.Min(1, panel.Children.Count), BuildSharedSectionCard());
+		LogHelper.Log("[启动客户端] 快速启动页已插入客户端配置与启动 + 代理设置（并排） + 角色组与客户端卡");
+	}
+
+	/// <summary>「角色组 / 客户端卡」共享栏目（2026-11-20）：两块内容共占一个位置，
+	/// 用单选切换只显示其一，或并排显示；选择持久化到 QuickCardsLayout。</summary>
+	private FrameworkElement BuildSharedSectionCard()
+	{
+		_clientCardsHost = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 10.0
+		};
+		_clientCardsEmptyHint = new TextBlock
+		{
+			Text = "还没有启动卡：在上方「客户端配置与启动」的下拉里选「＋ 新建启动卡…」创建。",
+			FontSize = 12.0,
+			Opacity = 0.7,
+			TextWrapping = TextWrapping.Wrap,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		StackPanel cardsCol = new StackPanel { Spacing = 8.0 };
+		cardsCol.Children.Add(new TextBlock
+		{
+			Text = "客户端卡（服务器预设 + 启动卡，点击「启动」一键进服 /「载入」到上方面板）",
+			FontSize = 12.0,
+			Opacity = 0.75
+		});
+		cardsCol.Children.Add(_clientCardsHost);
+		cardsCol.Children.Add(_clientCardsEmptyHint);
+		_cardsCol = cardsCol;
+		_groupsCol = GroupsPanel;
+
+		// 布局切换单选：角色组 / 客户端卡 / 并排显示
+		StackPanel radioRow = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 4.0,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		string saved = (SettingsManager.Instance.QuickCardsLayout ?? "Both").Trim();
+		_layoutGroupsRadio = new RadioButton { Content = "角色组", GroupName = "gqp_shared", FontSize = 13.0 };
+		_layoutCardsRadio = new RadioButton { Content = "客户端卡", GroupName = "gqp_shared", FontSize = 13.0 };
+		_layoutBothRadio = new RadioButton { Content = "并排显示", GroupName = "gqp_shared", FontSize = 13.0 };
+		switch (saved)
+		{
+			case "Groups": _layoutGroupsRadio.IsChecked = true; break;
+			case "Cards": _layoutCardsRadio.IsChecked = true; break;
+			default: _layoutBothRadio.IsChecked = true; break;
+		}
+		_layoutGroupsRadio.Checked += LayoutRadio_Changed;
+		_layoutCardsRadio.Checked += LayoutRadio_Changed;
+		_layoutBothRadio.Checked += LayoutRadio_Changed;
+		radioRow.Children.Add(_layoutGroupsRadio);
+		radioRow.Children.Add(_layoutCardsRadio);
+		radioRow.Children.Add(_layoutBothRadio);
+
+		StackPanel titleRow = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 12.0
+		};
+		titleRow.Children.Add(new TextBlock
+		{
+			Text = "角色组与客户端卡",
+			FontWeight = FontWeights.SemiBold,
+			VerticalAlignment = VerticalAlignment.Center
+		});
+		titleRow.Children.Add(GroupsHint);
+		titleRow.Children.Add(radioRow);
+
+		// 并排 = 两列 Grid；只显示其一 = 另一列 Collapsed
+		_sharedGrid = new Grid { ColumnSpacing = 14.0 };
+		_sharedGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
+		_sharedGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
+		Grid.SetColumn(_groupsCol, 0);
+		Grid.SetColumn(_cardsCol, 1);
+		_sharedGrid.Children.Add(_groupsCol);
+		_sharedGrid.Children.Add(_cardsCol);
+
+		StackPanel content = new StackPanel { Spacing = 8.0 };
+		content.Children.Add(titleRow);
+		content.Children.Add(_sharedGrid);
+
+		Border card = new Border
+		{
+			Background = ThemeHelper.CardBackground(),
+			BorderBrush = ThemeHelper.Resolve("CardStrokeColorDefaultBrush"),
+			BorderThickness = new Thickness(1.0),
+			CornerRadius = new CornerRadius(12.0),
+			Padding = new Thickness(14.0, 12.0, 14.0, 12.0),
+			Margin = new Thickness(0.0, 0.0, 0.0, 10.0),
+			Child = content
+		};
+		RebuildClientCards();
+		ApplySharedLayout();
+		return card;
+	}
+
+	private StackPanel? _cardsCol;
+
+	private FrameworkElement? _groupsCol;
+
+	private Grid? _sharedGrid;
+
+	private RadioButton? _layoutGroupsRadio;
+
+	private RadioButton? _layoutCardsRadio;
+
+	private RadioButton? _layoutBothRadio;
+
+	private void LayoutRadio_Changed(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			AppSettings instance = SettingsManager.Instance;
+			instance.QuickCardsLayout =
+				(_layoutGroupsRadio?.IsChecked == true) ? "Groups" :
+				(_layoutCardsRadio?.IsChecked == true) ? "Cards" : "Both";
+			SettingsManager.Save(instance);
+			ApplySharedLayout();
+		}
+		catch (Exception exLayout)
+		{
+			LogHelper.DebugError(exLayout, "[快速启动] 角色组/客户端卡布局切换失败");
+		}
+	}
+
+	/// <summary>按 QuickCardsLayout 应用共享栏目可见性。
+	/// 2026-11-20 修复：只显示角色组/客户端卡时内容只占一半宽 —— 根因是
+	/// 两个 1* 列里隐藏另一列的**子元素**并不会让列本身收窄（星宽照样分走一半），
+	/// 这里同步把列宽改成 1*+0* / 0*+1*，并加淡入动画平滑过渡。</summary>
+	private void ApplySharedLayout()
+	{
+		if (_sharedGrid == null || _groupsCol == null || _cardsCol == null)
+		{
+			return;
+		}
+		string mode = (SettingsManager.Instance.QuickCardsLayout ?? "Both").Trim();
+		switch (mode)
+		{
+			case "Groups":
+				_groupsCol.Visibility = Visibility.Visible;
+				_cardsCol.Visibility = Visibility.Collapsed;
+				SetSharedColumns(oneStar: 0);
+				break;
+			case "Cards":
+				_groupsCol.Visibility = Visibility.Collapsed;
+				_cardsCol.Visibility = Visibility.Visible;
+				SetSharedColumns(oneStar: 1);
+				break;
+			default:
+				_groupsCol.Visibility = Visibility.Visible;
+				_cardsCol.Visibility = Visibility.Visible;
+				SetSharedColumns(oneStar: -1);
+				break;
+		}
+		PlaySharedFadeIn();
+	}
+
+	/// <summary>共享栏目列宽随模式调整：oneStar=0 → 角色组占满；=1 → 客户端卡占满；-1 → 两列均分。</summary>
+	private void SetSharedColumns(int oneStar)
+	{
+		if (_sharedGrid == null || _sharedGrid.ColumnDefinitions.Count < 2)
+		{
+			return;
+		}
+		ColumnDefinition c0 = _sharedGrid.ColumnDefinitions[0];
+		ColumnDefinition c1 = _sharedGrid.ColumnDefinitions[1];
+		switch (oneStar)
+		{
+			case 0:
+				c0.Width = new GridLength(1.0, GridUnitType.Star);
+				c1.Width = new GridLength(0.0, GridUnitType.Pixel);
+				break;
+			case 1:
+				c0.Width = new GridLength(0.0, GridUnitType.Pixel);
+				c1.Width = new GridLength(1.0, GridUnitType.Star);
+				break;
+			default:
+				c0.Width = new GridLength(1.0, GridUnitType.Star);
+				c1.Width = new GridLength(1.0, GridUnitType.Star);
+				break;
+		}
+	}
+
+	/// <summary>切换布局时的平滑过渡：轻微上移 + 淡入（Storyboard 可靠，双动画同一时长缓出）。</summary>
+	private void PlaySharedFadeIn()
+	{
+		if (_sharedGrid == null)
+		{
+			return;
+		}
+		try
+		{
+			TranslateTransform slide = new TranslateTransform { Y = 14.0 };
+			_sharedGrid.RenderTransform = slide;
+			_sharedGrid.Opacity = 0.0;
+
+			Duration dur = new Duration(TimeSpan.FromMilliseconds(240.0));
+			CubicEase easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+
+			DoubleAnimation fade = new DoubleAnimation { From = 0.0, To = 1.0, Duration = dur, EasingFunction = easing };
+			DoubleAnimation move = new DoubleAnimation { From = 14.0, To = 0.0, Duration = dur, EasingFunction = easing };
+			Storyboard sb = new Storyboard();
+			Storyboard.SetTarget(fade, _sharedGrid);
+			Storyboard.SetTargetProperty(fade, "Opacity");
+			Storyboard.SetTarget(move, slide);
+			Storyboard.SetTargetProperty(move, "Y");
+			sb.Children.Add(fade);
+			sb.Children.Add(move);
+			sb.Begin();
+		}
+		catch (Exception exFade)
+		{
+			LogHelper.DebugError(exFade, "[快速启动] 共享栏目切换动画失败");
+			_sharedGrid.Opacity = 1.0;
+			_sharedGrid.RenderTransform = null;
+		}
+	}
+
+	/// <summary>重建客户端卡栏目内容（服务器预设 + 已创建启动卡；设置保存 / 页面加载时触发）。</summary>
+	private void RebuildClientCards()
+	{
+		try
+		{
+			if (_clientCardsHost == null)
+			{
+				return;
+			}
+			_clientCardsHost.Children.Clear();
+			List<ServerPreset> presets = (from p in ServerPresets.All
+				where !p.IsPending && !string.IsNullOrWhiteSpace(p.Host)
+				orderby (!string.Equals(p.Name, "元素之诗", StringComparison.Ordinal)) ? 1 : 0
+				select p).ToList();
+			List<ClientLaunchCard> cards = SettingsManager.Instance.ClientLaunchCards ?? new List<ClientLaunchCard>();
+			if (_clientCardsEmptyHint != null)
+			{
+				_clientCardsEmptyHint.Visibility = ((presets.Count + cards.Count) == 0) ? Visibility.Visible : Visibility.Collapsed;
+			}
+			foreach (ServerPreset preset in presets)
+			{
+				_clientCardsHost.Children.Add(BuildClientCardTile(preset.Name, TailPath(preset.Host + ":" + preset.Port, 48), "服务器预设"));
+			}
+			foreach (ClientLaunchCard c in cards)
+			{
+				_clientCardsHost.Children.Add(BuildClientCardTile("启动卡 · " + c.Name, "目录：" + TailPath(c.ClientRoot), "直连：" + ((c.DirectAddress ?? "").Trim().Length == 0 ? "未保存" : (c.DirectAddress ?? "").Trim())));
+			}
+		}
+		catch (Exception exCards)
+		{
+			LogHelper.DebugError(exCards, "[快速启动] 客户端卡栏目刷新失败");
+		}
+	}
+
+	private static string TailPath(string? path, int maxLen = 42)
+	{
+		string p = (path ?? "").Trim();
+		if (p.Length == 0)
+		{
+			return "（留空自动查找）";
+		}
+		if (p.Length <= maxLen)
+		{
+			return p;
+		}
+		return "…" + p[^maxLen..];
+	}
+
+	private FrameworkElement BuildClientCardTile(string display, string line1, string line2)
+	{
+		StackPanel body = new StackPanel
+		{
+			Spacing = 4.0
+		};
+		body.Children.Add(new TextBlock
+		{
+			Text = display,
+			FontSize = 13.0,
+			FontWeight = FontWeights.SemiBold,
+			TextTrimming = TextTrimming.CharacterEllipsis,
+			MaxWidth = 220.0
+		});
+		body.Children.Add(new TextBlock
+		{
+			Text = line1,
+			FontSize = 11.5,
+			Opacity = 0.72,
+			TextTrimming = TextTrimming.CharacterEllipsis,
+			MaxWidth = 220.0
+		});
+		body.Children.Add(new TextBlock
+		{
+			Text = line2,
+			FontSize = 11.5,
+			Opacity = 0.72,
+			TextTrimming = TextTrimming.CharacterEllipsis,
+			MaxWidth = 220.0
+		});
+		StackPanel buttons = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 6.0,
+			Margin = new Thickness(0.0, 2.0, 0.0, 0.0)
+		};
+		Button launchBtn = new Button
+		{
+			Content = "启动",
+			FontSize = 12.0,
+			MinHeight = 28.0,
+			Padding = new Thickness(10.0, 0.0, 10.0, 0.0)
+		};
+		launchBtn.Click += delegate
+		{
+			_launcherPanel?.LaunchEntryFromOutside(display);
+		};
+		buttons.Children.Add(launchBtn);
+		Button loadBtn = new Button
+		{
+			Content = "载入",
+			FontSize = 12.0,
+			MinHeight = 28.0,
+			Padding = new Thickness(10.0, 0.0, 10.0, 0.0)
+		};
+		loadBtn.Click += delegate
+		{
+			_launcherPanel?.SelectEntryFromOutside(display);
+		};
+		buttons.Children.Add(loadBtn);
+		body.Children.Add(buttons);
+		return new Border
+		{
+			Background = (ThemeBrush("ControlFillColorSecondaryBrush") ?? ThemeBrush("CardBackgroundFillColorSecondaryBrush")),
+			BorderBrush = (ThemeBrush("ControlStrokeColorDefaultBrush") ?? ThemeBrush("CardStrokeColorDefaultBrush")),
+			BorderThickness = new Thickness(1.0),
+			CornerRadius = new CornerRadius(8.0),
+			Padding = new Thickness(10.0, 8.0, 10.0, 8.0),
+			Child = body
+		};
+	}
 	private FrameworkElement BuildPageUi()
 	{
 		StackPanel stackPanel = new StackPanel
@@ -241,16 +631,9 @@ public sealed class GroupsQuickPage : Page
 			VerticalAlignment = VerticalAlignment.Top
 		};
 		BuildControlCard();
-		// 代理流模式切换（与设置页 / 首页 / 代理启动共用同一份设置）
-		try
-		{
-			stackPanel.Children.Add(SettingsPage.CreateProxyModeSelector());
-		}
-		catch (Exception exMode)
-		{
-			LogHelper.LogError(exMode, "[快速启动] 代理模式切换构建失败");
-		}
-		stackPanel.Children.Add(GroupsSection);
+		// 2026-11-20 三卡布局（见 TryAddClientLauncherSection）：
+		// 1) 客户端配置与启动  2) 独立「代理设置」卡（代理流模式/分组管理/自启动代理）  3) 角色组与客户端卡（共享栏目）
+		// 页面本体不再铺「代理分组」标题行。
 		return new ScrollViewer
 		{
 			Content = stackPanel,
@@ -472,10 +855,14 @@ public sealed class GroupsQuickPage : Page
 
 	private void UpdateLastLaunchText()
 	{
-		if (_lastLaunchText == null)
+		// 2026-11-20：提示文本改在「代理设置」弹窗内展示，这里懒创建（不再依赖 CreateGroupsSection 预建）
+		_lastLaunchText ??= new TextBlock
 		{
-			return;
-		}
+			FontSize = 12.0,
+			Opacity = 0.75,
+			TextWrapping = TextWrapping.Wrap,
+			Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
+		};
 		try
 		{
 			AppSettings instance = SettingsManager.Instance;
@@ -502,46 +889,50 @@ public sealed class GroupsQuickPage : Page
 		}
 	}
 
-	private StackPanel CreateGroupsSection()
+	/// <summary>独立「代理设置」卡（2026-11-20，快速启动页）：代理流模式 + 分组管理（查看端口/启动分组/新建分组）+ 自启动代理 + 清除启动记忆 + 启动记忆提示。</summary>
+	private FrameworkElement BuildProxySettingsCard()
 	{
-		StackPanel stackPanel = new StackPanel
+		// 分组管理按钮事件只挂一次，防止重复触发
+		if (!_proxyButtonsWired)
 		{
-			Orientation = Orientation.Horizontal,
-			Spacing = 10.0
-		};
-		stackPanel.Children.Add(new TextBlock
+			_proxyButtonsWired = true;
+			ServerIpPortButton.Click += ServerIpPort_Click;
+			StartGroupButton.Click += StartGroup_Click;
+			NewGroupButton.Click += NewGroup_Click;
+		}
+		StackPanel content = new StackPanel { Spacing = 8.0 };
+		content.Children.Add(new TextBlock
 		{
-			Text = "代理分组",
-			FontWeight = FontWeights.SemiBold,
-			VerticalAlignment = VerticalAlignment.Center
+			Text = "代理设置",
+			FontWeight = FontWeights.SemiBold
 		});
-		stackPanel.Children.Add(GroupsHint);
-		StackPanel stackPanel2 = new StackPanel
+		// 1) 代理流模式（与设置页 / 首页 / 代理启动 / 账号绑定共用同一份设置）
+		try
+		{
+			content.Children.Add(SettingsPage.CreateProxyModeSelector());
+		}
+		catch (Exception exMode)
+		{
+			LogHelper.LogError(exMode, "[快速启动] 代理模式切换构建失败");
+		}
+		// 2) 分组管理按钮行
+		StackPanel buttonRow = new StackPanel
 		{
 			Orientation = Orientation.Horizontal,
 			Spacing = 8.0
 		};
-		ServerIpPortButton.Click += ServerIpPort_Click;
-		StartGroupButton.Click += StartGroup_Click;
-		NewGroupButton.Click += NewGroup_Click;
-		stackPanel2.Children.Add(ServerIpPortButton);
-		stackPanel2.Children.Add(StartGroupButton);
-		stackPanel2.Children.Add(NewGroupButton);
-		_lastLaunchText = new TextBlock
-		{
-			FontSize = 12.0,
-			Opacity = 0.75,
-			TextWrapping = TextWrapping.Wrap,
-			Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
-		};
-		StackPanel stackPanel3 = new StackPanel
+		buttonRow.Children.Add(ServerIpPortButton);
+		buttonRow.Children.Add(StartGroupButton);
+		buttonRow.Children.Add(NewGroupButton);
+		content.Children.Add(buttonRow);
+		// 3) 自启动代理 + 清除启动记忆
+		StackPanel autoStartRow = new StackPanel
 		{
 			Orientation = Orientation.Horizontal,
-			Spacing = 8.0,
-			Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
+			Spacing = 8.0
 		};
-		stackPanel3.Children.Add(AutoStartProxySwitch);
-		Button button = new Button
+		autoStartRow.Children.Add(AutoStartProxySwitch);
+		Button clearMemory = new Button
 		{
 			Content = "清除启动记忆",
 			FontSize = 12.0,
@@ -549,24 +940,28 @@ public sealed class GroupsQuickPage : Page
 			Padding = new Thickness(12.0, 0.0, 12.0, 0.0),
 			VerticalAlignment = VerticalAlignment.Center
 		};
-		button.Click += ClearLaunchMemory_Click;
-		stackPanel3.Children.Add(button);
-		StackPanel result = new StackPanel
-		{
-			Spacing = 4.0,
-			Children = 
-			{
-				(UIElement)stackPanel,
-				(UIElement)stackPanel2,
-				(UIElement)stackPanel3,
-				(UIElement)_lastLaunchText,
-				(UIElement)GroupsPanel
-			}
-		};
-		SyncAutoStartProxySwitch();
+		clearMemory.Click += ClearLaunchMemory_Click;
+		autoStartRow.Children.Add(clearMemory);
+		content.Children.Add(autoStartRow);
+		// 4) 上次启动方式提示
 		UpdateLastLaunchText();
-		return result;
+		if (_lastLaunchText != null)
+		{
+			content.Children.Add(_lastLaunchText);
+		}
+		SyncAutoStartProxySwitch();
+		return new Border
+		{
+			Background = ThemeHelper.CardBackground(),
+			BorderBrush = ThemeHelper.Resolve("CardStrokeColorDefaultBrush"),
+			BorderThickness = new Thickness(1.0),
+			CornerRadius = new CornerRadius(12.0),
+			Padding = new Thickness(14.0, 12.0, 14.0, 12.0),
+			Child = content
+		};
 	}
+
+	private bool _proxyButtonsWired;
 
 	private void OnLoaded(object sender, RoutedEventArgs e)
 	{
@@ -583,6 +978,7 @@ public sealed class GroupsQuickPage : Page
 			UpdateLastLaunchText();
 			UpdateStatus();
 			RefreshGroups();
+			RebuildClientCards();
 		}
 		catch (Exception ex)
 		{
@@ -605,6 +1001,7 @@ public sealed class GroupsQuickPage : Page
 			{
 				SyncAutoStartProxySwitch();
 				UpdateLastLaunchText();
+				RebuildClientCards();
 			});
 		}
 		catch
@@ -1922,18 +2319,25 @@ public sealed class GroupsQuickPage : Page
 					_groupRoleChecked.Remove(item7);
 				}
 				RefreshGroups();
-				MainWindow.Instance?.ShowToast("已删除分组「" + captured.Name + "」，按 Ctrl+Z 可撤销", true);
+				MainWindow.Instance?.ShowToast("已删除分组「" + captured.Name + "」", true);
 			}
 		};
+		// 2026-11-20 修复：分组头一行放不下会溢出边缘——拆两行（名称/端口一行，操作按钮一行）
 		stackPanel2.Children.Add(item);
 		stackPanel2.Children.Add(item2);
 		stackPanel2.Children.Add(item3);
 		stackPanel2.Children.Add(groupPortBox);
-		stackPanel2.Children.Add(selectAllBtn);
-		stackPanel2.Children.Add(actionBtn);
-		stackPanel2.Children.Add(button);
-		stackPanel2.Children.Add(button2);
 		stackPanel.Children.Add(stackPanel2);
+		StackPanel headerBtnRow = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 8.0
+		};
+		headerBtnRow.Children.Add(selectAllBtn);
+		headerBtnRow.Children.Add(actionBtn);
+		headerBtnRow.Children.Add(button);
+		headerBtnRow.Children.Add(button2);
+		stackPanel.Children.Add(headerBtnRow);
 		if (g.Roles != null)
 		{
 			IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> source = ProxyCaptureService.ActiveBindingsSnapshot();
@@ -2111,11 +2515,12 @@ public sealed class GroupsQuickPage : Page
 					_groupRoleChecked.Remove(key);
 					SettingsManager.Save(SettingsManager.Instance);
 					RefreshGroups();
-					MainWindow.Instance?.ShowToast("已删除角色「" + capturedRoleDel.RoleName + "」（分组「" + captured.Name + "」），按 Ctrl+Z 可撤销", true);
+					MainWindow.Instance?.ShowToast("已删除角色「" + capturedRoleDel.RoleName + "」（分组「" + captured.Name + "」）", true);
 				};
 				Grid grid = new Grid
 				{
 					ColumnSpacing = 10.0,
+					RowSpacing = 2.0,
 					Padding = new Thickness(8.0, 6.0, 8.0, 6.0)
 				};
 				grid.ColumnDefinitions.Add(new ColumnDefinition
@@ -2130,30 +2535,30 @@ public sealed class GroupsQuickPage : Page
 				{
 					Width = GridLength.Auto
 				});
-				grid.ColumnDefinitions.Add(new ColumnDefinition
-				{
-					Width = GridLength.Auto
-				});
-				grid.ColumnDefinitions.Add(new ColumnDefinition
-				{
-					Width = GridLength.Auto
-				});
-				grid.ColumnDefinitions.Add(new ColumnDefinition
-				{
-					Width = GridLength.Auto
-				});
+				// 2026-11-20 修复：按钮挤在一行会把角色名压扁——启动/复制/删除换到第二行
+				grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+				grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 				Grid.SetColumn(pick, 0);
+				Grid.SetRow(pick, 0);
+				Grid.SetRowSpan(pick, 2);
 				Grid.SetColumn(stackPanel3, 1);
+				Grid.SetRow(stackPanel3, 0);
 				Grid.SetColumn(stackPanel4, 2);
-				Grid.SetColumn(startRole, 3);
-				Grid.SetColumn(button3, 4);
-				Grid.SetColumn(button4, 5);
+				Grid.SetRow(stackPanel4, 0);
+				StackPanel roleBtnRow = new StackPanel
+				{
+					Orientation = Orientation.Horizontal,
+					Spacing = 6.0
+				};
+				roleBtnRow.Children.Add(startRole);
+				roleBtnRow.Children.Add(button3);
+				roleBtnRow.Children.Add(button4);
+				Grid.SetColumn(roleBtnRow, 2);
+				Grid.SetRow(roleBtnRow, 1);
 				grid.Children.Add(pick);
 				grid.Children.Add(stackPanel3);
 				grid.Children.Add(stackPanel4);
-				grid.Children.Add(startRole);
-				grid.Children.Add(button3);
-				grid.Children.Add(button4);
+				grid.Children.Add(roleBtnRow);
 				Border sessionBorder = new Border
 				{
 					Background = (ThemeBrush(flag ? "SubtleFillColorSecondaryBrush" : "ControlFillColorSecondaryBrush") ?? ThemeBrush("CardBackgroundFillColorDefaultBrush")),
@@ -3373,69 +3778,6 @@ public sealed class GroupsQuickPage : Page
 			text2 = text2 + "  uid:" + acc.EntityId;
 		}
 		return text2;
-	}
-
-	private async void QuickStartBtn_Click(object sender, RoutedEventArgs e)
-	{
-		object tag = default(object);
-		int num;
-		if (sender is Button button)
-		{
-			tag = button.Tag;
-			num = 1;
-		}
-		else
-		{
-			num = 0;
-		}
-		if (num == 0)
-		{
-			return;
-		}
-		string accountStr = tag as string;
-		if (accountStr != null && !string.IsNullOrWhiteSpace(accountStr))
-		{
-			AccountStore.LocalAccount localAccount = AccountStore.All.FirstOrDefault((AccountStore.LocalAccount a) => string.Equals(a.Account, accountStr, StringComparison.OrdinalIgnoreCase) && a.IsLoggedIn);
-			if (localAccount != null)
-			{
-				await StartProxyForAccountAsync(localAccount);
-			}
-		}
-	}
-
-	private async Task StartProxyForAccountAsync(AccountStore.LocalAccount acc)
-	{
-		ServerPreset serverPreset = SelectedPreset();
-		if (serverPreset?.IsPending ?? true)
-		{
-			AppendTail("状态: 未选择可用的服务器预设\n");
-			return;
-		}
-		int basePort = ((!int.TryParse(ListenPortBox.Text.Trim(), out var result) || result < 1 || result > 65535) ? ((SettingsManager.Instance.ProxyListenPort > 0) ? SettingsManager.Instance.ProxyListenPort : 25565) : result);
-		List<AccountStore.LocalAccount> list = AccountStore.All.ToList();
-		int index = list.FindIndex((AccountStore.LocalAccount a) => string.Equals(a.Channel, acc.Channel, StringComparison.Ordinal) && string.Equals(a.Account, acc.Account, StringComparison.OrdinalIgnoreCase));
-		if (index < 0)
-		{
-			AppendTail("状态: 账号状态异常，无法启动代理\n");
-			return;
-		}
-		List<ProxyCaptureService.ProxyBinding> list2 = (from b in ProxyStarter.BuildRoleBindings(serverPreset, basePort)
-			where b.AuthAccountIndex == index
-			select b).ToList();
-		if (list2.Count == 0)
-		{
-			MainWindow.Instance?.ShowToast("该账号没有可用角色，代理未启动", false);
-			return;
-		}
-		ProxyCaptureService.TargetFromHandshake = true;
-		ProxyCaptureService.StartBatch(list2, serverPreset.Host, serverPreset.Port);
-		if (!ProxyCaptureService.IsRunning)
-		{
-			AppendTail("状态: 代理启动失败：端口可能被占用\n");
-			return;
-		}
-		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已开启「{serverPreset.Name}」服务器（{AccountLabel(index)}）的代理（端口自动向上递增）\n");
-		SyncUiState();
 	}
 
 	private void ServerIpPort_Click(object sender, RoutedEventArgs e)

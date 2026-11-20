@@ -1,4 +1,4 @@
-#define DEBUG
+﻿#define DEBUG
 using System;
 using System.CodeDom.Compiler;
 using System.Collections.Generic;
@@ -159,8 +159,10 @@ public partial class App : Application
 			HandleBootState();
 			TryAutoStartCapture();
 			TryAutoStartProxy();
+			TryAutoLaunchOfficialClient();
 			TryAutoStartTools();
 			MarketTokenService.StartBackgroundSync();
+			MhyCptdBridge.Start();
 			MemoryDiagnosticsService.Start();
 			MhyunBox.MainWindow.Instance?.ScheduleGameProcessDetection();
 			if (Environment.GetCommandLineArgs().Any((string a) => string.Equals(a, "--hidden", StringComparison.OrdinalIgnoreCase)))
@@ -476,6 +478,68 @@ public partial class App : Application
 		return true;
 	}
 
+	/// <summary>
+	/// 脱盒：用本程序直接拉起官方客户端（C:\MCLDownload 的 1.20.1 + 官方 mod），并让它连接本地认证代理端口。
+	/// 触发条件：--launch-official &lt;端口&gt;，或设置里 AutoStartOfficialClient 打开且有代理在监听。
+	/// </summary>
+	private static void TryAutoLaunchOfficialClient()
+	{
+		AppSettings settings = SettingsManager.Instance;
+		int port = CliArgs.LaunchOfficialPort;
+		if (port <= 0)
+		{
+			port = CliArgs.FakeLauncherProxyPort;
+		}
+		if (port <= 0 && settings.AutoStartOfficialClient)
+		{
+			int[] activePorts = ProxyCaptureService.ActivePorts;
+			if (activePorts.Length != 0)
+			{
+				port = activePorts[0];
+			}
+		}
+		if (port <= 0)
+		{
+			return;
+		}
+		string role = (!string.IsNullOrWhiteSpace(CliArgs.LoginNameOverride)) ? CliArgs.LoginNameOverride : settings.OfficialClientRole;
+		int accountIndex = CliArgs.AuthAccountIndex;
+		string? rootOverride = CliArgs.OfficialClientRootOverride;
+		Task.Run(async delegate
+		{
+			try
+			{
+				await Task.Delay(1500);
+				// 全脱盒：默认走 FakeLauncher + GameType=2（官方认证/反作弊路径），
+				// 客户端不经过网易盒子即可进服并保持正常对局能力。
+				int fakeProxyPort = CliArgs.FakeLauncherProxyPort;
+				if (fakeProxyPort <= 0 && settings.AutoStartOfficialClient)
+				{
+					fakeProxyPort = port;
+				}
+				FakeLauncherService? fake = null;
+				int gameType = 1;
+				int launcherPort = 0;
+				if (fakeProxyPort > 0)
+				{
+					fake = FakeLauncherService.Start(0, "127.0.0.1", fakeProxyPort, "MhyunBox");
+					gameType = 2;
+					launcherPort = fake.Port;
+					LogHelper.Log("[假启动器] 已启动，端口 " + fake.Port + "，房间指向 127.0.0.1:" + fakeProxyPort + "，GameType=2");
+				}
+				OfficialClientLaunchResult r = OfficialClientLauncher.Launch(port, role, accountIndex, rootOverride, false, null, gameType, launcherPort, CliArgs.Uid, null);
+				if (!r.Ok)
+				{
+					LogHelper.Log("[官方客户端] 脱盒启动失败：" + r.Message);
+					MhyunBox.MainWindow.Instance?.ShowToast("[官方客户端] " + r.Message);
+				}
+			}
+			catch (Exception ex)
+			{
+				LogHelper.LogError(ex, "[官方客户端] 脱盒启动异常");
+			}
+		});
+	}
 	private static void TryAutoLaunchPcl(AppSettings settings)
 	{
 		Task.Run(async delegate
@@ -914,128 +978,9 @@ public partial class App : Application
 			void Commit();
 		}
 
-		[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-		private static extern int SHGetPropertyStoreFromParsingName(string path, IntPtr pbc, uint flags, ref Guid riid, out IPropertyStore store);
-
-		/// <summary>
-		/// 【保留但不调用】写 System.AppUserModel.ID 的实验路径。
-		/// 本机实测：写了之后开始菜单 AppsFolder 反而查不到 MhyUnBox 条目，
-		/// 媒体卡还是「未知应用」；基础 .lnk + exe 路径 AUMID 才是这台机器上
-		/// 稳定生效的链。留着这段代码方便以后在属性系统正常的机器上做对照验证。
-		/// </summary>
-		private static bool WriteShortcutAumid(string lnk)
-		{
-			try
-			{
-				Guid iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
-				int hr = SHGetPropertyStoreFromParsingName(lnk, IntPtr.Zero, 2u, ref iid, out IPropertyStore store);
-				if (hr != 0 || store == null)
-				{
-					LogHelper.Log("[AUMID] 属性系统不可用，媒体卡应用名走注册表链");
-					return false;
-				}
-				Guid fmtid = AppUserModelFmtid;
-				// 只写 System.AppUserModel.ID 这一条：媒体卡按「开始菜单里 ID 与进程
-				// AUMID 匹配的 .lnk」解析应用名/图标，快捷方式本身的名字与图标就够了。
-				// 不写 Relaunch* 三件套——它们要求 @"dll,-res" 形态的间接字符串，
-				// 塞普通文本会让 shell 解析失败、开始菜单条目被剔除，反而更糟。
-				SetShortcutString(store, fmtid, 5, Aumid);
-				store.Commit();
-				// 回读一遍再记日志：属性系统对这些键偶尔会「接受写入但丢弃」（权限/规范化），
-				// 只有回读到值才算真的生效，否则下次启动还要再补。
-				string id = ReadShortcutString(store, fmtid, 5);
-				LogHelper.Log($"[AUMID] 快捷方式属性回读: System.AppUserModel.ID=[{id}]");
-				return string.Equals(id, Aumid, StringComparison.Ordinal);
-			}
-			catch (Exception ex)
-			{
-				LogHelper.Log("[AUMID] 快捷方式属性写入降级（进程改用 exe 路径 AUMID）: " + ex.Message);
-				return false;
-			}
-		}
-
-		/// <summary>只读打开 .lnk 的属性库，读回 System.AppUserModel.ID。
-		/// 读不到就说明属性系统不可用 / 属性没生效，调用方据此降级。</summary>
-		private static string? ReadShortcutAumid(string lnk)
-		{
-			try
-			{
-				Guid iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
-				int hr = SHGetPropertyStoreFromParsingName(lnk, IntPtr.Zero, 0u, ref iid, out IPropertyStore store);
-				if (hr != 0 || store == null)
-				{
-					return null;
-				}
-				string? id = ReadShortcutString(store, AppUserModelFmtid, 5);
-				return string.IsNullOrWhiteSpace(id) ? null : id;
-			}
-			catch (Exception ex)
-			{
-				LogHelper.Log("[AUMID] 快捷方式属性只读回退: " + ex.Message);
-				return null;
-			}
-		}
-
-		/// <summary>写一条 VT_LPWSTR 属性到快捷方式属性库（值由系统复制，写完即可释放）。</summary>
-		private static void SetShortcutString(IPropertyStore store, Guid fmtid, int pid, string value)
-		{
-			IntPtr mem = Marshal.StringToHGlobalUni(value ?? "");
-			try
-			{
-				PROPERTYKEY key = new PROPERTYKEY
-				{
-					fmtid = fmtid,
-					pid = pid
-				};
-				PROPVARIANT pv = new PROPVARIANT
-				{
-					vt = 31,
-					pwszVal = mem
-				};
-				store.SetValue(ref key, ref pv);
-			}
-			finally
-			{
-				Marshal.FreeHGlobal(mem);
-			}
-		}
-
 		[DllImport("ole32.dll")]
 		private static extern int PropVariantClear(ref PROPVARIANT pv);
 
-		/// <summary>回读一条字符串属性（失败/为空返回空串），用于确认写入是否真的生效。</summary>
-		private static string ReadShortcutString(IPropertyStore store, Guid fmtid, int pid)
-		{
-			PROPVARIANT pv = default(PROPVARIANT);
-			try
-			{
-				PROPERTYKEY key = new PROPERTYKEY
-				{
-					fmtid = fmtid,
-					pid = pid
-				};
-				store.GetValue(ref key, out pv);
-				if (pv.vt != 31 || pv.pwszVal == IntPtr.Zero)
-				{
-					return "";
-				}
-				return Marshal.PtrToStringUni(pv.pwszVal) ?? "";
-			}
-			catch
-			{
-				return "";
-			}
-			finally
-			{
-				try
-				{
-					PropVariantClear(ref pv);
-				}
-				catch
-				{
-				}
-			}
-		}
 	}
 
 	/// <summary>
