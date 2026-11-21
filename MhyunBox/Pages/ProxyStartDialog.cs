@@ -973,7 +973,7 @@ public sealed class ProxyStartDialog : ContentDialog
 		{
 			return acc.Nickname;
 		}
-		return AccountStore.Mask(acc.Account);
+		return acc.Account ?? "";
 	}
 
 	private void SyncSelectionState()

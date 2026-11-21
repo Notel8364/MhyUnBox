@@ -160,7 +160,7 @@ public sealed partial class AboutPage : Page
 			bool hasThanks = false;
 			foreach (object child in usage.Children)
 			{
-				if (child is TextBlock t && (t.Text ?? "") == "致谢名单")
+				if (child is TextBlock t && ((t.Text ?? "") == "致谢名单" || (t.Text ?? "") == "致谢声明"))
 				{
 					hasThanks = true;
 					break;
@@ -170,7 +170,7 @@ public sealed partial class AboutPage : Page
 			{
 				usage.Children.Add(new TextBlock
 				{
-					Text = "致谢名单",
+					Text = "致谢声明",
 					FontSize = 14.0,
 					FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
 					Margin = new Thickness(0.0, 14.0, 0.0, 0.0)

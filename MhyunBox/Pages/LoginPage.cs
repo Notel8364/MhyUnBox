@@ -1734,9 +1734,13 @@ public sealed partial class LoginPage : Page
 		};
 		button2.Click += delegate
 		{
+			string deletedChannel = acc.Channel;
+			string deletedAccount = acc.Account;
 			AccountStore.Remove(acc.Channel, acc.Account);
+			// 删号收尾：停掉该账号的机器人监听、撤掉客户端机器人账号、清掉自启动记忆与卡片配置。
+			NexusEndpointService.ForgetDeletedAccounts(new[] { (deletedChannel, deletedAccount) });
 			ProxyCaptureService.RestartIfRunningForPreset();
-			ShowInfo("已删除该账号及其保存的会话。分组角色与端口记忆已保留，重新绑定同账号可继续使用；手动启动代理时会自动跳过已删账号。", ok: true, "删除账号");
+			ShowInfo("已删除该账号及其保存的会话，并清理了对应的机器人代理与自启动记录。分组角色与端口记忆已保留，重新绑定同账号可继续使用。", ok: true, "删除账号");
 			RefreshAccountList();
 		};
 		Grid.SetColumn(button2, 3);
@@ -1798,13 +1802,18 @@ public sealed partial class LoginPage : Page
 			}
 			try
 			{
+				List<(string Channel, string Account)> deleted = accounts
+					.Select(a => (a.Channel, a.Account))
+					.ToList();
 				foreach (AccountStore.LocalAccount item in accounts)
 				{
 					AccountStore.Remove(item.Channel, item.Account);
 				}
+				// 全部删号后必须清掉自启动记忆与机器人卡片配置，否则下次启动仍会按旧记录拉代理/机器人。
+				NexusEndpointService.ForgetDeletedAccounts(deleted);
 				ProxyCaptureService.RestartIfRunningForPreset();
 				LogHelper.Log("[账号] 全部删除账号会话: " + accounts.Count + " 个");
-				ShowInfo("已删除全部 " + accounts.Count + " 个账号会话及其登录凭证。分组角色与端口记忆保留。", ok: true, "全部删除");
+				ShowInfo("已删除全部 " + accounts.Count + " 个账号会话及其登录凭证，并清理了对应的机器人代理与自启动记录。分组角色与端口记忆保留。", ok: true, "全部删除");
 				RefreshAccountList();
 			}
 			catch (Exception ex)

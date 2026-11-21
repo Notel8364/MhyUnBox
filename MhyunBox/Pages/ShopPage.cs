@@ -208,7 +208,7 @@ public sealed class ShopPage : Page
 
 	private static string makeAccountLabel(AccountStore.LocalAccount account)
 	{
-		string text = string.IsNullOrWhiteSpace(account.Nickname) ? AccountStore.Mask(account.Account) : account.Nickname;
+		string text = string.IsNullOrWhiteSpace(account.Nickname) ? (account.Account ?? "") : account.Nickname;
 		return text + "（" + account.Channel + "）";
 	}
 

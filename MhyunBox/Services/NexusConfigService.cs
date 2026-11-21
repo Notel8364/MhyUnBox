@@ -224,7 +224,7 @@ public static class NexusConfigService
 	/// 把 autoReconnect=true 一起带回来；allowedPorts 为空 = 全部清理。
 	/// 返回清理的条目数。
 	/// </summary>
-	public static int PruneOrphanMarkerBindings(string gameDir, IReadOnlySet<int>? allowedPorts)
+	public static int PruneOrphanMarkerBindings(string gameDir, IReadOnlySet<int>? allowedPorts, bool clearAllLoopback = false)
 	{
 		if (string.IsNullOrWhiteSpace(gameDir) || !File.Exists(ConfigPath(gameDir)))
 		{
@@ -251,10 +251,18 @@ public static class NexusConfigService
 			int removed = 0;
 			if (root["bindings"] is JsonObject bindings)
 			{
+				// clearAllLoopback = 用户明确关停全部机器人：
+				// 所有「账号已不存在」的本机回环绑定都清掉（不要求 note 是程序写的），
+				// 否则旧版本 / 模组自己生成、note 为空的卡片会一直留在游戏里。
+				// 普通清理仍只动程序写的 note 标记条目，避免误删用户手动加的本地账号。
+				bool clearAll = clearAllLoopback;
 				foreach (KeyValuePair<string, JsonNode?> kv in bindings.ToList())
 				{
-					if (kv.Value is not JsonObject b
-						|| !string.Equals(Str(b, "note"), "MhyunBox 机器人号代理", StringComparison.Ordinal))
+					if (kv.Value is not JsonObject b)
+					{
+						continue;
+					}
+					if (!clearAll && !string.Equals(Str(b, "note"), "MhyunBox 机器人号代理", StringComparison.Ordinal))
 					{
 						continue;
 					}
@@ -268,7 +276,7 @@ public static class NexusConfigService
 					string host = key.Substring(at + 1, colon - at - 1);
 					bool loopback = string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
 						|| string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase);
-					if (!loopback || (allowedPorts != null && allowedPorts.Contains(port)) || accountKeys.Contains(key))
+					if (!loopback || (!clearAll && allowedPorts != null && allowedPorts.Contains(port)) || accountKeys.Contains(key))
 					{
 						continue;
 					}

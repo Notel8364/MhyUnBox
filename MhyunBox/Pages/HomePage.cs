@@ -56,7 +56,11 @@ public sealed partial class HomePage : Page
 		// 服务器预设 · 启动客户端（脱盒直启，选预设即启动）
 		try
 		{
-			HomeRoot.Children.Add(BuildClientLauncherCard());
+			bool hidden = SettingsManager.Instance.ClientLauncherHiddenPages?.Contains("HomePage") == true;
+			if (!hidden)
+			{
+				HomeRoot.Children.Add(BuildClientLauncherCard());
+			}
 		}
 		catch (Exception exLaunch)
 		{
@@ -255,6 +259,31 @@ public sealed partial class HomePage : Page
 			await RefreshBuildStampAsync(forceRefresh: true);
 		};
 		actions.Children.Add(_stampRefreshButton);
+		CheckBox promptCheck = new CheckBox
+		{
+			Content = "弹窗提醒更新",
+			IsChecked = SettingsManager.Instance.DllUpdatePromptEnabled,
+			FontSize = 12.0,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		ToolTipService.SetToolTip(promptCheck, "关闭后 DLL 版本不一致只写日志，不再弹加群提醒。");
+		promptCheck.Click += (_, _) =>
+		{
+			try
+			{
+				AppSettings settings = SettingsManager.Instance;
+				settings.DllUpdatePromptEnabled = promptCheck.IsChecked == true;
+				SettingsManager.Save(settings);
+				MainWindow.Instance?.ShowToast(settings.DllUpdatePromptEnabled
+					? "已开启：DLL 版本不一致时弹窗提醒"
+					: "已关闭：DLL 版本不一致时只写日志，不弹窗");
+			}
+			catch (Exception exPrompt)
+			{
+				LogHelper.LogError(exPrompt, "[构建校验] 保存 DLL 弹窗提醒开关失败");
+			}
+		};
+		actions.Children.Add(promptCheck);
 		if (SettingsManager.Instance.DebugMode)
 		{
 			HyperlinkButton previewLink = new HyperlinkButton
@@ -359,7 +388,7 @@ public sealed partial class HomePage : Page
 				{
 					BuildStampStatus.Mixed => new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(byte.MaxValue, 235, 80, 80)),
 					BuildStampStatus.Behind => ThemeHelper.Resolve("SystemFillColorCautionBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(byte.MaxValue, 230, 160, 40)),
-					BuildStampStatus.Ahead => ThemeHelper.Resolve("SystemFillColorCautionBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(byte.MaxValue, 230, 160, 40)),
+					BuildStampStatus.Ahead => ThemeHelper.Resolve("TextFillColorSecondaryBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(200, 128, 128, 128)),
 					_ => ThemeHelper.Resolve("TextFillColorSecondaryBrush") ?? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(200, 128, 128, 128))
 				};
 			}

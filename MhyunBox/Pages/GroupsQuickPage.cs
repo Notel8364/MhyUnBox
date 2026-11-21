@@ -247,41 +247,64 @@ public sealed class GroupsQuickPage : Page
 
 	private RoleLauncherPanel? _launcherPanel;
 
+	/// <summary>右侧「代理设置」卡与并排 Grid（标题行的显示/隐藏开关控制它）。</summary>
+	private FrameworkElement? _proxySettingsCard;
+	private Grid? _proxySettingsPair;
+
 	private StackPanel? _clientCardsHost;
 
 	private TextBlock? _clientCardsEmptyHint;
 
 	private void InsertClientLauncherCard(StackPanel panel)
 	{
+		// 启动卡按钮（客户端卡里的「启动 / 载入」）需要这个面板做实际启动，
+		// 即便用户选择隐藏卡片也保留实例，只是不挂到页面上。
 		_launcherPanel = new RoleLauncherPanel();
-		Border border = new Border
+		bool launcherHidden = SettingsManager.Instance.ClientLauncherHiddenPages?.Contains("GroupsQuickPage") == true;
+		if (!launcherHidden)
 		{
-			Background = ThemeHelper.CardBackground(),
-			BorderBrush = ThemeHelper.Resolve("CardStrokeColorDefaultBrush"),
-			BorderThickness = new Thickness(1.0),
-			CornerRadius = new CornerRadius(12.0),
-			Padding = new Thickness(14.0, 12.0, 14.0, 12.0),
-			Child = _launcherPanel.Root
-		};
-		// 2026-11-20：代理设置卡移到「客户端配置与启动」卡**右边并排**（仅快速启动页有这张卡，
-		// 其他页面复用的 RoleLauncherPanel 不含代理设置），左卡自适应宽、右卡定宽。
-		FrameworkElement proxyCard = BuildProxySettingsCard();
-		Grid pair = new Grid
+			Border border = new Border
+			{
+				Background = ThemeHelper.CardBackground(),
+				BorderBrush = ThemeHelper.Resolve("CardStrokeColorDefaultBrush"),
+				BorderThickness = new Thickness(1.0),
+				CornerRadius = new CornerRadius(12.0),
+				Padding = new Thickness(14.0, 12.0, 14.0, 12.0),
+				Child = _launcherPanel.Root
+			};
+			// 2026-11-20：代理设置卡移到「客户端配置与启动」卡**右边并排**（仅快速启动页有这张卡，
+			// 其他页面复用的 RoleLauncherPanel 不含代理设置），左卡自适应宽、右卡定宽。
+			FrameworkElement proxyCard = BuildProxySettingsCard();
+			Grid pair = new Grid
+			{
+				ColumnSpacing = 12.0,
+				VerticalAlignment = VerticalAlignment.Top
+			};
+			pair.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
+			pair.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star), MaxWidth = 420.0 });
+			Grid.SetColumn(border, 0);
+			Grid.SetColumn(proxyCard, 1);
+			proxyCard.VerticalAlignment = VerticalAlignment.Stretch;
+			pair.Children.Add(border);
+			pair.Children.Add(proxyCard);
+			_proxySettingsCard = proxyCard;
+			_proxySettingsPair = pair;
+			panel.Children.Insert(0, pair);
+			ApplyProxySettingsVisibility(SettingsManager.Instance.ShowProxySettingsCard, animate: false);
+		}
+		else
 		{
-			ColumnSpacing = 12.0,
-			VerticalAlignment = VerticalAlignment.Top
-		};
-		pair.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
-		pair.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star), MaxWidth = 420.0 });
-		Grid.SetColumn(border, 0);
-		Grid.SetColumn(proxyCard, 1);
-		proxyCard.VerticalAlignment = VerticalAlignment.Stretch;
-		pair.Children.Add(border);
-		pair.Children.Add(proxyCard);
-		panel.Children.Insert(0, pair);
+			FrameworkElement proxyOnly = BuildProxySettingsCard();
+			panel.Children.Insert(0, proxyOnly);
+			_proxySettingsCard = proxyOnly;
+			_proxySettingsPair = null;
+			ApplyProxySettingsVisibility(SettingsManager.Instance.ShowProxySettingsCard, animate: false);
+		}
 		// 2026-11-20 三卡布局：1) 客户端配置与启动 + 代理设置（并排）  2) 角色组与客户端卡（共享栏目）
 		panel.Children.Insert(Math.Min(1, panel.Children.Count), BuildSharedSectionCard());
-		LogHelper.Log("[启动客户端] 快速启动页已插入客户端配置与启动 + 代理设置（并排） + 角色组与客户端卡");
+		LogHelper.Log(launcherHidden
+			? "[启动客户端] 快速启动页已隐藏客户端配置卡，仅保留代理设置 + 角色组与客户端卡"
+			: "[启动客户端] 快速启动页已插入客户端配置与启动 + 代理设置（并排） + 角色组与客户端卡");
 	}
 
 	/// <summary>「角色组 / 客户端卡」共享栏目（2026-11-20）：两块内容共占一个位置，
@@ -337,19 +360,49 @@ public sealed class GroupsQuickPage : Page
 		radioRow.Children.Add(_layoutCardsRadio);
 		radioRow.Children.Add(_layoutBothRadio);
 
-		StackPanel titleRow = new StackPanel
+		StackPanel titleLeft = new StackPanel
 		{
 			Orientation = Orientation.Horizontal,
 			Spacing = 12.0
 		};
-		titleRow.Children.Add(new TextBlock
+		titleLeft.Children.Add(new TextBlock
 		{
 			Text = "角色组与客户端卡",
 			FontWeight = FontWeights.SemiBold,
 			VerticalAlignment = VerticalAlignment.Center
 		});
-		titleRow.Children.Add(GroupsHint);
-		titleRow.Children.Add(radioRow);
+		titleLeft.Children.Add(GroupsHint);
+		titleLeft.Children.Add(radioRow);
+		CheckBox proxyToggle = new CheckBox
+		{
+			Content = "显示代理设置",
+			FontSize = 12.5,
+			IsChecked = SettingsManager.Instance.ShowProxySettingsCard,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		ToolTipService.SetToolTip(proxyToggle, "显示/隐藏右上角的「代理设置」卡，切换带淡入淡出过渡。");
+		proxyToggle.Click += delegate
+		{
+			try
+			{
+				AppSettings settings = SettingsManager.Instance;
+				settings.ShowProxySettingsCard = proxyToggle.IsChecked == true;
+				SettingsManager.Save(settings);
+				ApplyProxySettingsVisibility(settings.ShowProxySettingsCard, animate: true);
+			}
+			catch (Exception exToggle)
+			{
+				LogHelper.DebugError(exToggle, "[快速启动] 保存代理设置卡显示状态失败");
+			}
+		};
+		Grid titleRow = new Grid { ColumnSpacing = 12.0 };
+		titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
+		titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+		Grid.SetColumn(titleLeft, 0);
+		titleRow.Children.Add(titleLeft);
+		Grid.SetColumn(proxyToggle, 1);
+		proxyToggle.HorizontalAlignment = HorizontalAlignment.Right;
+		titleRow.Children.Add(proxyToggle);
 
 		// 并排 = 两列 Grid；只显示其一 = 另一列 Collapsed
 		_sharedGrid = new Grid { ColumnSpacing = 14.0 };
@@ -390,6 +443,74 @@ public sealed class GroupsQuickPage : Page
 	private RadioButton? _layoutCardsRadio;
 
 	private RadioButton? _layoutBothRadio;
+
+	/// <summary>显示/隐藏右侧「代理设置」卡：带 180ms 淡入淡出 + 轻微缩放过渡。</summary>
+	private void ApplyProxySettingsVisibility(bool show, bool animate)
+	{
+		FrameworkElement? card = _proxySettingsCard;
+		if (card == null)
+		{
+			return;
+		}
+		void SetPairColumnVisible(bool visible)
+		{
+			if (_proxySettingsPair != null && _proxySettingsPair.ColumnDefinitions.Count >= 2)
+			{
+				_proxySettingsPair.ColumnDefinitions[1].Width = visible
+					? new GridLength(1.0, GridUnitType.Star)
+					: new GridLength(0.0, GridUnitType.Pixel);
+			}
+		}
+		if (!animate)
+		{
+			card.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+			card.Opacity = 1.0;
+			SetPairColumnVisible(show);
+			return;
+		}
+		ScaleTransform scale = card.RenderTransform as ScaleTransform ?? new ScaleTransform
+		{
+			ScaleX = 1.0,
+			ScaleY = 1.0
+		};
+		card.RenderTransform = scale;
+		card.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.0);
+		Storyboard storyboard = new Storyboard();
+		DoubleAnimation fade = new DoubleAnimation
+		{
+			To = show ? 1.0 : 0.0,
+			Duration = TimeSpan.FromMilliseconds(180.0),
+			EnableDependentAnimation = true
+		};
+		Storyboard.SetTarget(fade, card);
+		Storyboard.SetTargetProperty(fade, "Opacity");
+		storyboard.Children.Add(fade);
+		DoubleAnimation scaleAnim = new DoubleAnimation
+		{
+			To = show ? 1.0 : 0.92,
+			Duration = TimeSpan.FromMilliseconds(180.0),
+			EnableDependentAnimation = true
+		};
+		Storyboard.SetTarget(scaleAnim, scale);
+		Storyboard.SetTargetProperty(scaleAnim, "ScaleY");
+		storyboard.Children.Add(scaleAnim);
+		if (show)
+		{
+			card.Visibility = Visibility.Visible;
+			card.Opacity = 0.0;
+			scale.ScaleY = 0.92;
+			SetPairColumnVisible(true);
+		}
+		else
+		{
+			storyboard.Completed += delegate
+			{
+				card.Visibility = Visibility.Collapsed;
+				SetPairColumnVisible(false);
+			};
+		}
+		storyboard.Begin();
+	}
 
 	private void LayoutRadio_Changed(object sender, RoutedEventArgs e)
 	{
@@ -1064,16 +1185,15 @@ public sealed class GroupsQuickPage : Page
 		}
 	}
 
-	// 角色代理运行判定：角色名 + 账号（channel/account）匹配活动绑定，
-	// 兼容从「代理启动」页以不同端口启动的同角色代理；账号信息缺失时回退按端口匹配。
-	private static bool IsRoleRunning(ProxyGroupRole? role)
+	// 角色代理运行判定：优先按端口 + 角色名 + 账号精确匹配，
+	// 端口漂移时按角色名 + 账号 + 目标服务器兜底（与停止逻辑同一口径）。
+	private static bool IsRoleRunning(ProxyGroup? g, ProxyGroupRole? role)
 	{
 		if (role == null)
 		{
 			return false;
 		}
-		List<AccountStore.LocalAccount> accounts = AccountStore.All.ToList();
-		return ProxyCaptureService.ActiveBindingsSnapshot().Any((ProxyCaptureService.ActiveBindingInfo b) => BindingMatchesRole(b, role, accounts));
+		return BindingsForRoleStop(g, role).Count > 0;
 	}
 
 	/// <summary>活动绑定与分组角色是否同一实例：角色名必须一致；账号能对上即命中
@@ -1364,7 +1484,7 @@ public sealed class GroupsQuickPage : Page
 		{
 			return localAccount.Nickname;
 		}
-		return AccountStore.Mask(localAccount.Account);
+		return localAccount.Account ?? "";
 	}
 
 	// 主题笔刷统一走 ThemeHelper（App.xaml 未定义 ThemeDictionaries，本地查表在深色主题下会拿到浅色画笔）
@@ -1831,7 +1951,7 @@ public sealed class GroupsQuickPage : Page
 			return;
 		}
 		GroupsPanel.Visibility = Visibility.Visible;
-		GroupsHint.Text = "共 " + list.Count + " 个分组（可混合两个服务器的角色）";
+		GroupsHint.Text = "共 " + list.Count + " 个分组";
 		string connectHost = CurrentConnectHost();
 		foreach (ProxyGroup item in list)
 		{
@@ -1990,40 +2110,122 @@ public sealed class GroupsQuickPage : Page
 		return true;
 	}
 
-	private async Task StopGroupRoleAsync(ProxyGroup g, ProxyGroupRole role, bool refreshUi = true)
+	/// <summary>
+	/// 找出这个分组角色当前实际在跑的监听：优先按「端口 + 角色名 + 账号」精确匹配；
+	/// 端口不一致时（机器人卡片被端口冲突自愈 / 从会话多开页启动过）再按
+	/// 「角色名 + 账号 + 目标服务器」兜底，避免「运行中但停止按钮找不到端口」。
+	/// </summary>
+	private static List<ProxyCaptureService.ActiveBindingInfo> BindingsForRoleStop(ProxyGroup? g, ProxyGroupRole? role)
 	{
-		if (g != null && role != null)
+		var result = new List<ProxyCaptureService.ActiveBindingInfo>();
+		if (role == null)
 		{
-			// 只停该角色自己的代理：优先按角色名+账号匹配实际运行端口
-			//（兼容代理启动页用不同端口启动的同一角色），匹配不到再按分组记录端口。
-			int port = RunningPortForRole(role);
-			if (port <= 0)
+			return result;
+		}
+		List<AccountStore.LocalAccount> accounts = AccountStore.All.ToList();
+		IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> snapshot = ProxyCaptureService.ActiveBindingsSnapshot();
+		List<ProxyCaptureService.ActiveBindingInfo> exact = snapshot
+			.Where(b => BindingMatchesRole(b, role, accounts))
+			.ToList();
+		if (exact.Count > 0)
+		{
+			return exact;
+		}
+		ServerPreset? preset = ServerPresets.Find(role.ServerName)
+			?? (g == null ? null : ServerPresets.Find(g.ServerName));
+		string host = preset?.Host ?? "";
+		int targetPort = preset?.Port ?? 0;
+		int accountIndex = ProxyStarter.ResolveAccountIndex(role, accounts, out _);
+		// 其它分组占用的端口不能算到本组头上：同角色可以在多个组各跑一条（不同端口），
+		// 否则停止 A 组会把 B 组正在跑的同名角色一起停掉。
+		var otherGroupPorts = new HashSet<int>();
+		foreach (ProxyGroup group in SettingsManager.Instance.ProxyGroups ?? new List<ProxyGroup>())
+		{
+			if (group == null || ReferenceEquals(group, g))
 			{
-				port = role.ListenPort;
+				continue;
 			}
-			if (port > 0)
+			foreach (ProxyGroupRole otherRole in group.Roles ?? new List<ProxyGroupRole>())
 			{
-				// 快速启动页以服务器代理为主；但同一个端口可能已被「会话多开」的
-				// 机器人代理占用（两边都用 20000+ 号段）。此前这种情况一律被拒绝，
-				// 表现就是「停止」按钮点了没反应，所以这里按角色名精确核对后再放行。
-				bool stoppedServer = ProxyCaptureService.StopBindingForRole(port, role.RoleName);
-				AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] "
-					+ (stoppedServer
-						? $"已停止分组「{g.Name}」角色「{role.RoleName}」代理（端口 {port}）"
-						: $"分组「{g.Name}」角色「{role.RoleName}」端口 {port} 没有可停止的监听")
-					+ "\n");
-				if (!stoppedServer)
+				if (otherRole != null && otherRole.ListenPort > 0)
 				{
-					MainWindow.Instance?.ShowToast(
-						$"端口 {port} 没有监听中的代理（可能已经停了，或被别的角色占用）", false);
+					otherGroupPorts.Add(otherRole.ListenPort);
 				}
 			}
-			if (refreshUi)
-			{
-				QueueUiRefresh();
-			}
-			await Task.CompletedTask;
 		}
+		return snapshot
+			.Where(b =>
+			{
+				if (!string.Equals((b.LoginName ?? "").Trim(), (role.RoleName ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+				{
+					return false;
+				}
+				if (!string.IsNullOrWhiteSpace(host) && !string.Equals(b.TargetHost ?? "", host, StringComparison.OrdinalIgnoreCase))
+				{
+					return false;
+				}
+				if (targetPort > 0 && b.TargetPort != targetPort)
+				{
+					return false;
+				}
+				if (otherGroupPorts.Contains(b.ListenPort))
+				{
+					return false;
+				}
+				// 账号能对上时才用账号过滤；账号已删除 / 索引用不上时只靠角色名 + 服务器。
+				if (accountIndex >= 0 && b.AuthAccountIndex >= 0 && b.AuthAccountIndex != accountIndex)
+				{
+					return false;
+				}
+				return true;
+			})
+			.ToList();
+	}
+
+	private async Task<bool> StopGroupRoleAsync(ProxyGroup g, ProxyGroupRole role, bool refreshUi = true)
+	{
+		if (g == null || role == null)
+		{
+			return false;
+		}
+		// 只停该角色自己的代理：优先按角色名+账号匹配实际运行端口
+		//（兼容代理启动页用不同端口启动的同一角色、以及机器人自启用其它端口占位），
+		// 匹配不到再按分组记录端口。
+		List<ProxyCaptureService.ActiveBindingInfo> bindings = BindingsForRoleStop(g, role);
+		List<int> ports = bindings.Select(b => b.ListenPort).Where(p => p > 0).Distinct().ToList();
+		if (ports.Count == 0 && role.ListenPort > 0)
+		{
+			ports.Add(role.ListenPort);
+		}
+		int stopped = 0;
+		var stoppedPorts = new List<int>();
+		foreach (int port in ports)
+		{
+			if (ProxyCaptureService.StopPort(port))
+			{
+				stopped++;
+				stoppedPorts.Add(port);
+			}
+		}
+		// 机器人卡片还留着「已启用 + 自启动」的话，游戏下次进服 / 程序下次启动又会挂回来。
+		int cards = NexusEndpointService.DisableBotCardsForPorts(stoppedPorts);
+		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] "
+			+ (stopped > 0
+				? $"已停止分组「{g.Name}」角色「{role.RoleName}」代理（{stopped} 个端口"
+					+ (cards > 0 ? $"，含 {cards} 个机器人代理（卡片已停用）" : "") + "）"
+				: $"分组「{g.Name}」角色「{role.RoleName}」没有可停止的监听")
+			+ "\n");
+		if (stopped == 0)
+		{
+			MainWindow.Instance?.ShowToast(
+				$"角色「{role.RoleName}」当前没有监听中的代理（可能已经停了）", false);
+		}
+		if (refreshUi)
+		{
+			QueueUiRefresh();
+		}
+		await Task.CompletedTask;
+		return stopped > 0;
 	}
 
 	private UIElement BuildGroupRow(ProxyGroup g, string connectHost)
@@ -2119,7 +2321,7 @@ public sealed class GroupsQuickPage : Page
 		{
 			bool flag2 = roleChecks.Count == 0 || roleChecks.All((CheckBox c) => c.IsChecked == true);
 			selectAllBtn.Content = (flag2 ? "取消" : "全选");
-			bool flag3 = (g.Roles ?? new List<ProxyGroupRole>()).Any(IsRoleRunning);
+			bool flag3 = (g.Roles ?? new List<ProxyGroupRole>()).Any(r => IsRoleRunning(g, r));
 			bool flag4 = roleChecks.Any((CheckBox c) => c.IsChecked == true);
 			if (flag3)
 			{
@@ -2217,18 +2419,18 @@ public sealed class GroupsQuickPage : Page
 		{
 			if (EnsureActivated())
 			{
-				List<AccountStore.LocalAccount> accountsForStop = AccountStore.All.ToList();
 				List<ProxyGroupRole> all = (g.Roles ?? new List<ProxyGroupRole>()).Where((ProxyGroupRole proxyGroupRole) => !string.IsNullOrWhiteSpace(proxyGroupRole.RoleName) && !string.IsNullOrWhiteSpace(proxyGroupRole.Account)).ToList();
-				List<ProxyCaptureService.ActiveBindingInfo> binds = ProxyCaptureService.ActiveBindingsSnapshot().ToList();
-				if (all.Any((ProxyGroupRole proxyGroupRole) => binds.Any((ProxyCaptureService.ActiveBindingInfo b) => BindingMatchesRole(b, proxyGroupRole, accountsForStop))))
+				if (all.Any((ProxyGroupRole proxyGroupRole) => IsRoleRunning(captured, proxyGroupRole)))
 				{
 					int stopped = 0;
 					foreach (ProxyGroupRole r2 in all)
 					{
-						if (binds.Any((ProxyCaptureService.ActiveBindingInfo b) => BindingMatchesRole(b, r2, accountsForStop)))
+						if (IsRoleRunning(captured, r2))
 						{
-							await StopGroupRoleAsync(captured, r2, refreshUi: false);
-							stopped++;
+							if (await StopGroupRoleAsync(captured, r2, refreshUi: false))
+							{
+								stopped++;
+							}
 						}
 					}
 					QueueUiRefresh();
@@ -2306,6 +2508,29 @@ public sealed class GroupsQuickPage : Page
 			}) == ContentDialogResult.Primary)
 			{
 				AppSettings instance = SettingsManager.Instance;
+				// 删除分组前先把组内角色对应的代理停掉，并清理游戏内模组里的机器人代理卡片；
+				// 否则分组删了、端口还在监听，游戏里仍挂着一批没有归属的机器人。
+				List<int> groupPorts = new List<int>();
+				foreach (ProxyGroupRole gr in captured.Roles ?? new List<ProxyGroupRole>())
+				{
+					if (gr == null)
+					{
+						continue;
+					}
+					if (gr.ListenPort > 0)
+					{
+						groupPorts.Add(gr.ListenPort);
+					}
+					groupPorts.AddRange(BindingsForRoleStop(captured, gr)
+						.Select(b => b.ListenPort)
+						.Where(p => p > 0));
+				}
+				groupPorts = groupPorts.Distinct().ToList();
+				foreach (int port in groupPorts)
+				{
+					ProxyCaptureService.StopPort(port);
+				}
+				int clearedCards = NexusEndpointService.DisableBotCardsForPorts(groupPorts);
 				_undo.Push(new UndoRepo
 				{
 					Kind = "group",
@@ -2319,7 +2544,8 @@ public sealed class GroupsQuickPage : Page
 					_groupRoleChecked.Remove(item7);
 				}
 				RefreshGroups();
-				MainWindow.Instance?.ShowToast("已删除分组「" + captured.Name + "」", true);
+				MainWindow.Instance?.ShowToast("已删除分组「" + captured.Name + "」"
+					+ (clearedCards > 0 ? "，已清理游戏内代理卡片 " + clearedCards + " 张" : ""), true);
 			}
 		};
 		// 2026-11-20 修复：分组头一行放不下会溢出边缘——拆两行（名称/端口一行，操作按钮一行）
@@ -2340,7 +2566,6 @@ public sealed class GroupsQuickPage : Page
 		stackPanel.Children.Add(headerBtnRow);
 		if (g.Roles != null)
 		{
-			IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> source = ProxyCaptureService.ActiveBindingsSnapshot();
 			Brush foreground = ThemeBrush("AccentFillColorDefaultBrush") ?? new SolidColorBrush(Color.FromArgb(byte.MaxValue, 64, 158, byte.MaxValue));
 			foreach (ProxyGroupRole r in (from proxyGroupRole in g.Roles
 				where proxyGroupRole != null && !string.IsNullOrWhiteSpace(proxyGroupRole.RoleName)
@@ -2349,9 +2574,8 @@ public sealed class GroupsQuickPage : Page
 			{
 				ServerPreset serverPreset = ServerPresets.Find(r.ServerName) ?? ServerPresets.Find(g.ServerName);
 				string serverLabel = serverPreset?.Name ?? g.ServerName ?? "";
-			// 运行状态：按角色名+账号匹配活动绑定（兼容代理启动页用不同端口启动的同角色代理）
-			List<AccountStore.LocalAccount> accountsForRow = AccountStore.All.ToList();
-				bool flag = source.Any((ProxyCaptureService.ActiveBindingInfo b) => BindingMatchesRole(b, r, accountsForRow));
+				// 运行状态与停止逻辑同一口径：端口不一致时按角色名 + 账号 + 目标服务器兜底。
+				bool flag = IsRoleRunning(captured, r);
 				int runningPort = (flag ? RunningPortForRole(r) : 0);
 				string credWarn = GroupCredentialWarning(r);
 				string text = serverPreset?.Name ?? g.ServerName ?? "";
@@ -2460,7 +2684,7 @@ public sealed class GroupsQuickPage : Page
 				ProxyGroupRole capturedRole = r;
 				startRole.Click += async delegate
 				{
-					if (IsRoleRunning(capturedRole))
+					if (IsRoleRunning(capturedG, capturedRole))
 					{
 						await StopGroupRoleAsync(capturedG, capturedRole);
 					}
@@ -2499,10 +2723,24 @@ public sealed class GroupsQuickPage : Page
 				ProxyGroupRole capturedRoleDel = r;
 				button4.Click += delegate
 				{
-					if (capturedRoleDel.ListenPort > 0)
+					if (capturedRoleDel.ListenPort > 0 || BindingsForRoleStop(captured, capturedRoleDel).Count > 0)
 					{
-						// 删除角色只停服务器代理监听；机器人代理监听归「会话多开」管。
-						ProxyCaptureService.StopServerBinding(capturedRoleDel.ListenPort);
+						// 删除角色 = 这条角色不再由快速启动管理：服务器代理与机器人监听一起停，
+						// 并撤掉游戏内模组里对应的机器人代理卡片，避免「角色删了，游戏里还在挂」。
+						List<int> rolePorts = BindingsForRoleStop(captured, capturedRoleDel)
+							.Select(b => b.ListenPort)
+							.Where(p => p > 0)
+							.Distinct()
+							.ToList();
+						if (capturedRoleDel.ListenPort > 0 && !rolePorts.Contains(capturedRoleDel.ListenPort))
+						{
+							rolePorts.Add(capturedRoleDel.ListenPort);
+						}
+						foreach (int port in rolePorts)
+						{
+							ProxyCaptureService.StopPort(port);
+						}
+						NexusEndpointService.DisableBotCardsForPorts(rolePorts);
 					}
 					_undo.Push(new UndoRepo
 					{
@@ -2572,7 +2810,7 @@ public sealed class GroupsQuickPage : Page
 				ProxyGroupRole syncRole = r;
 				_runningStateRefreshers.Add(delegate
 				{
-					bool flag2 = IsRoleRunning(syncRole);
+					bool flag2 = IsRoleRunning(captured, syncRole);
 					startRole.Content = (flag2 ? "停止" : "启动");
 					sessionBorder.Background = ThemeBrush(flag2 ? "SubtleFillColorSecondaryBrush" : "ControlFillColorSecondaryBrush") ?? ThemeBrush("CardBackgroundFillColorDefaultBrush");
 					sessionBorder.BorderBrush = (flag2 ? (ThemeBrush("AccentFillColorDefaultBrush") ?? ThemeBrush("ControlStrokeColorDefaultBrush")) : (ThemeBrush("ControlStrokeColorDefaultBrush") ?? ThemeBrush("CardStrokeColorDefaultBrush")));
@@ -3053,7 +3291,7 @@ public sealed class GroupsQuickPage : Page
 				};
 				TextBlock content = new TextBlock
 				{
-					Text = item16.Channel + " · " + (string.IsNullOrWhiteSpace(item16.Nickname) ? AccountStore.Mask(item16.Account ?? "") : item16.Nickname),
+					Text = item16.Channel + " · " + (string.IsNullOrWhiteSpace(item16.Nickname) ? (item16.Account ?? "") : item16.Nickname),
 					FontSize = 13.0,
 					TextTrimming = TextTrimming.CharacterEllipsis,
 					MaxLines = 1,

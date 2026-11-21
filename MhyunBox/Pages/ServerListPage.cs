@@ -11,6 +11,7 @@ using MhyunBox.Settings;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Text;
@@ -279,7 +280,7 @@ public sealed class ServerListPage : Page
 
 	private static string AccountLabel(AccountStore.LocalAccount a)
 	{
-		string text = string.IsNullOrWhiteSpace(a.Nickname) ? AccountStore.Mask(a.Account) : a.Nickname;
+		string text = string.IsNullOrWhiteSpace(a.Nickname) ? (a.Account ?? "") : a.Nickname;
 		return "[" + a.Channel + "] " + text;
 	}
 
@@ -904,6 +905,27 @@ public sealed class ServerListPage : Page
 				TextWrapping = TextWrapping.Wrap
 			});
 		}
+		RichTextBlock subtitle = new RichTextBlock
+		{
+			FontSize = 18.0,
+			FontWeight = FontWeights.SemiBold,
+			TextWrapping = TextWrapping.Wrap,
+			Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
+		};
+		TextBlock subtitleHint = new TextBlock
+		{
+			FontSize = 12.5,
+			TextWrapping = TextWrapping.Wrap,
+			Opacity = 0.85
+		};
+		body.Children.Add(new TextBlock
+		{
+			Text = "字幕核对（逐字显示，打错字会标红）",
+			FontSize = 12.0,
+			Opacity = 0.7
+		});
+		body.Children.Add(subtitle);
+		body.Children.Add(subtitleHint);
 		body.Children.Add(input);
 		ContentDialog dialog = new ContentDialog
 		{
@@ -914,10 +936,71 @@ public sealed class ServerListPage : Page
 			IsPrimaryButtonEnabled = false,
 			XamlRoot = base.XamlRoot
 		};
+		// 逐字字幕 + 错字检测：正确字绿色、打错字红色、未输入灰色。
+		// 任何一位不一致都直接提示「打错字」，而不是等用户点确认才失败。
+		void RefreshAgreementSubtitle()
+		{
+			string typed = input.Text ?? "";
+			subtitle.Blocks.Clear();
+			Paragraph paragraph = new Paragraph();
+			int firstWrong = -1;
+			for (int i = 0; i < requiredText.Length; i++)
+			{
+				char expect = requiredText[i];
+				bool has = i < typed.Length;
+				char actual = has ? typed[i] : '\0';
+				bool ok = has && actual == expect;
+				if (has && !ok && firstWrong < 0)
+				{
+					firstWrong = i;
+				}
+				Run run = new Run
+				{
+					Text = expect.ToString(),
+					Foreground = new SolidColorBrush(ok
+						? Windows.UI.Color.FromArgb(255, 56, 158, 13)
+						: (has ? Windows.UI.Color.FromArgb(255, 196, 43, 28) : Windows.UI.Color.FromArgb(255, 150, 150, 150)))
+				};
+				paragraph.Inlines.Add(run);
+			}
+			if (typed.Length > requiredText.Length)
+			{
+				paragraph.Inlines.Add(new Run
+				{
+					Text = "〔多输入：" + typed.Substring(requiredText.Length) + "〕",
+					Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 196, 43, 28))
+				});
+			}
+			subtitle.Blocks.Add(paragraph);
+			if (typed.Length == 0)
+			{
+				subtitleHint.Text = "请按上面的文字逐字输入，输入到哪一位就核对到哪一位。";
+				subtitleHint.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 150, 150, 150));
+			}
+			else if (firstWrong >= 0)
+			{
+				subtitleHint.Text = "打错字：第 " + (firstWrong + 1) + " 个字应为「" + requiredText[firstWrong]
+					+ "」，你输入的是「" + typed[firstWrong] + "」。";
+				subtitleHint.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 196, 43, 28));
+			}
+			else if (typed.Length < requiredText.Length)
+			{
+				subtitleHint.Text = "已输入 " + typed.Length + "/" + requiredText.Length + " 个字，还差 "
+					+ (requiredText.Length - typed.Length) + " 个。";
+				subtitleHint.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 210, 150, 20));
+			}
+			else
+			{
+				subtitleHint.Text = "✓ 逐字校验通过，可以点「确认」。";
+				subtitleHint.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 56, 158, 13));
+			}
+			dialog.IsPrimaryButtonEnabled = string.Equals(typed.Trim(), requiredText, StringComparison.Ordinal);
+		}
 		input.TextChanged += delegate
 		{
-			dialog.IsPrimaryButtonEnabled = string.Equals(input.Text.Trim(), requiredText, StringComparison.Ordinal);
+			RefreshAgreementSubtitle();
 		};
+		RefreshAgreementSubtitle();
 		ContentDialogResult result = await DialogGate.ShowAsync(dialog);
 		bool agreed = result == ContentDialogResult.Primary;
 		if (agreed)

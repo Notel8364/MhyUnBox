@@ -527,7 +527,11 @@ public partial class App : Application
 					launcherPort = fake.Port;
 					LogHelper.Log("[假启动器] 已启动，端口 " + fake.Port + "，房间指向 127.0.0.1:" + fakeProxyPort + "，GameType=2");
 				}
-				OfficialClientLaunchResult r = OfficialClientLauncher.Launch(port, role, accountIndex, rootOverride, false, null, gameType, launcherPort, CliArgs.Uid, null);
+				int memMb = MhyunBox.Pages.RoleLauncherPanel.ResolveMemoryMb();
+				string memoryArg = "-Xmx" + memMb + "M";
+				string extraJvm = MhyunBox.Pages.RoleLauncherPanel.ResolveJvmArgs();
+				LogHelper.Log("[官方客户端] 启动内存参数：" + memoryArg + (extraJvm.Length == 0 ? "" : "，附加参数 " + extraJvm));
+				OfficialClientLaunchResult r = OfficialClientLauncher.Launch(port, role, accountIndex, rootOverride, false, null, gameType, launcherPort, CliArgs.Uid, null, null, null, memoryArg, extraJvm);
 				if (!r.Ok)
 				{
 					LogHelper.Log("[官方客户端] 脱盒启动失败：" + r.Message);

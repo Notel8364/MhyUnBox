@@ -11,6 +11,10 @@ public static class SettingsManager
 
 	private static AppSettings? _instance;
 
+	/// <summary>设置保存互斥：UI 线程与后台（机器人自启 / 账号保活 / 游戏监听）会并发保存，
+	/// 共用同一个 .tmp 文件时并发写会互相顶掉，导致其中一次配置丢失。</summary>
+	private static readonly object SaveLock = new object();
+
 	public static AppSettings Instance => _instance ?? (_instance = Load());
 
 	public static event Action<AppSettings>? Saved;
@@ -61,35 +65,38 @@ public static class SettingsManager
 
 	public static void Save(AppSettings settings)
 	{
-		_instance = settings;
-		string text = FilePath + ".tmp";
-		try
+		lock (SaveLock)
 		{
-			Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-			File.WriteAllText(text, JsonSerializer.Serialize(settings, new JsonSerializerOptions
-			{
-				WriteIndented = true
-			}));
-			File.Move(text, FilePath, overwrite: true);
-		}
-		catch (Exception ex)
-		{
+			_instance = settings;
+			string text = FilePath + ".tmp";
 			try
 			{
-				LogHelper.Log("[设置] 保存设置失败: " + ex.Message);
-			}
-			catch
-			{
-			}
-			try
-			{
-				if (File.Exists(text))
+				Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
+				File.WriteAllText(text, JsonSerializer.Serialize(settings, new JsonSerializerOptions
 				{
-					File.Delete(text);
-				}
+					WriteIndented = true
+				}));
+				File.Move(text, FilePath, overwrite: true);
 			}
-			catch
+			catch (Exception ex)
 			{
+				try
+				{
+					LogHelper.Log("[设置] 保存设置失败: " + ex.Message);
+				}
+				catch
+				{
+				}
+				try
+				{
+					if (File.Exists(text))
+					{
+						File.Delete(text);
+					}
+				}
+				catch
+				{
+				}
 			}
 		}
 		Saved?.Invoke(settings);

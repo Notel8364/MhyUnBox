@@ -152,9 +152,10 @@ public sealed partial class MainWindow : Window
 		["ProxyCapturePage"] = (typeof(ProxyCapturePage), "代理启动"),
 		["GroupsQuickPage"] = (typeof(GroupsQuickPage), "快速启动"),
 		["InstancesPage"] = (typeof(InstancesViewPage), "会话多开"),
+		["ClientLaunchPage"] = (typeof(ClientLaunchPage), "启动客户端"),
+		["ClientUpdatePage"] = (typeof(ClientUpdatePage), "更新客户端"),
 		["ServerListPage"] = (typeof(ServerListPage), "服务器列表"),
 		["ShopPage"] = (typeof(ShopPage), "商城"),
-		["ClientUpdatePage"] = (typeof(ClientUpdatePage), "更新客户端"),
 		["SpeedTestPage"] = (typeof(SpeedTestPage), "网速测试"),
 		["ToolsPage"] = (typeof(ToolsPage), "防护/工具"),
 		["SessionLogPage"] = (typeof(SessionLogPage), "日志"),
@@ -1381,6 +1382,12 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
+	/// <summary>设置变化后按当前主题重建缓存页面（客户端配置卡显示位置等即时生效）。</summary>
+	public void ReloadCachedPages()
+	{
+		RefreshPagesForTheme();
+	}
+
 	private void InitializeMainNavigationIfNeeded()
 	{
 		if (_mainNavigationInitialized)
@@ -1394,9 +1401,10 @@ public sealed partial class MainWindow : Window
 		AddNavItem(Symbol.Sync, "ProxyCapturePage");
 		AddNavItem(Symbol.AllApps, "GroupsQuickPage");
 		AddNavItem(Symbol.View, "InstancesPage");
+		AddNavItem(Symbol.Play, "ClientLaunchPage");
+		AddNavItem(Symbol.Download, "ClientUpdatePage");
 		AddNavItem(Symbol.Library, "ServerListPage");
 		AddNavItem(Symbol.Shop, "ShopPage");
-		AddNavItem(Symbol.Download, "ClientUpdatePage");
 		AddNavItem(Symbol.World, "SpeedTestPage");
 		AddNavItem(Symbol.Repair, "ToolsPage");
 		AddNavItem(Symbol.ContactInfo, "AboutPage");

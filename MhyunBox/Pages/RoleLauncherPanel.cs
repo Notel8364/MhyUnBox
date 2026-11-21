@@ -7,6 +7,7 @@ using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using MhyunBox.Services;
 using MhyunBox.Services.BjdProxy;
 using MhyunBox.Settings;
@@ -38,6 +39,15 @@ public sealed class RoleLauncherPanel
 	{
 		Spacing = 6.0
 	};
+
+	/// <summary>内存 / Java 参数配置区：默认不挂在客户端配置卡里，
+	/// 由「启动客户端」页单独放到下方卡片（构造参数 includeTuningInRoot=true 时也可内嵌）。</summary>
+	private readonly StackPanel _tuningRoot = new StackPanel
+	{
+		Spacing = 6.0
+	};
+
+	public FrameworkElement TuningRoot => _tuningRoot;
 
 	private readonly ComboBox _entryBox = new ComboBox
 	{
@@ -71,11 +81,22 @@ public sealed class RoleLauncherPanel
 		PlaceholderText = "自选 JRE 解释器路径（留空则用上方选择/自动）"
 	};
 
-	/// <summary>内存优化下拉（0 = 自动默认 2G）。</summary>
-	private readonly ComboBox _memBox = new ComboBox
+	/// <summary>
+	/// 内存配置（对齐 PCL）：全局配置 / 自动配置 / 自定义，右侧总内存拖动条。
+	/// </summary>
+	private readonly RadioButton _memGlobal = new RadioButton { Content = "全局配置", GroupName = "mhy_mem_mode", FontSize = 12.5 };
+	private readonly RadioButton _memAuto = new RadioButton { Content = "自动配置", GroupName = "mhy_mem_mode", FontSize = 12.5 };
+	private readonly RadioButton _memCustom = new RadioButton { Content = "自定义", GroupName = "mhy_mem_mode", FontSize = 12.5 };
+	private readonly Slider _memSlider = new Slider { Minimum = 1.0, Maximum = 32.0, StepFrequency = 0.5, Width = 240.0, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
+	private readonly TextBlock _memLabel = new TextBlock { FontSize = 12.0, Opacity = 0.85, MinWidth = 330.0, HorizontalAlignment = HorizontalAlignment.Left, FontFamily = new FontFamily("Consolas"), VerticalAlignment = VerticalAlignment.Center };
+	private DispatcherQueueTimer? _memSaveTimer;
+	private bool _syncingMem;
+
+	/// <summary>附加 Java 参数（追加到 -Xmx 之后、主类之前）。</summary>
+	private readonly TextBox _jvmArgsBox = new TextBox
 	{
-		MinWidth = 200.0,
-		HorizontalAlignment = HorizontalAlignment.Left
+		Width = 420.0,
+		PlaceholderText = "附加 Java 参数（空格分隔，如 -XX:+UseG1GC -Dfoo=bar）"
 	};
 
 	private bool _syncingJava;
@@ -120,7 +141,7 @@ public sealed class RoleLauncherPanel
 
 	public FrameworkElement Root => _root;
 
-	public RoleLauncherPanel()
+	public RoleLauncherPanel(bool includeTuningInRoot = false)
 	{
 		_root.Children.Add(new TextBlock
 		{
@@ -223,23 +244,69 @@ public sealed class RoleLauncherPanel
 		jreCustomRow.Children.Add(pickJre);
 		_root.Children.Add(jreCustomRow);
 
-		// —— 内存优化（2026-11-20）：游戏内存分配，自动 = 默认 2G ——
-		StackPanel memRow = new StackPanel
+		// —— 内存配置（对齐 PCL）：左侧三种模式从上到下，右侧总内存拖动条 ——
+		Grid memGrid = new Grid
+		{
+			ColumnSpacing = 14.0,
+			Margin = new Thickness(0.0, 2.0, 0.0, 2.0)
+		};
+		memGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+		memGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
+		StackPanel memModes = new StackPanel { Spacing = 2.0 };
+		memModes.Children.Add(new TextBlock
+		{
+			Text = "内存大小",
+			FontSize = 12.0,
+			Opacity = 0.7
+		});
+		memModes.Children.Add(_memGlobal);
+		memModes.Children.Add(_memAuto);
+		memModes.Children.Add(_memCustom);
+		Grid.SetColumn(memModes, 0);
+		memGrid.Children.Add(memModes);
+		StackPanel memSliderPanel = new StackPanel
+		{
+			Spacing = 2.0,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		memSliderPanel.Children.Add(_memSlider);
+		memSliderPanel.Children.Add(_memLabel);
+		Grid.SetColumn(memSliderPanel, 1);
+		memGrid.Children.Add(memSliderPanel);
+		_tuningRoot.Children.Add(memGrid);
+
+		// —— 启动参数（附加 Java 参数，追加在 -Xmx 之后、主类之前）——
+		StackPanel jvmArgsRow = new StackPanel
 		{
 			Orientation = Orientation.Horizontal,
 			Spacing = 8.0
 		};
-		memRow.Children.Add(new TextBlock
+		jvmArgsRow.Children.Add(new TextBlock
 		{
-			Text = "内存优化",
+			Text = "Java 参数",
 			FontSize = 12.0,
 			Opacity = 0.7,
 			VerticalAlignment = VerticalAlignment.Center,
 			MinWidth = 58.0
 		});
-		memRow.Children.Add(_memBox);
-		_root.Children.Add(memRow);
+		jvmArgsRow.Children.Add(_jvmArgsBox);
+		Button resetJvm = new Button
+		{
+			Content = "恢复推荐"
+		};
+		ToolTipService.SetToolTip(resetJvm, "清空附加参数，恢复内置的 G1GC 推荐参数。");
+		resetJvm.Click += (object s, RoutedEventArgs e) =>
+		{
+			_jvmArgsBox.Text = "";
+			SaveJvmArgs();
+		};
+		jvmArgsRow.Children.Add(resetJvm);
+		_tuningRoot.Children.Add(jvmArgsRow);
 
+		if (includeTuningInRoot)
+		{
+			_root.Children.Add(_tuningRoot);
+		}
 		_root.Children.Add(_status);
 
 		_launch.Click += Launch_Click;
@@ -249,14 +316,18 @@ public sealed class RoleLauncherPanel
 		_directBox.LostFocus += ConfigBox_LostFocus;
 		_jreCustomBox.LostFocus += JreCustomBox_LostFocus;
 		_jreBox.SelectionChanged += JreBox_SelectionChanged;
-		_memBox.SelectionChanged += MemBox_SelectionChanged;
+		_jvmArgsBox.LostFocus += (object s, RoutedEventArgs e) => SaveJvmArgs();
+		_memGlobal.Checked += MemMode_Checked;
+		_memAuto.Checked += MemMode_Checked;
+		_memCustom.Checked += MemMode_Checked;
+		_memSlider.ValueChanged += MemSlider_ValueChanged;
 		_deleteCard.Click += DeleteCard_Click;
 		ThemeHelper.SolidComboPopup(_entryBox);
 		ThemeHelper.SolidComboPopup(_jreBox);
-		ThemeHelper.SolidComboPopup(_memBox);
 		_ = LoadJreListAsync();
-		InitMemBox();
+		InitMemoryUi();
 		_jreCustomBox.Text = SettingsManager.Instance.OfficialClientJavaHome ?? "";
+		_jvmArgsBox.Text = SettingsManager.Instance.OfficialClientJvmArgs ?? "";
 
 		DispatcherQueue? queue = MainWindow.UIQueue;
 		if (queue != null)
@@ -747,65 +818,282 @@ public sealed class RoleLauncherPanel
 		}
 	}
 
-	// ---- 内存优化 ----
+	// ---- 内存配置 / Java 参数 ----
 
-	private static readonly (int Mb, string Label)[] MemoryOptions = new (int, string)[6]
-	{
-		(0, "自动（默认 2G）"),
-		(2048, "2 GB"),
-		(3072, "3 GB"),
-		(4096, "4 GB"),
-		(6144, "6 GB"),
-		(8192, "8 GB")
-	};
-
-	private void InitMemBox()
+	/// <summary>本机物理内存（GB，供 UI 显示；取 GC 可见总内存）。</summary>
+	private static double PhysicalMemoryGb()
 	{
 		try
 		{
-			_syncingJava = true;
-			int saved = SettingsManager.Instance.OfficialClientMemoryMb;
-			int idx = 0;
-			for (int i = 0; i < MemoryOptions.Length; i++)
+			return Math.Round(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1024.0 / 1024.0 / 1024.0, 1);
+		}
+		catch
+		{
+			return 0.0;
+		}
+	}
+
+	/// <summary>自动配置：按本机总内存给一个 PCL 风格的推荐值。</summary>
+	public static int AutoMemoryMb()
+	{
+		double totalGb = PhysicalMemoryGb();
+		if (totalGb <= 3.0)
+		{
+			return 1024;
+		}
+		if (totalGb <= 6.0)
+		{
+			return 2048;
+		}
+		if (totalGb <= 10.0)
+		{
+			return 3072;
+		}
+		if (totalGb <= 16.0)
+		{
+			return 4096;
+		}
+		if (totalGb <= 24.0)
+		{
+			return 6144;
+		}
+		return 8192;
+	}
+
+	/// <summary>解析本次启动使用的内存（MB）：全局配置 / 自动配置 / 自定义。</summary>
+	public static int ResolveMemoryMb()
+	{
+		AppSettings settings = SettingsManager.Instance;
+		string mode = (settings.OfficialClientMemoryMode ?? "global").Trim().ToLowerInvariant();
+		int mb;
+		if (mode == "auto")
+		{
+			mb = AutoMemoryMb();
+		}
+		else if (mode == "custom")
+		{
+			mb = settings.OfficialClientMemoryMb;
+			if (mb <= 0)
 			{
-				_memBox.Items.Add(MemoryOptions[i].Label);
-				if (MemoryOptions[i].Mb == saved)
-				{
-					idx = i;
-				}
+				mb = 4096;
 			}
-			_memBox.SelectedIndex = idx;
+		}
+		else
+		{
+			mb = settings.OfficialClientGlobalMemoryMb;
+			if (mb <= 0)
+			{
+				mb = 4096;
+			}
+		}
+		return Math.Clamp(mb, 512, 65536);
+	}
+
+	/// <summary>解析附加 Java 参数（追加在 -Xmx 之后、主类之前）。</summary>
+	public static string ResolveJvmArgs()
+	{
+		return (SettingsManager.Instance.OfficialClientJvmArgs ?? "").Trim();
+	}
+
+	private void InitMemoryUi()
+	{
+		try
+		{
+			AppSettings settings = SettingsManager.Instance;
+			string mode = (settings.OfficialClientMemoryMode ?? "global").Trim().ToLowerInvariant();
+			_syncingMem = true;
+			_memGlobal.IsChecked = mode != "auto" && mode != "custom";
+			_memAuto.IsChecked = mode == "auto";
+			_memCustom.IsChecked = mode == "custom";
+			double total = PhysicalMemoryGb();
+			if (total >= 2.0)
+			{
+				_memSlider.Maximum = Math.Min(64.0, Math.Max(2.0, Math.Round(total)));
+			}
+			_syncingMem = false;
+			RefreshMemoryUi();
+			if (_memSaveTimer == null && MainWindow.UIQueue != null)
+			{
+				_memSaveTimer = MainWindow.UIQueue.CreateTimer();
+				_memSaveTimer.Interval = TimeSpan.FromMilliseconds(400.0);
+				_memSaveTimer.IsRepeating = false;
+				_memSaveTimer.Tick += delegate
+				{
+					try
+					{
+						_memSaveTimer?.Stop();
+					}
+					catch
+					{
+					}
+					SaveMemoryValue();
+				};
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[启动客户端] 初始化内存配置失败");
+		}
+	}
+
+	private string CurrentMemoryMode()
+	{
+		if (_memAuto.IsChecked == true)
+		{
+			return "auto";
+		}
+		if (_memCustom.IsChecked == true)
+		{
+			return "custom";
+		}
+		return "global";
+	}
+
+	private void RefreshMemoryUi()
+	{
+		try
+		{
+			AppSettings settings = SettingsManager.Instance;
+			string mode = CurrentMemoryMode();
+			int mb = (mode == "auto") ? AutoMemoryMb()
+				: (mode == "custom" ? settings.OfficialClientMemoryMb : settings.OfficialClientGlobalMemoryMb);
+			if (mb <= 0)
+			{
+				mb = 4096;
+			}
+			_syncingMem = true;
+			_memSlider.IsEnabled = mode != "auto";
+			_memSlider.Value = Math.Clamp(mb / 1024.0, _memSlider.Minimum, _memSlider.Maximum);
+			_syncingMem = false;
+			UpdateMemoryLabel(mb);
 		}
 		catch
 		{
 		}
-		finally
+	}
+
+	private void UpdateMemoryLabel(int mb)
+	{
+		try
 		{
-			_syncingJava = false;
+			string mode = CurrentMemoryMode();
+			string modeLabel = mode == "auto" ? "自动配置" : (mode == "custom" ? "自定义" : "全局配置");
+			double total = PhysicalMemoryGb();
+			_memLabel.Text = modeLabel + "：" + (mb / 1024.0).ToString("0.0") + " GB（-Xmx" + mb + "M）"
+				+ (total > 0 ? "｜本机 " + total.ToString("0.0") + " GB" : "");
+			// 数值变化用短暂淡入过渡，避免拖动时文字“跳/漂”；
+			// 固定宽度 + 等宽字体让括号里的 MB 位数变化不推动整行。
+			try
+			{
+				DoubleAnimation fade = new DoubleAnimation
+				{
+					From = 0.45,
+					To = 0.85,
+					Duration = TimeSpan.FromMilliseconds(140.0),
+					EnableDependentAnimation = true
+				};
+				Storyboard.SetTarget(fade, _memLabel);
+				Storyboard.SetTargetProperty(fade, "Opacity");
+				Storyboard storyboard = new Storyboard();
+				storyboard.Children.Add(fade);
+				storyboard.Begin();
+			}
+			catch
+			{
+			}
+		}
+		catch
+		{
 		}
 	}
 
-	private void MemBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	private void MemMode_Checked(object sender, RoutedEventArgs e)
 	{
-		if (_syncingJava)
+		if (_syncingMem)
 		{
 			return;
 		}
 		try
 		{
-			int idx = _memBox.SelectedIndex;
-			if (idx < 0 || idx >= MemoryOptions.Length)
+			AppSettings settings = SettingsManager.Instance;
+			string mode = CurrentMemoryMode();
+			if (!string.Equals(settings.OfficialClientMemoryMode, mode, StringComparison.Ordinal))
+			{
+				settings.OfficialClientMemoryMode = mode;
+				SettingsManager.Save(settings);
+			}
+			RefreshMemoryUi();
+			LogHelper.Log("[启动客户端] 内存配置模式 => " + mode);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[启动客户端] 保存内存配置模式失败");
+		}
+	}
+
+	private void MemSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+	{
+		if (_syncingMem)
+		{
+			return;
+		}
+		UpdateMemoryLabel((int)Math.Round(e.NewValue * 1024.0));
+		try
+		{
+			_memSaveTimer?.Stop();
+			_memSaveTimer?.Start();
+		}
+		catch
+		{
+		}
+	}
+
+	private void SaveMemoryValue()
+	{
+		try
+		{
+			string mode = CurrentMemoryMode();
+			if (mode == "auto")
 			{
 				return;
 			}
+			int mb = (int)Math.Round(_memSlider.Value * 1024.0);
 			AppSettings settings = SettingsManager.Instance;
-			settings.OfficialClientMemoryMb = MemoryOptions[idx].Mb;
+			if (mode == "custom")
+			{
+				settings.OfficialClientMemoryMb = mb;
+			}
+			else
+			{
+				settings.OfficialClientGlobalMemoryMb = mb;
+			}
 			SettingsManager.Save(settings);
-			LogHelper.Log("[启动客户端] 内存优化 => " + MemoryOptions[idx].Label + (MemoryOptions[idx].Mb > 0 ? ("（-Xmx" + MemoryOptions[idx].Mb + "M）") : ""));
+			UpdateMemoryLabel(mb);
+			LogHelper.Log("[启动客户端] 内存配置 => " + mode + " / -Xmx" + mb + "M");
 		}
-		catch (Exception exMem)
+		catch (Exception ex)
 		{
-			LogHelper.DebugError(exMem, "[启动客户端] 保存内存优化失败");
+			LogHelper.DebugError(ex, "[启动客户端] 保存内存大小失败");
+		}
+	}
+
+	private void SaveJvmArgs()
+	{
+		try
+		{
+			AppSettings settings = SettingsManager.Instance;
+			string text = (_jvmArgsBox.Text ?? "").Trim();
+			if (string.Equals(settings.OfficialClientJvmArgs ?? "", text, StringComparison.Ordinal))
+			{
+				return;
+			}
+			settings.OfficialClientJvmArgs = text;
+			SettingsManager.Save(settings);
+			LogHelper.Log("[启动客户端] Java 参数 => " + (text.Length == 0 ? "(推荐默认)" : text));
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[启动客户端] 保存 Java 参数失败");
 		}
 	}
 
@@ -1198,9 +1486,13 @@ public sealed class RoleLauncherPanel
 			{
 				javaHome = (settings.OfficialClientJreSelected ?? "").Trim();
 			}
-			// 内存优化（0 = 自动默认 2G，由启动器内部决定）
-			int memMb = settings.OfficialClientMemoryMb;
-			string? memoryArg = (memMb > 0) ? ("-Xmx" + memMb + "M") : null;
+			// 内存配置（全局 / 自动 / 自定义）+ 附加 Java 参数
+			int memMb = ResolveMemoryMb();
+			string memoryArg = "-Xmx" + memMb + "M";
+			string extraJvm = ResolveJvmArgs();
+			LogHelper.Log("[启动客户端] 本次启动内存参数: " + memoryArg
+				+ "（模式=" + (settings.OfficialClientMemoryMode ?? "global") + "），附加参数="
+				+ (extraJvm.Length == 0 ? "(无)" : extraJvm));
 
 			if (IsBjd(preset))
 			{
@@ -1232,7 +1524,8 @@ public sealed class RoleLauncherPanel
 					null,
 					(javaHome.Length == 0) ? null : javaHome,
 					null,
-					memoryArg));
+					memoryArg,
+					extraJvm));
 				if (!r.Ok)
 				{
 					FakeLauncherService.StopInstance(fake);
@@ -1278,7 +1571,8 @@ public sealed class RoleLauncherPanel
 				null,
 				(javaHome.Length == 0) ? null : javaHome,
 				(directText.Length == 0) ? "" : directText,
-				memoryArg));
+				memoryArg,
+				extraJvm));
 			if (!r2.Ok)
 			{
 				_status.Text = "启动失败：" + r2.Message;

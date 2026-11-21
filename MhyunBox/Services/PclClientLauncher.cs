@@ -153,7 +153,7 @@ public static class PclClientLauncher
 	}
 
 	/// <summary>用 PCL 客户端启动并连服。</summary>
-	public static OfficialClientLaunchResult Launch(PclClientInfo info, string targetHost, int targetPort, string loginName, string uuid, long uid, string? javaHome = null, bool consoleJava = false, string? memoryArg = null)
+	public static OfficialClientLaunchResult Launch(PclClientInfo info, string targetHost, int targetPort, string loginName, string uuid, long uid, string? javaHome = null, bool consoleJava = false, string? memoryArg = null, string? extraJvmArgs = null)
 	{
 		OfficialClientLaunchResult result = new OfficialClientLaunchResult { Root = info.McRoot };
 		try
@@ -337,7 +337,7 @@ public static class PclClientLauncher
 			string cp = string.Join(";", classpath);
 			// 2026-11-20 帧率优化（对齐 PCL 快速启动 GC 参数）：G1 分代调优降低 GC 停顿与卡顿，
 			// 减少 1.12.2 / Forge 环境下掉帧；内存大小仍由 memoryArg（内存优化选项）控制。
-			string jvm = string.Join(" ", new[]
+			var jvmParts = new List<string>
 			{
 				memoryArg ?? "-Xmx2000M",
 				"-XX:+UseG1GC",
@@ -354,7 +354,13 @@ public static class PclClientLauncher
 				"-Dlog4j2.formatMsgNoLookups=true",
 				"-cp \"" + cp + "\"",
 				mainClass
-			});
+			};
+			// 用户附加 Java 参数必须插在主类之前（放在 mainClass 之后会被当成游戏参数）。
+			if (!string.IsNullOrWhiteSpace(extraJvmArgs))
+			{
+				jvmParts.Insert(jvmParts.Count - 1, extraJvmArgs.Trim());
+			}
+			string jvm = string.Join(" ", jvmParts);
 			string fullArgs = jvm + " " + game;
 			result.CommandLine = fullArgs;
 			LogHelper.Log($"[PCL客户端] 启动 root={info.McRoot} 版本={info.VersionName} java={javaExe} 工作目录={info.WorkingDir} 目标={(hasTarget ? (targetHost + ":" + targetPort) : "主菜单")} 登录名={loginName}");

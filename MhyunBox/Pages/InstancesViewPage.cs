@@ -71,7 +71,7 @@ public sealed class InstancesViewPage : Page
 	private readonly Dictionary<int, List<CheckBox>> _headChecks = new Dictionary<int, List<CheckBox>>();
 
 	/// <summary>「全选角色卡片」勾选框：随子卡片勾选状态自动同步。</summary>
-	private CheckBox? _selectAllCheck;
+	private Button? _selectAllButton;
 
 	/// <summary>被勾选的卡片端口。卡片每 2 秒可能整批重建，勾选状态必须放在这里，
 	/// 否则重建一次用户勾的就全没了（「全选只生效一次」的根因之一）。</summary>
@@ -206,8 +206,16 @@ public sealed class InstancesViewPage : Page
 		var connected = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 		foreach (NexusEndpointService.Endpoint e in visible)
 		{
-			string name = (e.ServerHint ?? "").Trim();
-			if (name.Length == 0)
+			// 优先用服务器预设名（元素之诗 / 失落世界）；ServerHint 在分组角色上常为空，
+			// 直接回退 Host 会把一长串域名显示在摘要里，看起来像乱码/错位。
+			string name = ServerPresets.All
+				.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.Host)
+					&& string.Equals(p.Host, e.Host, StringComparison.OrdinalIgnoreCase))?.Name ?? "";
+			if (string.IsNullOrWhiteSpace(name))
+			{
+				name = (e.ServerHint ?? "").Trim();
+			}
+			if (string.IsNullOrWhiteSpace(name))
 			{
 				name = string.IsNullOrWhiteSpace(e.Host) ? "未知服务器" : e.Host;
 			}
@@ -382,7 +390,7 @@ public sealed class InstancesViewPage : Page
 		var checks = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14, VerticalAlignment = VerticalAlignment.Center };
 		_autoStartCheck = new CheckBox
 		{
-			Content = "程序启动时自动启动机器人",
+			Content = "自启动机器人",
 			FontSize = 13,
 			IsChecked = SettingsManager.Instance.AutoStartBotOnStartup,
 			VerticalAlignment = VerticalAlignment.Center
@@ -395,24 +403,42 @@ public sealed class InstancesViewPage : Page
 			// 这里只落一个布尔值，不涉及卡片数据 —— 用静默保存，避免整页重建卡一下。
 			cfg.AutoStartBotOnStartup = _autoStartCheck?.IsChecked == true;
 			SaveSettingsQuiet();
+			int cleared = 0;
+			if (!cfg.AutoStartBotOnStartup)
+			{
+				// 关闭总开关 = 用户明确不要机器人：立刻清掉游戏内模组里的代理卡片，
+				// 不能只改一个布尔值、让客户端下次启动还挂着一堆指向本地端口的账号。
+				try
+				{
+					cleared = NexusEndpointService.ClearAllBotProxyCards();
+				}
+				catch (Exception exClean)
+				{
+					LogHelper.Log("[实例多开] 关闭自启动时清理游戏内代理卡片失败：" + exClean.Message);
+				}
+			}
 			LogHelper.Log("[实例多开] 程序启动时自动机器人代理 = " + cfg.AutoStartBotOnStartup
-				+ (cfg.AutoStartBotOnStartup ? "（按每张卡片的「自启动」勾选恢复）" : "（下次启动程序不再自动恢复机器人代理）"));
+				+ (cfg.AutoStartBotOnStartup ? "（按每张卡片的「自启动」勾选恢复）" : "（已关闭，并清理游戏内代理卡片 " + cleared + " 条）"));
 			MainWindow.Instance?.ShowToast(cfg.AutoStartBotOnStartup
 				? "已开启：程序启动时按卡片「自启动」勾选恢复机器人"
-				: "已关闭：程序启动时不再自动恢复机器人", true);
+				: ("已关闭：下次启动不自动恢复机器人"
+					+ (cleared > 0 ? "，已清理游戏内代理卡片 " + cleared + " 条" : "")), true);
+			Refresh();
 		};
-		checks.Children.Add(_autoStartCheck);
 		// 批量操作：勾选卡片后可一次启动 / 停止 / 重启 / 设置自启动
-		_selectAllCheck = new CheckBox
+		_selectAllButton = new Button
 		{
-			Content = "全选角色卡片",
+			Content = "全选角色",
 			FontSize = 13,
+			MinHeight = 0,
+			Padding = new Thickness(12, 4, 12, 4),
 			VerticalAlignment = VerticalAlignment.Center
 		};
-		ToolTipService.SetToolTip(_selectAllCheck, "勾选/取消当前显示的全部卡片；子卡片手动勾选会自动同步这里的勾选状态");
-		_selectAllCheck.Click += (_, _) =>
+		ToolTipService.SetToolTip(_selectAllButton, "全选当前显示的角色卡片；已全选时再点一次取消全选");
+		_selectAllButton.Click += (_, _) =>
 		{
-			bool on = _selectAllCheck?.IsChecked == true;
+			bool all = _lastVisible.Count > 0 && _lastVisible.All(e => _checkedPorts.Contains(e.ListenPort));
+			bool on = !all;
 			_checkedPorts.Clear();
 			if (on)
 			{
@@ -425,8 +451,9 @@ public sealed class InstancesViewPage : Page
 			{
 				box.IsChecked = on;
 			}
+			SyncSelectAllCheckState();
 		};
-		checks.Children.Add(_selectAllCheck);
+		checks.Children.Add(_selectAllButton);
 		// 自启动全选：一键勾选/取消所有卡片的「自启动」（放在全选与批量按钮之间的空处）
 		_autoAllCheck = new CheckBox
 		{
@@ -437,6 +464,8 @@ public sealed class InstancesViewPage : Page
 		ToolTipService.SetToolTip(_autoAllCheck, "一键勾选/取消当前所有卡片的「自启动」");
 		_autoAllCheck.Click += (_, _) => SetAutoStartForAllVisible(_autoAllCheck?.IsChecked == true);
 		checks.Children.Add(_autoAllCheck);
+		// 「自启动机器人」放到「全显日志」左边（与总开关语义保持一致）
+		checks.Children.Add(_autoStartCheck);
 		// 全显日志：不满时全显，已全显时全部收起（三态观感，但只有一个勾选框）
 		_logAllCheck = new CheckBox
 		{
@@ -764,23 +793,28 @@ public sealed class InstancesViewPage : Page
 			Dictionary<int, ProxyCaptureService.TrafficInfo> traffic = ProxyCaptureService.TrafficSnapshot()
 				.GroupBy(t => t.ListenPort)
 				.ToDictionary(g => g.Key, g => g.First());
-			List<NexusEndpointService.Endpoint> distinct = all
+			// 摘要必须跟当前「显示组」走：旧实现用 all（全部组/全部历史端口），
+			// 选了一个只有 1 个角色的组仍显示 0/19，看起来完全不合理。
+			// 保留原来的数字格式「0 元素之诗 | 0/1 已进服」，只把统计范围修正确。
+			List<NexusEndpointService.Endpoint> visibleDistinct = visible
 				.GroupBy(e => e.ListenPort)
 				.Select(g => g.First())
 				.ToList();
-			int listening = distinct.Count(e => listeningPorts.Contains(e.ListenPort));
-			int connected = distinct.Count(e => IsConnected(traffic, e.ListenPort));
+			int listening = visibleDistinct.Count(e => listeningPorts.Contains(e.ListenPort));
+			int connected = visibleDistinct.Count(e => IsConnected(traffic, e.ListenPort));
 			long upBytes = traffic.Values.Sum(t => t.UpBytes);
 			long downBytes = traffic.Values.Sum(t => t.DownBytes);
 			long upPackets = traffic.Values.Sum(t => t.UpPackets);
 			long downPackets = traffic.Values.Sum(t => t.DownPackets);
 			string groupHint = string.IsNullOrWhiteSpace(groupName) ? "" : "（显示组：" + groupName + "）";
 			// 主摘要：各服务器已进服数 + 总进服数（如「0 失落世界 | 2 元素之诗 | 2/5 已进服」）。
-			_summary.Text = distinct.Count == 0
+			_summary.Text = visibleDistinct.Count == 0
 				? groupHint + "未启动机器人：没有匹配的角色端口，请到「快速启动」给角色分配 127.0.0.1 端口并勾选启用。"
-				: BuildSummaryLine(distinct, traffic, connected);
-			_summaryDetail.Text = "监听 " + listening + "/" + distinct.Count + "｜上行 " + FormatBytes(upBytes)
-				+ " / " + upPackets + " 包｜下行 " + FormatBytes(downBytes) + " / " + downPackets + " 包" + groupHint;
+				: BuildSummaryLine(visibleDistinct, traffic, connected);
+			int disabledCount = visibleDistinct.Count(e => !e.Enabled);
+			_summaryDetail.Text = "监听 " + listening + "/" + visibleDistinct.Count + "｜上行 " + FormatBytes(upBytes)
+				+ " / " + upPackets + " 包｜下行 " + FormatBytes(downBytes) + " / " + downPackets + " 包"
+				+ (disabledCount > 0 ? "｜已停用 " + disabledCount + " 张" : "") + groupHint;
 			_serverSummary.Text = "";
 			ApplyAdvancedVisibility();
 			string signature = groupName + "|" + SettingsManager.Instance.ShowAdvancedSessionInfo
@@ -1053,17 +1087,18 @@ public sealed class InstancesViewPage : Page
 		SyncSelectAllCheckState();
 	}
 
-	/// <summary>「全选角色卡片」的勾选状态跟随子卡片：全部勾上才勾，任何一个没勾就取消。</summary>
+	/// <summary>「全选角色」按钮文案跟随子卡片：全部勾上时显示「取消全选」。</summary>
 	private void SyncSelectAllCheckState()
 	{
-		if (_selectAllCheck == null)
+		if (_selectAllButton == null)
 		{
 			return;
 		}
 		bool all = _lastVisible.Count > 0 && _lastVisible.All(e => _checkedPorts.Contains(e.ListenPort));
-		if (_selectAllCheck.IsChecked != all)
+		string text = all ? "取消全选" : "全选角色";
+		if (!string.Equals(_selectAllButton.Content as string, text, StringComparison.Ordinal))
 		{
-			_selectAllCheck.IsChecked = all;
+			_selectAllButton.Content = text;
 		}
 	}
 
@@ -1539,11 +1574,26 @@ public sealed class InstancesViewPage : Page
 		Grid.SetColumn(logToggle, 2);
 		head.Children.Add(logToggle);
 
-		// 卡片操作：启动 / 停止机器人、每卡片自启动勾选、删除这张卡片
-		// 文案保持短，窄窗口下四个控件才不会溢出卡片（以前「删除卡片」会掉到边框外只露一个角）
+		// 卡片操作：启动/停止合并为一个按钮；重启常驻，未启动时不可点；
+		// 删除在左、自启动勾选在右（按用户定版布局）。
 		var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 2, 0, 0) };
-		actions.Children.Add(SmallButton(listening ? "重启" : "启动", () => StartProxy(e)));
-		actions.Children.Add(SmallButton("停止", () => StopProxy(e)));
+		bool listeningNow = listening;
+		actions.Children.Add(SmallButton(listeningNow ? "停止" : "启动", () =>
+		{
+			if (listeningNow)
+			{
+				StopProxy(e);
+			}
+			else
+			{
+				StartProxy(e);
+			}
+		}));
+		Button restartButton = SmallButton("重启", () => StartProxy(e));
+		restartButton.IsEnabled = listeningNow;
+		ToolTipService.SetToolTip(restartButton, listeningNow ? "重启该机器人代理" : "机器人未启动，无法重启");
+		actions.Children.Add(restartButton);
+		actions.Children.Add(SmallButton("删除", () => DeleteCard(e)));
 		CheckBox autoStartCheck = new CheckBox
 		{
 			Content = "自启动",
@@ -1573,7 +1623,6 @@ public sealed class InstancesViewPage : Page
 				+ (on ? "（下次启动程序时自动挂此机器人）" : "（下次启动程序不再自动挂此机器人）"));
 		};
 		actions.Children.Add(autoStartCheck);
-		actions.Children.Add(SmallButton("删除", () => DeleteCard(e)));
 		Grid.SetRow(actions, 5);
 		grid.Children.Add(actions);
 
@@ -1728,8 +1777,14 @@ public sealed class InstancesViewPage : Page
 		try
 		{
 			string botUser = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
-			bool stopped = ProxyCaptureService.StopNexusBinding(e.ListenPort);
-			if (string.Equals(e.Group, "机器人代理", StringComparison.OrdinalIgnoreCase))
+			bool isBot = string.Equals(e.Group, "机器人代理", StringComparison.OrdinalIgnoreCase);
+			// 机器人卡：只停 nexus- 侧监听，端口归脱盒代理时只挂断该机器人会话；
+			// 脱盒代理卡：用户点的就是这条代理，直接按端口停（旧实现只调 StopNexusBinding，
+			// 服务器侧监听 tag 不是 nexus-，会被拒绝 → 「停止」看起来没反应）。
+			bool stopped = isBot
+				? ProxyCaptureService.StopNexusBinding(e.ListenPort)
+				: ProxyCaptureService.StopPort(e.ListenPort);
+			if (isBot)
 			{
 				if (!stopped)
 				{
@@ -1745,7 +1800,7 @@ public sealed class InstancesViewPage : Page
 						LogHelper.Log("[实例多开] 重启前释放端口 " + e.ListenPort + " 上的占位代理（角色 " + botUser + "）");
 					}
 				}
-				NexusEndpointService.RemoveBotAccount(e.ServerHint, botUser, e.ListenPort, NexusEndpointService.ClientDirOf(e));
+				NexusEndpointService.RemoveBotAccountFromAllClients(botUser, e.ListenPort);
 				if (!releaseForRestart)
 				{
 					// 停用落盘：否则下次游戏启动 / 程序启动又会按「已启用」把账号写回来，
@@ -1780,7 +1835,15 @@ public sealed class InstancesViewPage : Page
 		{
 			string cardKey = e.CardKey;
 			string roleName = e.RoleName ?? "";
-			ProxyCaptureService.StopNexusBinding(e.ListenPort);
+			if (string.Equals(e.Group, "机器人代理", StringComparison.OrdinalIgnoreCase))
+			{
+				ProxyCaptureService.StopNexusBinding(e.ListenPort);
+			}
+			else
+			{
+				// 脱盒代理卡：端口上是非 nexus- 监听，必须按端口停，否则删了卡片代理还在跑。
+				ProxyCaptureService.StopPort(e.ListenPort);
+			}
 			AppSettings cfg = SettingsManager.Instance;
 			// 只删这一张卡：按卡片键（Key + 角色名）精确匹配，同账号其它角色的配置不受影响。
 			// 没有角色名的卡片以 Key 唯一，按 Key + 端口兜底清理旧数据。
@@ -1807,7 +1870,7 @@ public sealed class InstancesViewPage : Page
 			if (string.Equals(e.Group, "机器人代理", StringComparison.OrdinalIgnoreCase))
 			{
 				string botUser = string.IsNullOrWhiteSpace(roleName) ? e.User : roleName;
-				NexusEndpointService.RemoveBotAccount(e.ServerHint, botUser, e.ListenPort, NexusEndpointService.ClientDirOf(e));
+				NexusEndpointService.RemoveBotAccountFromAllClients(botUser, e.ListenPort);
 			}
 			SettingsManager.Save(cfg);
 			LogHelper.Log("[实例多开] 已删除卡片：" + cardKey + "（联动删除快速启动角色 " + rolesRemoved + " 个）");

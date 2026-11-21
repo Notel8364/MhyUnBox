@@ -165,7 +165,7 @@ public class AppSettings
 	/// "SettingsPage" 为特殊项：勾选后简易模式会临时隐藏设置入口，5 秒后自动复原（防止把自己锁在外面）。</summary>
 	public List<string> SimpleHiddenPages { get; set; } = new List<string>
 	{
-		"HomePage", "ServerListPage", "SessionLogPage", "InstancesPage", "SpeedTestPage", "ShopPage", "ClientUpdatePage"
+		"HomePage", "ServerListPage", "SessionLogPage", "InstancesPage", "ClientLaunchPage", "SpeedTestPage", "ShopPage", "ClientUpdatePage"
 	};
 
 	/// <summary>脱盒启动使用的服务器预设名（空=自动按布吉岛/首个代理匹配）。</summary>
@@ -190,8 +190,26 @@ public class AppSettings
 	/// <summary>PCL 客户端内存分配（MB；0 = 自动默认 2000M）。2026-11-20 新增「内存优化」选项。</summary>
 	public int OfficialClientMemoryMb { get; set; }
 
+	/// <summary>
+	/// 启动客户端内存模式：global=全局配置（统一使用 GlobalMemoryMb）、
+	/// auto=自动配置（按本机可用内存自动计算）、custom=自定义（使用 OfficialClientMemoryMb）。
+	/// </summary>
+	public string OfficialClientMemoryMode { get; set; } = "global";
+
+	/// <summary>全局配置模式下的统一内存大小（MB）。</summary>
+	public int OfficialClientGlobalMemoryMb { get; set; } = 4096;
+
+	/// <summary>启动客户端附加 Java 参数（空格分隔，追加在 -Xmx 之后、主类之前）。</summary>
+	public string OfficialClientJvmArgs { get; set; } = "";
+
 	/// <summary>快速启动页「角色组 / 客户端卡」栏目布局（2026-11-20 新增）：Groups=只显示角色组，Cards=只显示客户端卡，Both=并排显示。</summary>
 	public string QuickCardsLayout { get; set; } = "Both";
+
+	/// <summary>隐藏「客户端配置与启动」卡的页面键（HomePage / GroupsQuickPage）；空 = 全部显示。</summary>
+	public List<string> ClientLauncherHiddenPages { get; set; } = new List<string>();
+
+	/// <summary>快速启动页右侧「代理设置」卡是否显示（标题行可切换，带过渡动画）。</summary>
+	public bool ShowProxySettingsCard { get; set; } = true;
 
 	/// <summary>直连房间地址（host:port）；留空则使用代理端口自动进服。</summary>
 	public string OfficialClientRoomOverride { get; set; } = "";
@@ -331,6 +349,9 @@ public class AppSettings
 	/// 同一天只提醒一次，避免每次启动都弹。
 	/// </summary>
 	public string BuildCheckPromptDate { get; set; } = "";
+
+	/// <summary>DLL 版本不一致时是否弹窗提醒更新（首页可勾选；关闭后只写日志）。</summary>
+	public bool DllUpdatePromptEnabled { get; set; } = true;
 
 	/// <summary>
 	/// 元素之诗「第 6 个及以后机器人代理」提醒已弹次数。最多弹 3 次，之后静默

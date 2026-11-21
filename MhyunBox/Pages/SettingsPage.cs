@@ -188,11 +188,12 @@ public sealed partial class SettingsPage : Page
 	private bool _simplePageChecksLoading;
 
 	/// <summary>简易模式可勾选隐藏的导航项（key = MainWindow 页面 Tag；SettingsPage 为特殊项，5 秒后自动复原）。</summary>
-	private static readonly (string Key, string Label)[] SimpleModeCheckablePages = new (string, string)[8]
+	private static readonly (string Key, string Label)[] SimpleModeCheckablePages = new (string, string)[9]
 	{
 		("HomePage", "首页"),
 		("ServerListPage", "服务器列表"),
 		("InstancesPage", "会话多开"),
+		("ClientLaunchPage", "启动客户端"),
 		("SpeedTestPage", "网速测试"),
 		("ShopPage", "商城"),
 		("ClientUpdatePage", "更新客户端"),

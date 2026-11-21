@@ -151,20 +151,49 @@ public static class BuildStampService
 			status = BuildStampStatus.Unknown;
 			text = "无法获取仓库 DLL 校验清单（网络或文件不可用）";
 		}
-		else if (local.LocalSize != remote.Size)
-		{
-			status = BuildStampStatus.Behind;
-			text = "DLL 大小与仓库不一致：本地 " + FormatSize(local.LocalSize) + " / 仓库 " + FormatSize(remote.Size);
-		}
-		else if (!string.Equals(local.LocalSha256, remote.Sha256, StringComparison.OrdinalIgnoreCase))
-		{
-			status = BuildStampStatus.Behind;
-			text = "DLL 内容与仓库不一致（SHA256 不同），建议更新 DLL";
-		}
 		else
 		{
-			status = BuildStampStatus.Current;
-			text = "与仓库 DLL 完全一致" + (string.IsNullOrWhiteSpace(remote.Version) ? "" : "（v" + remote.Version + "）");
+			// 先比版本，再比内容指纹。
+			// 旧逻辑只比 size/SHA：仓库清单一旦没跟着发版更新（例如清单还是 9.1.0，
+			// 本地已经是 10.5.3），就会永远弹「仓库旧 DLL / 请换 DLL」。
+			Version? localVersion = ParseVersion(AppVersion.Display);
+			Version? remoteVersion = ParseVersion(remote.Version);
+			int versionCompare = (localVersion != null && remoteVersion != null)
+				? localVersion.CompareTo(remoteVersion)
+				: 0;
+			if (localVersion != null && remoteVersion != null && versionCompare > 0)
+			{
+				status = BuildStampStatus.Ahead;
+				text = "本地 DLL 版本 " + AppVersion.Display + " 高于仓库清单 v" + remote.Version
+					+ "（仓库清单尚未更新），无需更换 DLL";
+			}
+			else if (localVersion != null && remoteVersion != null && versionCompare < 0)
+			{
+				status = BuildStampStatus.Behind;
+				text = "仓库 DLL 版本 v" + remote.Version + " 高于本地 " + AppVersion.Display + "，建议更新 DLL";
+			}
+			else if (localVersion != null && remoteVersion != null)
+			{
+				// 版本一致：Debug/Release、不同编译配置都会让 SHA 不同，
+				// 不再因此误报「落后」；只有版本落后才提示更新。
+				status = BuildStampStatus.Current;
+				text = "版本一致（" + AppVersion.Display + "）；本地构建与仓库发布包的 SHA 可能不同，无需更换";
+			}
+			else if (local.LocalSize != remote.Size)
+			{
+				status = BuildStampStatus.Behind;
+				text = "DLL 大小与仓库不一致：本地 " + FormatSize(local.LocalSize) + " / 仓库 " + FormatSize(remote.Size);
+			}
+			else if (!string.Equals(local.LocalSha256, remote.Sha256, StringComparison.OrdinalIgnoreCase))
+			{
+				status = BuildStampStatus.Behind;
+				text = "DLL 内容与仓库不一致（SHA256 不同），建议更新 DLL";
+			}
+			else
+			{
+				status = BuildStampStatus.Current;
+				text = "与仓库 DLL 完全一致" + (string.IsNullOrWhiteSpace(remote.Version) ? "" : "（v" + remote.Version + "）");
+			}
 		}
 		return new BuildStampInfo
 		{
@@ -196,6 +225,11 @@ public static class BuildStampService
 					+ " => " + info.Status + "：" + info.StatusText);
 				if (info.Status != BuildStampStatus.Behind && info.Status != BuildStampStatus.Mixed)
 				{
+					return;
+				}
+				if (!SettingsManager.Instance.DllUpdatePromptEnabled)
+				{
+					LogHelper.Log("[DLL校验] 已关闭弹窗提醒更新，仅记录状态");
 					return;
 				}
 				string today = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -238,7 +272,8 @@ public static class BuildStampService
 		string advice = info.Status switch
 		{
 			BuildStampStatus.Mixed => "本地 MhyunBox.dll 读不到（文件缺失、被占用或损坏），请加群下载完整包后整体替换。",
-			BuildStampStatus.Behind => "你本地的 MhyunBox.dll 与仓库发布的 DLL 不一致（大小或 SHA256 不同），请加群下载最新 DLL 替换，或从仓库拉取源码重新构建后合并。",
+			BuildStampStatus.Behind => "仓库 DLL 版本高于本地 DLL，请加群下载最新 DLL 替换，或从仓库拉取源码重新构建后合并。",
+			BuildStampStatus.Ahead => "本地 DLL 版本高于仓库清单，仓库清单尚未跟上发版；无需更换 DLL。",
 			BuildStampStatus.Unknown => "暂时拿不到仓库的 DLL 校验清单，无法判断一致性；可稍后点「重新检测」。",
 			_ => "当前本地 DLL 与仓库清单完全一致；这条提示用于预览提醒样式。"
 		};
@@ -250,6 +285,22 @@ public static class BuildStampService
 	public static string FormatSize(long bytes)
 	{
 		return bytes.ToString("N0", CultureInfo.InvariantCulture) + " 字节";
+	}
+
+	/// <summary>把 "v10.5.3" / "10.5.3" / "10.5.3-beta" 解析成可比较的版本号。</summary>
+	private static Version? ParseVersion(string? text)
+	{
+		if (string.IsNullOrWhiteSpace(text))
+		{
+			return null;
+		}
+		string value = text.Trim().TrimStart('v', 'V');
+		int dash = value.IndexOf('-');
+		if (dash >= 0)
+		{
+			value = value.Substring(0, dash);
+		}
+		return Version.TryParse(value, out Version? version) ? version : null;
 	}
 
 	public static string ShortHash(string? sha)

@@ -1166,16 +1166,40 @@ public sealed partial class ProxyCapturePage : Page
 
 	private void StopButton_Click(object sender, RoutedEventArgs e)
 	{
-		// 「停止」= 只停脱盒侧服务器代理（机器人代理归「会话多开」页管，不受影响）。
-		int stopped = ProxyCaptureService.StopServerProxies();
-		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已停止服务器代理（{stopped} 个监听；机器人代理不受影响）\n");
+		// 「停止」= 停掉当前预设下的全部代理监听（服务器代理 + 机器人代理）。
+		// 机器人自启会先用 nexus- 标记占住同一批端口，旧实现只停服务器侧 → 按钮看起来完全没反应。
+		ServerPreset? preset = SelectedPreset();
+		if (preset == null || string.IsNullOrWhiteSpace(preset.Host))
+		{
+			AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 未选择服务器预设，无法停止\n");
+			return;
+		}
+		List<int> targetPorts = ProxyCaptureService.ActiveBindingsSnapshot()
+			.Where(b => string.Equals(b.TargetHost, preset.Host, StringComparison.OrdinalIgnoreCase))
+			.Select(b => b.ListenPort)
+			.ToList();
+		int stopped = ProxyCaptureService.StopTargetProxies(preset.Host);
+		int cards = NexusEndpointService.DisableBotCardsForPorts(targetPorts);
+		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已停止「{preset.Name}」全部代理（{stopped} 个监听"
+			+ (cards > 0 ? $"，含 {cards} 个机器人代理（其卡片已停用，重新启动请到会话多开页）" : "")
+			+ "）\n");
 		SyncUiState();
 	}
 
 	private void StopAllButton_Click(object sender, RoutedEventArgs e)
 	{
-		int stopped = ProxyCaptureService.StopServerProxies();
-		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已停止全部服务器代理（{stopped} 个监听；机器人代理不受影响）\n");
+		List<int> allPorts = ProxyCaptureService.ActiveBindingsSnapshot()
+			.Select(b => b.ListenPort)
+			.ToList();
+		int stopped = ProxyCaptureService.StopAllProxies();
+		int cards = NexusEndpointService.DisableBotCardsForPorts(allPorts);
+		// 「停止全部代理」= 机器人也全部关停：顺带清掉客户端里可能残留的机器人代理卡片
+		//（包括已停用/旧版本留下的、当前没有监听的那些）。
+		int clearedCards = NexusEndpointService.ClearAllBotProxyCards();
+		AppendTail($"[{DateTime.Now:HH:mm:ss.fff}] 已停止全部代理（{stopped} 个监听"
+			+ (cards > 0 ? $"，含 {cards} 个机器人代理（其卡片已停用，重新启动请到会话多开页）" : "")
+			+ (clearedCards > 0 ? $"，已清理游戏内代理卡片 {clearedCards} 条" : "")
+			+ "）\n");
 		SyncUiState();
 	}
 
@@ -1522,11 +1546,13 @@ public sealed partial class ProxyCapturePage : Page
 			{
 				return;
 			}
-			// 代理启动页只停服务器代理；机器人代理监听归「会话多开」页管。
-			bool ok = ProxyCaptureService.StopServerBinding(binding.ListenPort);
+			// 「停止这一行角色」：服务器代理与机器人代理都按这个端口停。
+			// 机器人自启占住同一端口时，旧实现只拒绝、不停，按钮看起来完全没反应。
+			bool ok = ProxyCaptureService.StopPort(binding.ListenPort);
+			int cards = ok ? NexusEndpointService.DisableBotCardsForPorts(new int[1] { binding.ListenPort }) : 0;
 			MainWindow.Instance?.ShowToast(ok
-				? "已停止 127.0.0.1:" + binding.ListenPort
-				: "127.0.0.1:" + binding.ListenPort + " 无服务器代理可停（机器人代理请在会话多开页停止）", ok);
+				? ("已停止 127.0.0.1:" + binding.ListenPort + (cards > 0 ? "（机器人卡片已停用）" : ""))
+				: ("127.0.0.1:" + binding.ListenPort + " 没有可停止的代理"), ok);
 			SyncUiState();
 			RefreshStatusCards();
 		}
@@ -1998,7 +2024,7 @@ public sealed partial class ProxyCapturePage : Page
 		{
 			return localAccount.Nickname;
 		}
-		return AccountStore.Mask(localAccount.Account);
+		return localAccount.Account ?? "";
 	}
 
 	private void OpenCaptureDir_Click(object sender, RoutedEventArgs e)

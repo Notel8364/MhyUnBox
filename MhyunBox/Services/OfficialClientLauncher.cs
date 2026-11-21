@@ -285,7 +285,7 @@ public static class OfficialClientLauncher
 	/// <param name="clientRoot">官方客户端 .minecraft 根目录（留空自动查找）。</param>
 	/// <param name="consoleJava">true 用 java.exe（带控制台，便于排查），默认 javaw.exe。</param>
 	/// <param name="directAddress">非布吉岛预设的直连地址（host:port）；给出时优先于代理端口，留空且 proxyPort=0 时只拉起客户端停在主菜单。</param>
-	public static OfficialClientLaunchResult Launch(int proxyPort, string? loginName = null, int authAccountIndex = -1, string? clientRoot = null, bool consoleJava = false, Action<string>? log = null, int gameType = 1, int launcherPort = 0, long uid = 0, string? token = null, string? javaHome = null, string? directAddress = null, string? memoryArg = null)
+	public static OfficialClientLaunchResult Launch(int proxyPort, string? loginName = null, int authAccountIndex = -1, string? clientRoot = null, bool consoleJava = false, Action<string>? log = null, int gameType = 1, int launcherPort = 0, long uid = 0, string? token = null, string? javaHome = null, string? directAddress = null, string? memoryArg = null, string? extraJvmArgs = null)
 	{
 		OfficialClientLaunchResult result = new OfficialClientLaunchResult();
 		try
@@ -326,7 +326,7 @@ public static class OfficialClientLauncher
 					PclClientInfo? explicitPcl = PclClientLauncher.Detect(explicitRoot);
 					if (explicitPcl != null)
 					{
-						return LaunchViaPcl(explicitPcl, targetHost, targetPort, loginName, authAccountIndex, uid, javaHome, consoleJava);
+						return LaunchViaPcl(explicitPcl, targetHost, targetPort, loginName, authAccountIndex, uid, javaHome, consoleJava, memoryArg, extraJvmArgs);
 					}
 					result.Message = "指定的客户端目录不是可启动的客户端（需要 versions\\<版本>\\<版本>.json 或 versions\\1.20\\1.20.json）：" + explicitRoot;
 					LogHelper.Log("[启动] " + result.Message);
@@ -341,7 +341,7 @@ public static class OfficialClientLauncher
 				PclClientInfo? pcl = PclClientLauncher.Detect(explicitRoot) ?? PclClientLauncher.Detect(SettingsManager.Instance.OfficialClientRoot ?? "");
 				if (pcl != null)
 				{
-					return LaunchViaPcl(pcl, targetHost, targetPort, loginName, authAccountIndex, uid, javaHome, consoleJava, memoryArg);
+					return LaunchViaPcl(pcl, targetHost, targetPort, loginName, authAccountIndex, uid, javaHome, consoleJava, memoryArg, extraJvmArgs);
 				}
 				result.Message = "未找到官方客户端（需要 versions\\1.20\\1.20.json）或 PCL 客户端（versions\\<版本>\\<版本>.json）。可在设置里指定 .minecraft 目录";
 				return result;
@@ -452,7 +452,7 @@ public static class OfficialClientLauncher
 			string mainClass = (lastSpace > 0) ? jvmArgs.Substring(lastSpace + 1) : "";
 			string ourJvm = string.Join(" ", new string[9]
 			{
-				"-Xmx2000M",
+				memoryArg ?? "-Xmx2000M",
 				"-Xmn128M",
 				"-Djava.library.path=\"" + natives + "\"",
 				"-Druntime_path=\"" + runtime + "\"",
@@ -462,6 +462,10 @@ public static class OfficialClientLauncher
 				"-DToken=" + (string.IsNullOrWhiteSpace(token) ? new string('0', 64) : token),
 				"-DServer=RELEASE"
 			});
+			if (!string.IsNullOrWhiteSpace(extraJvmArgs))
+			{
+				ourJvm += " " + extraJvmArgs.Trim();
+			}
 			string finalJvm = jvmPrefix + " " + ourJvm;
 			if (mainClass.Length != 0)
 			{
@@ -574,7 +578,7 @@ public static class OfficialClientLauncher
 
 	/// <summary>经 PCL / 通用客户端启动：解析账号（登录名 / uuid / uid）后调 PclClientLauncher.Launch。
 	/// 对齐 PCL 启动原理：由启动方拼好完整 java 命令行（classpath/natives/游戏参数）后直接拉起 java。</summary>
-	private static OfficialClientLaunchResult LaunchViaPcl(PclClientInfo pcl, string targetHost, int targetPort, string? loginName, int authAccountIndex, long uid, string? javaHome, bool consoleJava, string? memoryArg = null)
+	private static OfficialClientLaunchResult LaunchViaPcl(PclClientInfo pcl, string targetHost, int targetPort, string? loginName, int authAccountIndex, long uid, string? javaHome, bool consoleJava, string? memoryArg = null, string? extraJvmArgs = null)
 	{
 		OfficialClientLaunchResult result = new OfficialClientLaunchResult();
 		AccountStore.LocalAccount? pclAcc = null;
@@ -600,7 +604,7 @@ public static class OfficialClientLauncher
 			pclUid = pclParsed;
 		}
 		string pclUuid = (pclAcc != null && LooksLikeUuid32(pclAcc.EntityId)) ? pclAcc.EntityId.Trim().ToUpperInvariant() : Uuid32(pclName).ToUpperInvariant();
-		OfficialClientLaunchResult pr = PclClientLauncher.Launch(pcl, targetHost, targetPort, pclName, pclUuid, pclUid, javaHome, consoleJava, memoryArg);
+		OfficialClientLaunchResult pr = PclClientLauncher.Launch(pcl, targetHost, targetPort, pclName, pclUuid, pclUid, javaHome, consoleJava, memoryArg, extraJvmArgs);
 		result.Ok = pr.Ok;
 		result.Message = pr.Message;
 		result.Pid = pr.Pid;

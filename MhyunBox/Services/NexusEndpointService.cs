@@ -465,7 +465,7 @@ public static class NexusEndpointService
 		{
 			int added = 0;
 			foreach (IGrouping<string, Endpoint> group in all
-				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e))
+				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e) && HasUsableAccount(e))
 				.GroupBy(e => ClientDirOf(e)))
 			{
 				string dir = group.Key;
@@ -559,6 +559,35 @@ public static class NexusEndpointService
 		catch (Exception ex)
 		{
 			LogHelper.Log("[实例多开] 移除机器人账号失败（" + user + "）：" + ex.Message);
+		}
+	}
+
+	/// <summary>
+	/// 从所有客户端目录里移除同一个机器人账号（用户名 + 本地端口）：
+	/// 停止/删除机器人时用，避免同账号在多台客户端里残留卡片互相重连。
+	/// </summary>
+	public static void RemoveBotAccountFromAllClients(string user, int listenPort)
+	{
+		string u = (user ?? "").Trim();
+		if (string.IsNullOrWhiteSpace(u) || listenPort <= 0)
+		{
+			return;
+		}
+		foreach (string dir in EnumerateClientDirs())
+		{
+			try
+			{
+				NexusConfigService.RemoveAccount(dir, u + "@127.0.0.1:" + listenPort);
+				lock (WrittenBotAccounts)
+				{
+					WrittenBotAccounts.Remove(BotAccountSlot(dir, u, listenPort));
+					MissingBotStrikes.Remove(BotAccountSlot(dir, u, listenPort));
+				}
+			}
+			catch (Exception ex)
+			{
+				LogHelper.Log("[实例多开] 从客户端移除机器人账号失败（" + Path.GetFileName(dir) + "）：" + ex.Message);
+			}
 		}
 	}
 
@@ -800,6 +829,8 @@ public static class NexusEndpointService
 			}
 			List<Endpoint> all = Load(gameDir);
 			HashSet<string>? scope = DisplayScopeCardKeys();
+			bool masterOn = SettingsManager.Instance.AutoStartBotOnStartup;
+			IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> active = ProxyCaptureService.ActiveBindingsSnapshot();
 			int added = 0, removed = 0;
 			foreach (IGrouping<string, Endpoint> grp in all
 				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0)
@@ -828,7 +859,13 @@ public static class NexusEndpointService
 					bool inScope = scope == null || scope.Contains(e.Key);
 					if (inScope)
 					{
-						if (!have.Contains(account) && EnsureBotAccount(e.ServerHint, user, e.ListenPort, "机器人代理", e.CardKey, dir))
+						bool live = active.Any(b => b.ListenPort == e.ListenPort
+							&& (b.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase));
+						// 自启动总开关关闭时，只维护用户手动启动且确实在监听的那几张卡；
+						// 不能因为切了一次显示组就把所有已启用机器人重新写回客户端。
+						if ((masterOn || live) && HasUsableAccount(e)
+							&& !have.Contains(account)
+							&& EnsureBotAccount(e.ServerHint, user, e.ListenPort, "机器人代理", e.CardKey, dir))
 						{
 							added++;
 						}
@@ -882,9 +919,15 @@ public static class NexusEndpointService
 			{
 				return 0;
 			}
+			// 总开关关闭时不做「超限过渡」：过渡会顺手把机器人账号写进另一台客户端，
+			// 等于绕过了自启动总开关。
+			if (!SettingsManager.Instance.AutoStartBotOnStartup)
+			{
+				return 0;
+			}
 			int moved = 0;
 			List<IGrouping<string, Endpoint>> groups = all
-				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e))
+				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e) && HasUsableAccount(e))
 				.GroupBy(e => ClientDirOf(e), StringComparer.OrdinalIgnoreCase)
 				.ToList();
 			foreach (IGrouping<string, Endpoint> group in groups)
@@ -909,6 +952,13 @@ public static class NexusEndpointService
 					string account = user + "@127.0.0.1:" + e.ListenPort;
 					// 原客户端要先把账号撤掉，否则两个客户端会同时挂这个会话（等于没搬家）。
 					NexusConfigService.RemoveAccount(dir, account);
+					// 这是程序主动搬家，必须同时清掉「本进程写过」的记账，
+					// 否则 DetectUserDeletedBots 会把它当成用户在游戏内删号，打墓碑并删卡片。
+					lock (WrittenBotAccounts)
+					{
+						WrittenBotAccounts.Remove(BotAccountSlot(dir, user, e.ListenPort));
+						MissingBotStrikes.Remove(BotAccountSlot(dir, user, e.ListenPort));
+					}
 					PersistEndpointClientDir(e, alt!);
 					e.ClientDir = alt!;
 					EnsureBotAccount(e.ServerHint, user, e.ListenPort, "机器人代理", e.CardKey, alt!);
@@ -1420,7 +1470,8 @@ public static class NexusEndpointService
 					+ "」原端口 " + old + " 已被占用，改用 " + next + "（目标 " + e.ServerKey + "）");
 				// 客户端里的账号必须跟着改：否则游戏仍旧连旧端口，而旧端口现在属于另一台服务器的角色，
 				// 角色会「莫名跑到别的服务器去」（这正是元素之诗里出现失落世界角色的原因之一）。
-				if (IsBotGroup(e) && e.Enabled)
+				// 总开关关闭时不要顺手把机器人账号写回客户端（手动启动的卡会自己写）。
+				if (IsBotGroup(e) && e.Enabled && SettingsManager.Instance.AutoStartBotOnStartup && HasUsableAccount(e))
 				{
 					string botUser = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
 					EnsureBotAccount(e.ServerHint, botUser, next, "机器人代理", e.CardKey, ClientDirOf(e));
@@ -2047,16 +2098,30 @@ public static class NexusEndpointService
 		}
 		try
 		{
+			AppSettings cfg = SettingsManager.Instance;
+			bool masterOn = cfg.AutoStartBotOnStartup;
 			string gameDir = ResolveGameDir();
 			if (string.IsNullOrWhiteSpace(gameDir))
 			{
 				return 0;
 			}
 			List<Endpoint> all = Load(gameDir);
+			IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> active = ProxyCaptureService.ActiveBindingsSnapshot();
 			int count = 0;
 			foreach (Endpoint e in all)
 			{
 				if (!e.Enabled || !IsBotGroup(e) || e.ListenPort <= 0 || !InDisplayScope(e))
+				{
+					continue;
+				}
+				if (!HasUsableAccount(e))
+				{
+					continue;
+				}
+				// 总开关关闭时只维护「用户手动启动、当前确实在监听」的机器人；
+				// 不能再把已启用但没在跑的卡片写回客户端，否则关掉自启动后游戏一开还是会冒出一堆机器人。
+				if (!masterOn && !active.Any(b => b.ListenPort == e.ListenPort
+					&& (b.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase)))
 				{
 					continue;
 				}
@@ -2101,9 +2166,15 @@ public static class NexusEndpointService
 			{
 				return 0;
 			}
+			// 总开关关闭 = 不再自动恢复任何机器人（包括这次游戏进服的补启动）。
+			if (!SettingsManager.Instance.AutoStartBotOnStartup)
+			{
+				return 0;
+			}
 			List<Endpoint> all = Load(gameDir);
 			List<Endpoint> targets = all
 				.Where(e => e.Enabled && e.AutoStart && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e)
+					&& HasUsableAccount(e)
 					&& string.Equals(ClientDirOf(e), clientDir, StringComparison.OrdinalIgnoreCase))
 				.ToList();
 			if (targets.Count == 0)
@@ -2197,9 +2268,14 @@ public static class NexusEndpointService
 				}
 				s.ListenPort = role.ListenPort;
 			}
-			// 客户端账号文件跟着改，否则游戏/机器人会一直连旧端口
+			// 客户端账号文件跟着改，否则游戏/机器人会一直连旧端口。
+			// 自启动总开关关闭时只同步「用户手动启动、当前确实在跑」的角色，
+			// 不能因为改了一次组端口就把所有机器人都写回客户端。
 			string hint = string.IsNullOrWhiteSpace(role.ServerName) ? server : role.ServerName;
-			if (!string.IsNullOrWhiteSpace(hint))
+			bool live = ProxyCaptureService.ActiveBindingsSnapshot()
+				.Any(b => string.Equals((b.LoginName ?? "").Trim(), role.RoleName.Trim(), StringComparison.OrdinalIgnoreCase)
+					&& (b.ListenPort == role.ListenPort || (oldPort > 0 && b.ListenPort == oldPort)));
+			if (!string.IsNullOrWhiteSpace(hint) && (live || SettingsManager.Instance.AutoStartBotOnStartup))
 			{
 				EnsureBotAccount(hint, role.RoleName, role.ListenPort);
 			}
@@ -2295,11 +2371,20 @@ public static class NexusEndpointService
 			bool changed = false;
 			foreach ((int dupPort, int keepPort, string login) in duplicates)
 			{
+				ProxyCaptureService.ActiveBindingInfo? dupBinding = active.FirstOrDefault(b =>
+					b.ListenPort == dupPort
+					&& string.Equals((b.LoginName ?? "").Trim(), login, StringComparison.OrdinalIgnoreCase));
 				if (!ProxyCaptureService.StopBindingForRole(dupPort, login))
 				{
 					continue;
 				}
 				removed++;
+				// 重复监听的机器人账号也要从客户端撤掉，否则游戏里会一直留着指向已停端口的卡片。
+				if (dupBinding != null
+					&& (dupBinding.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase))
+				{
+					RemoveBotAccountFromAllClients(login, dupPort);
+				}
 				foreach (NexusEndpointSetting s in cfg.NexusEndpoints ?? new List<NexusEndpointSetting>())
 				{
 					if (s.ListenPort == dupPort
@@ -2402,6 +2487,256 @@ public static class NexusEndpointService
 		return byName ?? groups
 			.SelectMany(g => g.Roles ?? new List<ProxyGroupRole>())
 			.FirstOrDefault(r => string.Equals(r.Account, e.User, StringComparison.OrdinalIgnoreCase));
+	}
+
+	/// <summary>
+	/// 账号名匹配：完整账号等价；输入不带后缀时也匹配本地保存的带后缀完整账号
+	/// （与账号绑定页的后缀容错口径一致，避免 abc 与 abc@163.com 被当成两个账号）。
+	/// </summary>
+	private static bool AccountNameMatches(string? stored, string? input)
+	{
+		if (string.IsNullOrWhiteSpace(stored) || string.IsNullOrWhiteSpace(input))
+		{
+			return false;
+		}
+		string a = stored.Trim();
+		string b = input.Trim();
+		if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+		return b.IndexOf('@') < 0 && a.StartsWith(b + "@", StringComparison.OrdinalIgnoreCase);
+	}
+
+	/// <summary>
+	/// 机器人卡片对应的账号是否还存在（用于阻止「账号已删 / 未绑定」的卡片自动写客户端和自启动）。
+	/// 只看账号记录是否存在，不强制要求已有 Cookie / 会话有效：
+	/// 只有账密的账号会由启动后的自动登录补会话，按会话态过早判定会把它们误跳过。
+	/// </summary>
+	private static bool HasUsableAccount(Endpoint e)
+	{
+		if (e == null)
+		{
+			return false;
+		}
+		List<AccountStore.LocalAccount> accounts = AccountStore.All.ToList();
+		if (accounts.Count == 0)
+		{
+			return false;
+		}
+		string user = (e.User ?? "").Trim();
+		if (user.Length > 0)
+		{
+			int byName = accounts.FindIndex(a => AccountNameMatches(a.Account, user));
+			if (byName >= 0)
+			{
+				return true;
+			}
+		}
+		ProxyGroupRole? role = FindBotRole(e);
+		if (role != null)
+		{
+			int idx = accounts.FindIndex(a => string.Equals(a.Channel ?? "", role.Channel ?? "", StringComparison.Ordinal)
+				&& AccountNameMatches(a.Account, role.Account));
+			if (idx < 0)
+			{
+				idx = accounts.FindIndex(a => !string.IsNullOrWhiteSpace(a.Nickname)
+					&& string.Equals(a.Nickname, role.Account ?? "", StringComparison.OrdinalIgnoreCase));
+			}
+			if (idx >= 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/// <summary>
+	/// 从「快速启动 / 代理启动」页停止某个端口时，把该端口对应的机器人卡片一并停用：
+	/// 只停监听的话，卡片仍然是「已启用 + 自启动」，游戏下次进服 / 程序下次启动又会自己挂回来，
+	/// 用户看到的就是「停止没生效」。
+	/// 返回被停用的卡片数。
+	/// </summary>
+	public static int DisableBotCardsForPorts(IEnumerable<int>? listenPorts)
+	{
+		var ports = new HashSet<int>(listenPorts ?? Enumerable.Empty<int>());
+		if (ports.Count == 0)
+		{
+			return 0;
+		}
+		try
+		{
+			string gameDir = ResolveGameDir();
+			if (string.IsNullOrWhiteSpace(gameDir))
+			{
+				return 0;
+			}
+			List<Endpoint> all = Load(gameDir);
+			List<Endpoint> targets = all
+				.Where(e => IsBotGroup(e) && e.ListenPort > 0 && ports.Contains(e.ListenPort))
+				.ToList();
+			if (targets.Count == 0)
+			{
+				return 0;
+			}
+			AppSettings cfg = SettingsManager.Instance;
+			bool changed = false;
+			foreach (Endpoint e in targets)
+			{
+				string botUser = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
+				RemoveBotAccountFromAllClients(botUser, e.ListenPort);
+				e.Enabled = false;
+				NexusEndpointSetting? item = (cfg.NexusEndpoints ?? new List<NexusEndpointSetting>())
+					.FirstOrDefault(x => string.Equals(CardKeyOf(x), e.CardKey, StringComparison.OrdinalIgnoreCase)
+						|| (string.IsNullOrWhiteSpace(e.RoleName)
+							&& string.Equals(x.Key, e.Key, StringComparison.OrdinalIgnoreCase)
+							&& x.ListenPort == e.ListenPort));
+				if (item != null && item.Enabled)
+				{
+					item.Enabled = false;
+					changed = true;
+				}
+			}
+			if (changed)
+			{
+				SettingsManager.Save(cfg);
+			}
+			LogHelper.Log("[实例多开] 已在代理页停止时停用机器人卡片 " + targets.Count + " 张（端口 "
+				+ string.Join("、", targets.Select(e => e.ListenPort)) + "），避免自启动把监听挂回来");
+			return targets.Count;
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[实例多开] 停用机器人卡片失败：" + ex.Message);
+			return 0;
+		}
+	}
+
+	/// <summary>
+	/// 用户删除账号后的收尾：停掉这些账号的本地监听、撤掉客户端机器人账号、
+	/// 清理对应的机器人卡片配置与「自启动记忆」。
+	///
+	/// 分组角色与端口记忆按既定口径保留（重新绑定同账号可继续用），但会被重新加载为「未启用」卡片，
+	/// 不会在程序启动 / 游戏进服时自动把代理挂回来。
+	/// </summary>
+	public static int ForgetDeletedAccounts(IEnumerable<(string Channel, string Account)>? deleted)
+	{
+		var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		if (deleted != null)
+		{
+			foreach (var pair in deleted)
+			{
+				if (!string.IsNullOrWhiteSpace(pair.Account))
+				{
+					removed.Add(pair.Account.Trim());
+				}
+			}
+		}
+		if (removed.Count == 0)
+		{
+			return 0;
+		}
+		bool IsRemovedAccount(string? name)
+		{
+			if (string.IsNullOrWhiteSpace(name))
+			{
+				return false;
+			}
+			foreach (string account in removed)
+			{
+				if (AccountNameMatches(name, account) || AccountNameMatches(account, name))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+		try
+		{
+			string gameDir = ResolveGameDir();
+			List<Endpoint> all = string.IsNullOrWhiteSpace(gameDir) ? new List<Endpoint>() : Load(gameDir);
+			List<Endpoint> affected = all
+				.Where(e => IsRemovedAccount(e.User))
+				.ToList();
+			int stopped = 0;
+			foreach (Endpoint e in affected)
+			{
+				if (e.ListenPort > 0 && ProxyCaptureService.StopPort(e.ListenPort))
+				{
+					stopped++;
+				}
+				if (IsBotGroup(e) && e.ListenPort > 0)
+				{
+					string botUser = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
+					RemoveBotAccountFromAllClients(botUser, e.ListenPort);
+				}
+			}
+			AppSettings cfg = SettingsManager.Instance;
+			// 「自启动记忆」：按账号删掉 LastLaunchBindings；全删光后连来源/摘要一起清空。
+			int memoryRemoved = cfg.LastLaunchBindings?.RemoveAll(x => IsRemovedAccount(x.Account)) ?? 0;
+			if ((cfg.LastLaunchBindings?.Count ?? 0) == 0)
+			{
+				cfg.LastLaunchSource = "";
+				cfg.LastLaunchSummary = "";
+			}
+			// 机器人卡片配置：按账号从 NexusEndpoints 精确移除，避免 Load 又从分组里恢复成「已启用」。
+			int cardsRemoved = 0;
+			if (cfg.NexusEndpoints != null)
+			{
+				cardsRemoved = cfg.NexusEndpoints.RemoveAll(x =>
+				{
+					TryParseKey(x.Key, out string user, out _, out _);
+					return IsRemovedAccount(user);
+				});
+			}
+			if (cfg.NexusHiddenCards != null)
+			{
+				cfg.NexusHiddenCards.RemoveAll(x =>
+				{
+					TryParseKey(x, out string user, out _, out _);
+					return IsRemovedAccount(user);
+				});
+			}
+			// 行情 / 画面角色若指向已删账号，一并放空，否则它们会继续持有失效的端口键。
+			TryParseKey(cfg.MarketAccountKey ?? "", out string marketUser, out _, out _);
+			if (IsRemovedAccount(marketUser))
+			{
+				cfg.MarketAccountKey = "";
+			}
+			TryParseKey(cfg.ViewAccountKey ?? "", out string viewUser, out _, out _);
+			if (IsRemovedAccount(viewUser))
+			{
+				cfg.ViewAccountKey = "";
+			}
+			if (cfg.MarketAccountKeyByGroup != null)
+			{
+				foreach (string key in cfg.MarketAccountKeyByGroup.Keys.ToList())
+				{
+					TryParseKey(cfg.MarketAccountKeyByGroup[key] ?? "", out string groupUser, out _, out _);
+					if (IsRemovedAccount(groupUser))
+					{
+						cfg.MarketAccountKeyByGroup.Remove(key);
+					}
+				}
+			}
+			if (AccountStore.All.Count == 0)
+			{
+				// 账号全删：自启动记忆彻底清空（分组角色/端口仍按约定保留，重新登录后可继续用）。
+				cfg.LastLaunchBindings?.Clear();
+				cfg.LastLaunchSource = "";
+				cfg.LastLaunchSummary = "";
+				cfg.LastAutoStartGroupNames?.Clear();
+			}
+			SettingsManager.Save(cfg);
+			LogHelper.Log("[账号] 已清理删除账号的关联数据：账号 " + removed.Count + " 个，监听 " + stopped
+				+ " 个，机器人卡片 " + cardsRemoved + " 张，自启动记忆 " + memoryRemoved + " 条");
+			return affected.Count;
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[账号] 清理删除账号的关联数据失败：" + ex.Message);
+			return 0;
+		}
 	}
 
 	private static int Start(IEnumerable<Endpoint> source)
@@ -2759,11 +3094,20 @@ public static class NexusEndpointService
 				return false;
 			}
 			List<Endpoint> all = Load(dir);
-			// 「要保留哪些客户端机器人账号」= 所有**已启用**的机器人代理卡（不管有没有勾自启动）。
+			if (!masterOn)
+			{
+				// 总开关关闭 = 明确的关停语义：清空所有客户端里的机器人账号，且不再补写。
+				// 以前这里清完还会无条件 EnsureMissingBotAccounts，结果「关了自启动仍有一堆机器人」。
+				int cleared = PruneBotAccountsByPorts(all, new HashSet<int>(), clearAllLoopback: true);
+				LogHelper.Log("[实例多开] 机器人自启总开关 = 关：已清理客户端机器人账号/绑定 " + cleared + " 条，本次不启动任何机器人");
+				return false;
+			}
+			// 「要保留哪些客户端机器人账号」= 所有**已启用且有可用登录态**的机器人代理卡。
 			// 2026-11-18 修正：以前这里只保留「勾了自启动」的端口，于是程序每重启一次就把
 			// 没勾自启动的机器人账号从 mythosnexus.json 里清掉一次 —— 元素之诗那批卡片
 			// 在模组界面里越重启越少、最后干脆建不出机器人，根因就是这条。
-			// 现在只有「被删除 / 被停用」的卡片才会被清理；关总开关时仍然全清（那是明确的关停语义）。
+			// 2026-11-21：再加登录态门槛，账号都删了 / 未登录的卡片不写客户端，
+			// 否则客户端会一直重连没人认证的本地端口（看起来像「账号删了代理还在」）。
 			var keepPorts = new HashSet<int>();
 			// 「显示组」作用域：选了组就只挂组里的机器人，组外卡片不写客户端、不自启。
 			HashSet<string>? scope = DisplayScopeCardKeys();
@@ -2772,8 +3116,9 @@ public static class NexusEndpointService
 				LogHelper.Log("[实例多开] 显示组作用域生效：只挂「" + (cfg.DisplayGroupName ?? "")
 					+ "」组内的机器人（" + scope.Count + " 个角色键）");
 			}
-			// 将要自动运行的机器人：总开关关 = 空；开 = 勾了自启动且启用的机器人卡。
+			// 将要自动运行的机器人：勾了自启动且启用、且有可用登录态的机器人卡。
 			List<Endpoint> autoBots = new List<Endpoint>();
+			int skippedNoLogin = 0;
 			foreach (Endpoint e in all)
 			{
 				if (!e.Enabled || !IsBotGroup(e) || e.ListenPort <= 0)
@@ -2784,14 +3129,20 @@ public static class NexusEndpointService
 				{
 					continue;
 				}
-				if (masterOn)
+				if (!HasUsableAccount(e))
 				{
-					keepPorts.Add(e.ListenPort);
+					skippedNoLogin++;
+					continue;
 				}
-				if (masterOn && e.AutoStart)
+				keepPorts.Add(e.ListenPort);
+				if (e.AutoStart)
 				{
 					autoBots.Add(e);
 				}
+			}
+			if (skippedNoLogin > 0)
+			{
+				LogHelper.Log("[实例多开] 有 " + skippedNoLogin + " 张机器人卡对应的账号已不存在（已删除 / 未绑定），本次不启动也不写客户端");
 			}
 			PruneBotAccountsByPorts(all, keepPorts);
 			// 卡片和客户端账号必须一一对应：启动时把「已启用但客户端里没有」的机器人账号补回去，
@@ -2799,14 +3150,7 @@ public static class NexusEndpointService
 			EnsureMissingBotAccounts(all);
 			if (autoBots.Count == 0)
 			{
-				if (masterOn)
-				{
-					LogHelper.Log("[实例多开] 机器人自启已开但没有勾选「自启动」的卡片，未启动机器人");
-				}
-				else
-				{
-					LogHelper.Log("[实例多开] 机器人自启总开关 = 关：已清理客户端机器人账号，游戏不会再自动挂机器人");
-				}
+				LogHelper.Log("[实例多开] 机器人自启已开但没有可恢复的卡片（需同时勾选卡片「自启动」且账号仍存在），未启动机器人");
 				return false;
 			}
 			int started = Start(autoBots);
@@ -2835,11 +3179,36 @@ public static class NexusEndpointService
 	/// 按给定端口集合清理客户端里的机器人账号：note = MhyunBox 机器人号代理 且
 	/// 端口不在集合内的条目全部移除。集合为空 = 全部清理。
 	/// </summary>
-	private static void PruneBotAccountsByPorts(List<Endpoint> endpoints, HashSet<int> allowedPorts)
+	private static int PruneBotAccountsByPorts(List<Endpoint> endpoints, HashSet<int> allowedPorts, bool clearAllLoopback = false)
 	{
-		foreach (IGrouping<string, Endpoint> group in endpoints.GroupBy(e => ClientDirOf(e)))
+		int removed = 0;
+		// 不能只看 endpoints 里出现过的客户端目录：账号全删 / 卡片被清后 endpoints 可能为空，
+		// 但 mythosnexus.json 里仍然留着机器人账号，游戏一启动又自动连回本地端口。
+		// 这里枚举所有客户端目录，集合为空时做到「总开关关闭 = 全清」。
+		var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		try
 		{
-			string dir = group.Key;
+			foreach (string d in EnumerateClientDirs())
+			{
+				if (!string.IsNullOrWhiteSpace(d))
+				{
+					dirs.Add(d);
+				}
+			}
+		}
+		catch
+		{
+		}
+		foreach (Endpoint e in endpoints ?? new List<Endpoint>())
+		{
+			string d = ClientDirOf(e);
+			if (!string.IsNullOrWhiteSpace(d))
+			{
+				dirs.Add(d);
+			}
+		}
+		foreach (string dir in dirs)
+		{
 			if (string.IsNullOrWhiteSpace(dir))
 			{
 				continue;
@@ -2847,19 +3216,28 @@ public static class NexusEndpointService
 			try
 			{
 				NexusConfigService.Snapshot snap = NexusConfigService.Load(dir);
+				// clearAllLoopback = 用户明确关掉全部机器人：所有指向本机的代理账号都清掉，
+				// 包括旧版本 / 模组自己生成、note 为空的残留卡片；
+				// 有保留名单时只清程序写的（note 标记）且端口不在名单内的。
+				bool clearAll = clearAllLoopback;
 				foreach (NexusConfigService.Account account in snap.Accounts)
 				{
 					if (!IsPlaceholderHost(account.Host)
-						|| !string.Equals(account.Note, "MhyunBox 机器人号代理", StringComparison.Ordinal)
 						|| allowedPorts.Contains(account.Port))
 					{
 						continue;
 					}
+					if (!clearAll && !string.Equals(account.Note, "MhyunBox 机器人号代理", StringComparison.Ordinal))
+					{
+						continue;
+					}
 					NexusConfigService.RemoveAccount(dir, account.Key);
+					removed++;
 					LogHelper.Log("[实例多开] 清理不自动运行的机器人账号：" + account.Key + " → " + Path.GetFileName(dir));
 				}
 				// 孤儿绑定（绑定还在、账号已没了）一并清掉，避免同键账号重建时把 autoReconnect=true 带回来。
-				int orphans = NexusConfigService.PruneOrphanMarkerBindings(dir, allowedPorts);
+				int orphans = NexusConfigService.PruneOrphanMarkerBindings(dir, allowedPorts, clearAll);
+				removed += orphans;
 				if (orphans > 0)
 				{
 					LogHelper.Log("[实例多开] 清理孤儿机器人绑定 " + orphans + " 条 → " + Path.GetFileName(dir));
@@ -2869,6 +3247,27 @@ public static class NexusEndpointService
 			{
 				LogHelper.Log("[实例多开] 清理机器人账号失败（" + Path.GetFileName(dir) + "）：" + ex.Message);
 			}
+		}
+		return removed;
+	}
+
+	/// <summary>
+	/// 用户明确关停全部机器人（关闭自启动总开关 / 启动时总开关为关）：
+	/// 清掉所有客户端里指向本机的机器人账号与空壳绑定，游戏内模组不再显示这些代理卡片。
+	/// 返回清理的账号/绑定条数。
+	/// </summary>
+	public static int ClearAllBotProxyCards()
+	{
+		try
+		{
+			int removed = PruneBotAccountsByPorts(new List<Endpoint>(), new HashSet<int>(), clearAllLoopback: true);
+			LogHelper.Log("[实例多开] 已清理游戏内机器人代理卡片：账号/绑定 " + removed + " 条");
+			return removed;
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[实例多开] 清理游戏内机器人代理卡片失败：" + ex.Message);
+			return 0;
 		}
 	}
 }

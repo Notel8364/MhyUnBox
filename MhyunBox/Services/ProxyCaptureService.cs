@@ -1326,6 +1326,61 @@ public static class ProxyCaptureService
 	}
 
 	/// <summary>
+	/// 停止全部代理监听（服务器代理 + 机器人代理都停）。返回实际停止的端口数。
+	/// 「代理启动」页的「停止 / 停止全部代理」用它：机器人自启后同一批端口是 nexus- 标记，
+	/// 旧实现只停服务器侧，按钮看起来完全没反应。
+	/// </summary>
+	public static int StopAllProxies()
+	{
+		List<int> ports;
+		lock (Sync)
+		{
+			ports = Listeners
+				.Where(item => item.Binding != null)
+				.Select(item => item.Binding!.ListenPort)
+				.Distinct()
+				.ToList();
+		}
+		int stopped = 0;
+		foreach (int port in ports)
+		{
+			if (StopPort(port))
+			{
+				stopped++;
+			}
+		}
+		return stopped;
+	}
+
+	/// <summary>停止指定目标服务器上的全部代理监听（含机器人代理）。返回实际停止的端口数。</summary>
+	public static int StopTargetProxies(string? targetHost)
+	{
+		if (string.IsNullOrWhiteSpace(targetHost))
+		{
+			return StopAllProxies();
+		}
+		List<int> ports;
+		lock (Sync)
+		{
+			ports = Listeners
+				.Where(item => item.Binding != null
+					&& string.Equals(item.Binding.TargetHost, targetHost, StringComparison.OrdinalIgnoreCase))
+				.Select(item => item.Binding!.ListenPort)
+				.Distinct()
+				.ToList();
+		}
+		int stopped = 0;
+		foreach (int port in ports)
+		{
+			if (StopPort(port))
+			{
+				stopped++;
+			}
+		}
+		return stopped;
+	}
+
+	/// <summary>
 	/// 端口归脱盒代理所有时，只挂断该端口上指定机器人账号的会话，监听与其它玩家连接保持不动。
 	/// 返回挂断的会话数。
 	/// </summary>
@@ -1385,7 +1440,9 @@ public static class ProxyCaptureService
 							return i;
 						}
 					}
-					LogHelper.Log("[认证] " + sessionLabel + " 账号键 " + binding.AuthAccountKey + " 在账号列表中已不存在，保持原索引 " + idx);
+					LogHelper.Log("[认证] " + sessionLabel + " 账号键 " + binding.AuthAccountKey
+						+ " 在账号列表中已不存在，本次认证按无账号处理（不再回退旧索引，避免串用其它账号）");
+					return -1;
 				}
 			}
 			return binding.AuthAccountIndex;
