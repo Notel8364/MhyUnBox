@@ -496,6 +496,11 @@ public sealed class InstancesViewPage : Page
 		batchBar.Children.Add(SmallButton("批量启动", () => BatchStartStop(true, false)));
 		batchBar.Children.Add(SmallButton("批量停止", () => BatchStartStop(false, false)));
 		batchBar.Children.Add(SmallButton("批量重启", () => BatchStartStop(false, true)));
+		// 机器人只能挂在带 MythosNexus 的挂号版客户端里；普通版没有该模组，写账号也不会出现机器人。
+		if (NexusEndpointService.ResolveHostVersionDir("").Length > 0)
+		{
+			batchBar.Children.Add(SmallButton("启动挂号版", () => _ = LaunchHostClientAsync()));
+		}
 		actions.Children.Add(new TextBlock
 		{
 			Text = "行情角色",
@@ -1647,6 +1652,32 @@ public sealed class InstancesViewPage : Page
 		return border;
 	}
 
+	/// <summary>启动宿主挂号版客户端（页面顶部「启动挂号版」按钮）。</summary>
+	private async Task LaunchHostClientAsync()
+	{
+		try
+		{
+			string dir = NexusEndpointService.ResolveHostVersionDirForDisplay();
+			if (dir.Length == 0)
+			{
+				MainWindow.Instance?.ShowToast("未找到挂号版客户端目录", ok: false);
+				return;
+			}
+			if (NexusEndpointService.IsHostClientRunning(dir))
+			{
+				MainWindow.Instance?.ShowToast("挂号版已在运行");
+				return;
+			}
+			OfficialClientLaunchResult r = await Task.Run(() => NexusEndpointService.LaunchHostClient(""));
+			MainWindow.Instance?.ShowToast(r.Ok ? "已启动挂号版，机器人会自动进服" : ("启动挂号版失败：" + r.Message), r.Ok);
+		}
+		catch (Exception ex)
+		{
+			LogHelper.Log("[实例多开] 启动挂号版失败：" + ex.Message);
+			MainWindow.Instance?.ShowToast("启动挂号版失败：" + ex.Message, ok: false);
+		}
+	}
+
 	// ---- 卡片操作：启动 / 停止机器人代理、删除卡片 ----
 
 	private void StartProxy(NexusEndpointService.Endpoint e, bool batch = false)
@@ -1712,12 +1743,18 @@ public sealed class InstancesViewPage : Page
 				SettingsManager.Save(cfg);
 			}
 			bool isBot = string.Equals(e.Group, "机器人代理", StringComparison.OrdinalIgnoreCase);
+			string hostHint = "";
 			if (isBot)
 			{
 				string botUser = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
 				// 显式启动 = 用户改主意了：先解掉删除墓碑，否则这次启动写不进账号。
 				NexusEndpointService.ClearCardTombstone(e);
 				NexusEndpointService.EnsureBotAccount(e.ServerHint, botUser, e.ListenPort, "机器人代理", e.CardKey, NexusEndpointService.ClientDirOf(e));
+				string hostDir = NexusEndpointService.ResolveHostVersionDir(e.ServerHint);
+				if (hostDir.Length > 0 && !NexusEndpointService.IsHostClientRunning(hostDir))
+				{
+					hostHint = "；宿主挂号版未运行，启动后自动进服";
+				}
 				// 单客户端 10 个会话到顶时只提醒、不拦（过渡逻辑在 Load 里统一处理）。
 				int sessions = NexusEndpointService.CountBotSessions(
 					NexusEndpointService.Load(_gameDir), NexusEndpointService.ClientDirOf(e));
@@ -1733,8 +1770,10 @@ public sealed class InstancesViewPage : Page
 				LogHelper.Log("[实例多开] 已启动：" + name + " · 127.0.0.1:" + e.ListenPort);
 				if (!batch)
 				{
-					_summary.Text = "已启动机器人：" + name + " · 127.0.0.1:" + e.ListenPort;
-					MainWindow.Instance?.ShowToast("已启动机器人：" + name + " · 127.0.0.1:" + e.ListenPort);
+					_summary.Text = "已启动机器人：" + name + " · 127.0.0.1:" + e.ListenPort + hostHint;
+					MainWindow.Instance?.ShowToast(hostHint.Length == 0
+						? ("已启动机器人：" + name + " · 127.0.0.1:" + e.ListenPort)
+						: "机器人账号已写入；宿主挂号版未运行，启动挂号版后会自动进服", hostHint.Length == 0);
 				}
 			}
 			else

@@ -217,6 +217,12 @@ public class AppSettings
 	/// <summary>按服务器预设保存的客户端直连地址（host:port）；留空表示不自动进服，界面也不显示代理信息。</summary>
 	public Dictionary<string, string> OfficialClientDirectByPreset { get; set; } = new Dictionary<string, string>();
 
+	/// <summary>按服务器预设保存的客户端版本目录名（versions\&lt;name&gt;）；空 = 自动选择。</summary>
+	public Dictionary<string, string> OfficialClientVersionByPreset { get; set; } = new Dictionary<string, string>();
+
+	/// <summary>勾选了「自启动客户端」的内置服务器预设名；启动卡自己的开关存在 ClientLaunchCard.AutoStart。</summary>
+	public List<string> AutoStartClientPresets { get; set; } = new List<string>();
+
 	/// <summary>额外启动卡（每张卡 = 一份独立的客户端启动配置，允许同时多开）。</summary>
 	public List<ClientLaunchCard> ClientLaunchCards { get; set; } = new List<ClientLaunchCard>();
 

@@ -35,6 +35,13 @@ public sealed class PclClientInfo
 /// </summary>
 public static class PclClientLauncher
 {
+	/// <summary>游戏参数值含空格时加双引号（参数串按空格切分，不引用会截断路径）。</summary>
+	private static string QuoteArg(string? value)
+	{
+		string text = value ?? "";
+		return text.IndexOf(' ') >= 0 ? "\"" + text + "\"" : text;
+	}
+
 	/// <summary>检测给定目录是否为可启动的 PCL / 通用 .minecraft 客户端。给定路径可以是 .minecraft 本身、PCL 根目录或 versions\&lt;name&gt; 版本目录。</summary>
 	public static PclClientInfo? Detect(string? dir)
 	{
@@ -305,9 +312,12 @@ public static class PclClientLauncher
 			string gameAssets = assetsIndex.Equals("legacy", StringComparison.OrdinalIgnoreCase)
 				? Path.Combine(assetsRoot, "virtual", "legacy")
 				: assetsRoot;
+			// 路径里带空格（如「司马龙猫开的失落世界 - 挂号版」）时必须加引号：
+			// 游戏参数是按空格切分的，不引用会把 --gameDir 截断成普通版目录，
+			// 实际加载普通版的 mods（没有 MythosNexus），机器人就会「挂不进游戏」。
 			var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 			{
-				["auth_player_name"] = loginName,
+				["auth_player_name"] = QuoteArg(loginName),
 				["auth_uuid"] = uuid,
 				["auth_access_token"] = "0",
 				["auth_session"] = "",
@@ -315,15 +325,15 @@ public static class PclClientLauncher
 				["clientid"] = "",
 				["user_type"] = "legacy",
 				["user_properties"] = "{}",
-				["version_name"] = info.VersionName,
+				["version_name"] = QuoteArg(info.VersionName),
 				["version_type"] = "MhyunBox",
 				["assets_index_name"] = assetsIndex,
-				["assets_root"] = assetsRoot,
-				["game_assets"] = gameAssets,
-				["game_directory"] = info.WorkingDir,
+				["assets_root"] = QuoteArg(assetsRoot),
+				["game_assets"] = QuoteArg(gameAssets),
+				["game_directory"] = QuoteArg(info.WorkingDir),
 				["launcher_name"] = "MhyunBox",
 				["launcher_version"] = AppVersion.Display.TrimStart('v'),
-				["native_directory"] = nativesDir,
+				["native_directory"] = QuoteArg(nativesDir),
 				["classpath"] = string.Join(";", classpath),
 				["classpath_separator"] = ";"
 			};

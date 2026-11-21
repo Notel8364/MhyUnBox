@@ -30,6 +30,8 @@ public static class GameSessionWatcher
 		public bool Connected;
 		public long StartedMs;
 		public long ConnectedMs;
+		/// <summary>最近一次已提示过的崩溃报告名，防止同一份崩溃反复弹 Toast。</summary>
+		public string LastCrash = "";
 	}
 
 	/// <summary>轮询间隔：3 秒足够快，读日志是小文件增量，不占 CPU。</summary>
@@ -230,6 +232,17 @@ public static class GameSessionWatcher
 						break;
 					}
 				}
+				// 宿主客户端崩溃：机器人随之全部掉线，提示用户看 crash-reports，避免误判成代理没连上。
+				if (chunk.IndexOf("Game crashed! Crash report saved", StringComparison.Ordinal) >= 0)
+				{
+					string report = ExtractCrashReport(chunk);
+					if (!string.Equals(state.LastCrash, report, StringComparison.OrdinalIgnoreCase))
+					{
+						state.LastCrash = report;
+						LogHelper.Log("[实例多开] 宿主客户端崩溃：" + name + " → " + report);
+						PostToUi(() => MainWindow.Instance?.ShowToast("宿主客户端崩溃，机器人已全部掉线；崩溃报告：" + report, ok: false));
+					}
+				}
 			}
 		}
 
@@ -253,6 +266,20 @@ public static class GameSessionWatcher
 			state.Connected = false;
 			state.ConnectedMs = 0;
 			LogHelper.Log("[游戏监听] " + name + " 已离开服务器");
+			// 掉线自愈：重写机器人账号触发模组热加载，并补起缺失的机器人监听；
+			// 已在监听的保持不动，避免同秒多账号重登触发风控。
+			PostToUi(() =>
+			{
+				try
+				{
+					NexusEndpointService.RecreateBotCardsForClient(dir);
+					NexusEndpointService.RestartAutoStartBotsForClient(dir);
+				}
+				catch (Exception ex)
+				{
+					LogHelper.Log("[游戏监听] 掉线自愈失败：" + ex.Message);
+				}
+			});
 		}
 		if (justConnected && !state.Connected && state.Running)
 		{
@@ -273,6 +300,7 @@ public static class GameSessionWatcher
 				try
 				{
 					NexusEndpointService.RecreateBotCardsForClient(dir);
+					NexusEndpointService.RestartAutoStartBotsForClient(dir);
 				}
 				catch (Exception ex)
 				{
@@ -356,6 +384,24 @@ public static class GameSessionWatcher
 				LogHelper.Log("[游戏监听] 自动重启机器人代理失败：" + ex.Message);
 			}
 		});
+	}
+
+	/// <summary>从崩溃日志行里取 crash-reports\ 之后的文件名。</summary>
+	private static string ExtractCrashReport(string chunk)
+	{
+		const string marker = "crash-reports";
+		int i = chunk.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
+		if (i < 0)
+		{
+			return "crash-reports";
+		}
+		int end = i + marker.Length;
+		while (end < chunk.Length && chunk[end] != '\r' && chunk[end] != '\n')
+		{
+			end++;
+		}
+		string tail = chunk.Substring(i + marker.Length, end - i - marker.Length).Trim('\\', '/', ' ');
+		return tail.Length == 0 ? "crash-reports" : tail;
 	}
 
 	/// <summary>把动作丢回主线程执行；主窗口还没建好时直接在当前线程跑。</summary>

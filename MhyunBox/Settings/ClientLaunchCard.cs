@@ -18,9 +18,15 @@ public sealed class ClientLaunchCard
 	/// <summary>客户端 .minecraft 根目录（留空 = 自动查找）。</summary>
 	public string ClientRoot { get; set; } = "";
 
+	/// <summary>指定 versions\&lt;name&gt; 版本目录名（留空 = 自动选择；机器人宿主需选挂号版）。</summary>
+	public string VersionDir { get; set; } = "";
+
 	/// <summary>直连地址 host:port（留空 = 启动后不自动进服）。</summary>
 	public string DirectAddress { get; set; } = "";
 
 	/// <summary>JRE 目录（留空 = 自动查找）。</summary>
 	public string JavaHome { get; set; } = "";
+
+	/// <summary>程序启动时自动按这张卡拉起客户端（每张卡独立）。</summary>
+	public bool AutoStart { get; set; }
 }

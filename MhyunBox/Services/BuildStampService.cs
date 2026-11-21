@@ -59,8 +59,8 @@ public sealed class BuildStampInfo
 ///
 /// 为什么改：时间戳会被解压、复制、不同机器时区、用户手动更新 DLL 打乱，
 /// 对部分用户会误判「落后 / 较新」。大小与哈希是内容本身的指纹，结论唯一。
-/// 仓库里不放 DLL 二进制（构建产物本来被 .gitignore 排除），只放一份
-/// dll-manifest.json（size/sha256/version/updated），程序按 raw 地址拉取。
+/// 仓库根目录同步一份 MhyunBox.dll，并放一份 dll-manifest.json
+/// （size/sha256/version/updated），程序按 raw 地址拉取清单。
 /// </summary>
 public static class BuildStampService
 {

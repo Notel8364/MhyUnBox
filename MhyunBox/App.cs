@@ -159,6 +159,7 @@ public partial class App : Application
 			HandleBootState();
 			TryAutoStartCapture();
 			TryAutoStartProxy();
+			TryAutoStartClientCards();
 			TryAutoLaunchOfficialClient();
 			TryAutoStartTools();
 			MarketTokenService.StartBackgroundSync();
@@ -411,6 +412,60 @@ public partial class App : Application
 					}
 				}
 			});
+		}
+	}
+
+	/// <summary>
+	/// 程序启动时按「启动客户端」里每张卡片的「自启动客户端」勾选拉起实例。
+	/// 与机器人自启 / 服务器代理自启完全独立，只认启动卡自己的开关。
+	/// </summary>
+	private static void TryAutoStartClientCards()
+	{
+		try
+		{
+			if (!ActivationService.IsActivated)
+			{
+				LogHelper.Log("[自启动] 客户端卡自启未生效：未激活");
+				return;
+			}
+			List<ClientLaunchCard> cards = SettingsManager.Instance.ClientLaunchCards ?? new List<ClientLaunchCard>();
+			int started = 0;
+			foreach (ClientLaunchCard card in cards)
+			{
+				if (card == null || !card.AutoStart)
+				{
+					continue;
+				}
+				OfficialClientLaunchResult r = MhyunBox.Pages.RoleLauncherPanel.LaunchCardSilent(card);
+				LogHelper.Log("[自启动] 客户端卡「" + (card.Name ?? "") + "」→ " + r.Message);
+				if (r.Ok)
+				{
+					started++;
+				}
+			}
+			List<string> presetNames = SettingsManager.Instance.AutoStartClientPresets ?? new List<string>();
+			foreach (string presetName in presetNames)
+			{
+				ServerPreset? preset = ServerPresets.Find(presetName);
+				if (preset == null)
+				{
+					continue;
+				}
+				OfficialClientLaunchResult r = MhyunBox.Pages.RoleLauncherPanel.LaunchPresetSilent(preset);
+				LogHelper.Log("[自启动] 预设「" + presetName + "」→ " + r.Message);
+				if (r.Ok)
+				{
+					started++;
+				}
+			}
+			if (started > 0)
+			{
+				MhyunBox.MainWindow.Instance?.ShowToast("已按「自启动客户端」拉起 " + started + " 个客户端");
+			}
+		}
+		catch (Exception ex)
+		{
+			LogHelper.LogError(ex, "[自启动] 客户端卡启动失败");
 		}
 	}
 

@@ -1,8 +1,8 @@
 {
   "file": "MhyunBox.dll",
   "version": "10.5.3",
-  "size": 2206720,
-  "sha256": "d73b459a0ae9df4f3a75ae5ad1887a22f7f8025fb55e32395e8586d7a1e245c5",
-  "updated": "2026-11-21T13:03:05Z",
-  "note": "官方发布包中 MhyunBox.dll 的大小与 SHA256。每次发布新 DLL 后请同步更新本文件。"
+  "size": 2220544,
+  "sha256": "445ddf9eccd8f2acd6723e927a36a08cf7c8546810c1b2ee69b0a0e25e8bd453",
+  "updated": "2026-11-21T14:08:17Z",
+  "note": "仓库根目录 MhyunBox.dll 的大小与 SHA256。每次发布新 DLL 后请同步更新本文件与根目录 DLL。"
 }

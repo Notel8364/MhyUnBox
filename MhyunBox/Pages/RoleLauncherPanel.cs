@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.UI.Dispatching;
@@ -59,6 +60,13 @@ public sealed class RoleLauncherPanel
 	{
 		Width = 360.0,
 		PlaceholderText = "客户端 .minecraft 目录（留空自动查找）"
+	};
+
+	/// <summary>版本目录（versions\&lt;name&gt;）；自动 = 由启动器挑最合适的版本。</summary>
+	private readonly ComboBox _versionBox = new ComboBox
+	{
+		MinWidth = 280.0,
+		HorizontalAlignment = HorizontalAlignment.Left
 	};
 
 	private readonly TextBox _directBox = new TextBox
@@ -127,6 +135,15 @@ public sealed class RoleLauncherPanel
 		Visibility = Visibility.Collapsed
 	};
 
+	/// <summary>启动卡「自启动客户端」：程序启动时按这张卡的配置自动拉起客户端。</summary>
+	private readonly CheckBox _autoStartCardCheck = new CheckBox
+	{
+		Content = "自启动客户端",
+		FontSize = 12.5,
+		VerticalAlignment = VerticalAlignment.Center,
+		Visibility = Visibility.Collapsed
+	};
+
 	private readonly DispatcherQueueTimer? _timer;
 
 	/// <summary>与下拉项一一对应的显示文本。</summary>
@@ -159,6 +176,8 @@ public sealed class RoleLauncherPanel
 		entryRow.Children.Add(_launch);
 		entryRow.Children.Add(_stop);
 		entryRow.Children.Add(_deleteCard);
+		ToolTipService.SetToolTip(_autoStartCardCheck, "程序启动后自动按这张启动卡的配置拉起客户端（每张卡独立）。");
+		entryRow.Children.Add(_autoStartCardCheck);
 		_root.Children.Add(entryRow);
 
 		StackPanel clientRow = new StackPanel
@@ -181,6 +200,30 @@ public sealed class RoleLauncherPanel
 		pickClient.Click += PickClient_Click;
 		clientRow.Children.Add(pickClient);
 		_root.Children.Add(clientRow);
+
+		// —— 版本目录：自动 = 启动器自选；机器人宿主必须选带 MythosNexus 的挂号版 ——
+		StackPanel versionRow = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 8.0
+		};
+		versionRow.Children.Add(new TextBlock
+		{
+			Text = "版本目录",
+			FontSize = 12.0,
+			Opacity = 0.7,
+			VerticalAlignment = VerticalAlignment.Center,
+			MinWidth = 58.0
+		});
+		versionRow.Children.Add(_versionBox);
+		Button refreshVersion = new Button
+		{
+			Content = "刷新"
+		};
+		ToolTipService.SetToolTip(refreshVersion, "重新扫描客户端目录下的 versions。机器人只能挂在带 MythosNexus 的挂号版里，选普通版会挂不进游戏。");
+		refreshVersion.Click += (object s, RoutedEventArgs e) => ReloadVersionOptions(SelectedVersionName());
+		versionRow.Children.Add(refreshVersion);
+		_root.Children.Add(versionRow);
 
 		StackPanel directRow = new StackPanel
 		{
@@ -314,6 +357,7 @@ public sealed class RoleLauncherPanel
 		_entryBox.SelectionChanged += EntryBox_SelectionChanged;
 		_clientBox.LostFocus += ConfigBox_LostFocus;
 		_directBox.LostFocus += ConfigBox_LostFocus;
+		_versionBox.SelectionChanged += VersionBox_SelectionChanged;
 		_jreCustomBox.LostFocus += JreCustomBox_LostFocus;
 		_jreBox.SelectionChanged += JreBox_SelectionChanged;
 		_jvmArgsBox.LostFocus += (object s, RoutedEventArgs e) => SaveJvmArgs();
@@ -322,8 +366,10 @@ public sealed class RoleLauncherPanel
 		_memCustom.Checked += MemMode_Checked;
 		_memSlider.ValueChanged += MemSlider_ValueChanged;
 		_deleteCard.Click += DeleteCard_Click;
+		_autoStartCardCheck.Click += AutoStartCardCheck_Click;
 		ThemeHelper.SolidComboPopup(_entryBox);
 		ThemeHelper.SolidComboPopup(_jreBox);
+		ThemeHelper.SolidComboPopup(_versionBox);
 		_ = LoadJreListAsync();
 		InitMemoryUi();
 		_jreCustomBox.Text = SettingsManager.Instance.OfficialClientJavaHome ?? "";
@@ -493,8 +539,15 @@ public sealed class RoleLauncherPanel
 				}
 			}
 
-			bool isCard = TryGetEntry(out ServerPreset? preset, out ClientLaunchCard? card) && card != null;
-			_deleteCard.Visibility = isCard ? Visibility.Visible : Visibility.Collapsed;
+			bool hasEntry = TryGetEntry(out ServerPreset? preset, out ClientLaunchCard? card);
+			_deleteCard.Visibility = (hasEntry && card != null) ? Visibility.Visible : Visibility.Collapsed;
+			_autoStartCardCheck.Visibility = hasEntry ? Visibility.Visible : Visibility.Collapsed;
+			if (hasEntry)
+			{
+				_autoStartCardCheck.IsChecked = (card != null)
+					? card.AutoStart
+					: IsPresetAutoStart(preset?.Name ?? "");
+			}
 			_launch.IsEnabled = !_busy && TryGetEntry(out _, out _);
 			_stop.IsEnabled = !_busy && OfficialClientLauncher.RunningCount > 0;
 			UpdateStatus(preset, card);
@@ -587,6 +640,7 @@ public sealed class RoleLauncherPanel
 			{
 				_clientBox.Text = card.ClientRoot ?? "";
 				_directBox.Text = card.DirectAddress ?? "";
+				ReloadVersionOptions(card.VersionDir ?? "");
 				return;
 			}
 			AppSettings settings = SettingsManager.Instance;
@@ -601,6 +655,8 @@ public sealed class RoleLauncherPanel
 			}
 			_clientBox.Text = root;
 			_directBox.Text = (settings.OfficialClientDirectByPreset != null && settings.OfficialClientDirectByPreset.TryGetValue(preset.Name, out string? direct)) ? (direct ?? "") : "";
+			string version = (settings.OfficialClientVersionByPreset != null && settings.OfficialClientVersionByPreset.TryGetValue(preset.Name, out string? savedVersion)) ? (savedVersion ?? "") : "";
+			ReloadVersionOptions(version);
 		}
 		finally
 		{
@@ -618,17 +674,22 @@ public sealed class RoleLauncherPanel
 		{
 			string root = (_clientBox.Text ?? "").Trim();
 			string direct = (_directBox.Text ?? "").Trim();
+			string version = SelectedVersionName();
 			AppSettings settings = SettingsManager.Instance;
 			if (card != null)
 			{
-				if (string.Equals(card.ClientRoot ?? "", root, StringComparison.Ordinal) && string.Equals(card.DirectAddress ?? "", direct, StringComparison.Ordinal))
+				if (string.Equals(card.ClientRoot ?? "", root, StringComparison.Ordinal)
+					&& string.Equals(card.DirectAddress ?? "", direct, StringComparison.Ordinal)
+					&& string.Equals(card.VersionDir ?? "", version, StringComparison.Ordinal))
 				{
 					return;
 				}
 				card.ClientRoot = root;
 				card.DirectAddress = direct;
+				card.VersionDir = version;
 				SettingsManager.Save(settings);
-				LogHelper.Log("[启动客户端] 启动卡「" + card.Name + "」配置已保存（客户端目录=" + (root.Length == 0 ? "(自动)" : root) + "，直连=" + (direct.Length == 0 ? "(无)" : direct) + "）");
+				LogHelper.Log("[启动客户端] 启动卡「" + card.Name + "」配置已保存（客户端目录=" + (root.Length == 0 ? "(自动)" : root)
+					+ "，版本=" + (version.Length == 0 ? "(自动)" : version) + "，直连=" + (direct.Length == 0 ? "(无)" : direct) + "）");
 				return;
 			}
 			settings.OfficialClientRootByPreset ??= new Dictionary<string, string>();
@@ -665,6 +726,20 @@ public sealed class RoleLauncherPanel
 				}
 				changed = true;
 			}
+			settings.OfficialClientVersionByPreset ??= new Dictionary<string, string>();
+			string oldVersion = settings.OfficialClientVersionByPreset.TryGetValue(name, out string? v0) ? (v0 ?? "") : "";
+			if (!string.Equals(oldVersion, version, StringComparison.Ordinal))
+			{
+				if (version.Length == 0)
+				{
+					settings.OfficialClientVersionByPreset.Remove(name);
+				}
+				else
+				{
+					settings.OfficialClientVersionByPreset[name] = version;
+				}
+				changed = true;
+			}
 			if (changed)
 			{
 				SettingsManager.Save(settings);
@@ -679,6 +754,131 @@ public sealed class RoleLauncherPanel
 
 	private void ConfigBox_LostFocus(object sender, RoutedEventArgs e)
 	{
+		string keep = SelectedVersionName();
+		SaveCurrentConfig();
+		ReloadVersionOptions(keep);
+	}
+
+	private const string VersionAutoItem = "自动（按客户端目录选择）";
+
+	private string SelectedVersionName()
+	{
+		return (_versionBox.SelectedIndex > 0) ? ((_versionBox.SelectedItem as string) ?? "").Trim() : "";
+	}
+
+	/// <summary>按当前客户端目录重扫 versions；selectName 为空 = 自动。</summary>
+	private void ReloadVersionOptions(string selectName)
+	{
+		bool prev = _syncing;
+		_syncing = true;
+		try
+		{
+			string keep = (selectName ?? "").Trim();
+			_versionBox.Items.Clear();
+			_versionBox.Items.Add(VersionAutoItem);
+			foreach (string dir in EnumerateVersionDirs())
+			{
+				_versionBox.Items.Add(Path.GetFileName(dir));
+			}
+			int index = 0;
+			if (keep.Length > 0)
+			{
+				for (int i = 1; i < _versionBox.Items.Count; i++)
+				{
+					if (string.Equals(_versionBox.Items[i] as string, keep, StringComparison.OrdinalIgnoreCase))
+					{
+						index = i;
+						break;
+					}
+				}
+			}
+			_versionBox.SelectedIndex = index;
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[启动客户端] 刷新版本目录失败");
+		}
+		finally
+		{
+			_syncing = prev;
+		}
+	}
+
+	/// <summary>列出当前客户端目录下可启动的 versions\&lt;name&gt;。</summary>
+	private List<string> EnumerateVersionDirs()
+	{
+		var list = new List<string>();
+		try
+		{
+			string hint = (_clientBox.Text ?? "").Trim();
+			PclClientInfo? info = PclClientLauncher.Detect(hint);
+			if (info == null)
+			{
+				return list;
+			}
+			string versionsDir = Path.Combine(info.McRoot, "versions");
+			if (!Directory.Exists(versionsDir))
+			{
+				return list;
+			}
+			foreach (string dir in Directory.GetDirectories(versionsDir))
+			{
+				if (Directory.GetFiles(dir, "*.json").Length > 0 && Directory.GetFiles(dir, "*.jar").Length > 0)
+				{
+					list.Add(dir);
+				}
+			}
+			list.Sort(StringComparer.OrdinalIgnoreCase);
+		}
+		catch
+		{
+		}
+		return list;
+	}
+
+	/// <summary>把「版本目录」换算成启动器要的 clientRoot（版本目录本身）。</summary>
+	private static string ResolveLaunchRoot(string clientRoot, string versionName)
+	{
+		if (versionName.Length == 0)
+		{
+			return clientRoot;
+		}
+		try
+		{
+			string root = (clientRoot ?? "").Trim().TrimEnd('\\');
+			string mcRoot = "";
+			string? parent = Path.GetDirectoryName(root);
+			if (root.Length > 0 && !string.IsNullOrEmpty(parent)
+				&& string.Equals(Path.GetFileName(parent), "versions", StringComparison.OrdinalIgnoreCase))
+			{
+				mcRoot = Path.GetDirectoryName(parent) ?? "";
+			}
+			else if (root.Length > 0 && Directory.Exists(Path.Combine(root, "versions")))
+			{
+				mcRoot = root;
+			}
+			else
+			{
+				mcRoot = PclClientLauncher.Detect(root)?.McRoot ?? "";
+			}
+			string dir = Path.Combine(mcRoot, "versions", versionName);
+			if (mcRoot.Length > 0 && Directory.Exists(dir))
+			{
+				return dir;
+			}
+		}
+		catch
+		{
+		}
+		return clientRoot;
+	}
+
+	private void VersionBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_syncing)
+		{
+			return;
+		}
 		SaveCurrentConfig();
 	}
 
@@ -690,6 +890,7 @@ public sealed class RoleLauncherPanel
 			if (!string.IsNullOrWhiteSpace(dir))
 			{
 				_clientBox.Text = dir;
+				ReloadVersionOptions("");
 				SaveCurrentConfig();
 			}
 		}
@@ -1329,6 +1530,66 @@ public sealed class RoleLauncherPanel
 		}
 	}
 
+	/// <summary>启动卡 / 内置预设的「自启动客户端」开关。</summary>
+	private void AutoStartCardCheck_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			if (!TryGetEntry(out ServerPreset? preset, out ClientLaunchCard? card))
+			{
+				return;
+			}
+			bool on = _autoStartCardCheck.IsChecked == true;
+			if (card != null)
+			{
+				if (card.AutoStart == on)
+				{
+					return;
+				}
+				card.AutoStart = on;
+				SettingsManager.Save(SettingsManager.Instance);
+				LogHelper.Log("[启动客户端] 启动卡「" + card.Name + "」自启动客户端 = " + (on ? "开" : "关"));
+				return;
+			}
+			if (preset == null)
+			{
+				return;
+			}
+			AppSettings settings = SettingsManager.Instance;
+			settings.AutoStartClientPresets ??= new List<string>();
+			bool exists = settings.AutoStartClientPresets.Contains(preset.Name, StringComparer.Ordinal);
+			if (exists == on)
+			{
+				return;
+			}
+			if (on)
+			{
+				settings.AutoStartClientPresets.Add(preset.Name);
+			}
+			else
+			{
+				settings.AutoStartClientPresets.RemoveAll(n => string.Equals(n, preset.Name, StringComparison.Ordinal));
+			}
+			SettingsManager.Save(settings);
+			LogHelper.Log("[启动客户端] 预设「" + preset.Name + "」自启动客户端 = " + (on ? "开" : "关"));
+		}
+		catch (Exception ex)
+		{
+			LogHelper.DebugError(ex, "[启动客户端] 保存自启动客户端开关失败");
+		}
+	}
+
+	/// <summary>该内置预设是否勾了「自启动客户端」。</summary>
+	private static bool IsPresetAutoStart(string presetName)
+	{
+		if (string.IsNullOrWhiteSpace(presetName))
+		{
+			return false;
+		}
+		List<string>? list = SettingsManager.Instance.AutoStartClientPresets;
+		return list != null && list.Contains(presetName, StringComparer.Ordinal);
+	}
+
 	private void DeleteCard_Click(object sender, RoutedEventArgs e)
 	{
 		try
@@ -1440,6 +1701,129 @@ public sealed class RoleLauncherPanel
 		}
 	}
 
+	/// <summary>
+	/// 按启动卡保存的配置静默拉起客户端（供程序启动时的「自启动客户端」调用）。
+	/// </summary>
+	public static OfficialClientLaunchResult LaunchCardSilent(ClientLaunchCard card)
+	{
+		if (card == null)
+		{
+			return new OfficialClientLaunchResult { Message = "启动卡为空" };
+		}
+		return LaunchEntrySilent(ServerPresets.Find(card.PresetName), card);
+	}
+
+	/// <summary>按内置服务器预设保存的配置静默拉起客户端（预设卡的自启动）。</summary>
+	public static OfficialClientLaunchResult LaunchPresetSilent(ServerPreset preset)
+	{
+		if (preset == null)
+		{
+			return new OfficialClientLaunchResult { Message = "服务器预设为空" };
+		}
+		return LaunchEntrySilent(preset, null);
+	}
+
+	/// <summary>预设 / 启动卡共用的静默启动实现（目录、版本、直连、内存、JRE 解析一致）。</summary>
+	private static OfficialClientLaunchResult LaunchEntrySilent(ServerPreset? preset, ClientLaunchCard? card)
+	{
+		OfficialClientLaunchResult result = new OfficialClientLaunchResult();
+		try
+		{
+			AppSettings settings = SettingsManager.Instance;
+			string clientRoot;
+			string versionName;
+			string direct;
+			string javaHome;
+			if (card != null)
+			{
+				clientRoot = (card.ClientRoot ?? "").Trim();
+				versionName = (card.VersionDir ?? "").Trim();
+				direct = card.DirectAddress ?? "";
+				javaHome = (card.JavaHome ?? "").Trim();
+			}
+			else
+			{
+				string presetName = preset!.Name;
+				clientRoot = (settings.OfficialClientRootByPreset != null
+					&& settings.OfficialClientRootByPreset.TryGetValue(presetName, out string? root)) ? (root ?? "") : "";
+				if (clientRoot.Trim().Length == 0)
+				{
+					clientRoot = (settings.OfficialClientRoot ?? "").Trim();
+				}
+				versionName = (settings.OfficialClientVersionByPreset != null
+					&& settings.OfficialClientVersionByPreset.TryGetValue(presetName, out string? version)) ? (version ?? "") : "";
+				direct = (settings.OfficialClientDirectByPreset != null
+					&& settings.OfficialClientDirectByPreset.TryGetValue(presetName, out string? savedDirect)) ? (savedDirect ?? "") : "";
+				javaHome = "";
+			}
+			string launchRoot = ResolveLaunchRoot(clientRoot, versionName);
+			string expandedDirect = ExpandDirect(preset, direct);
+			string memoryArg = "-Xmx" + ResolveMemoryMb() + "M";
+			string extraJvm = ResolveJvmArgs();
+			if (javaHome.Length == 0)
+			{
+				javaHome = (settings.OfficialClientJavaHome ?? "").Trim();
+			}
+			if (javaHome.Length == 0)
+			{
+				javaHome = (settings.OfficialClientJreSelected ?? "").Trim();
+			}
+			string role = (settings.OfficialClientRole ?? "").Trim();
+			ResolveAccount(role, out long uid);
+			if (BjdGate.IsBjd(preset))
+			{
+				int proxyPort = ResolveLoopbackPort(expandedDirect);
+				if (proxyPort == 0)
+				{
+					proxyPort = ResolveProxyPort(preset!.Host);
+				}
+				if (proxyPort == 0)
+				{
+					result.Message = "「" + preset!.Name + "」没有运行中的代理";
+					return result;
+				}
+				ResolveBindingRole(proxyPort, out string bindingRole, out long bindingUid, out int accountIndex);
+				FakeLauncherService fake = FakeLauncherService.Start(0, "127.0.0.1", proxyPort, preset.Name);
+				result = OfficialClientLauncher.Launch(proxyPort,
+					(bindingRole.Length == 0) ? null : bindingRole,
+					accountIndex,
+					(launchRoot.Length == 0) ? null : launchRoot,
+					false, null, 2, fake.Port, bindingUid, null,
+					(javaHome.Length == 0) ? null : javaHome, null, memoryArg, extraJvm);
+				if (!result.Ok)
+				{
+					FakeLauncherService.StopInstance(fake);
+				}
+				return result;
+			}
+			int anyProxyPort = (preset != null) ? ResolveProxyPort(preset.Host) : 0;
+			if (anyProxyPort > 0)
+			{
+				ResolveBindingRole(anyProxyPort, out string bindingRole, out long bindingUid, out _);
+				if (bindingRole.Length > 0)
+				{
+					role = bindingRole;
+				}
+				if (bindingUid > 0)
+				{
+					uid = bindingUid;
+				}
+			}
+			result = OfficialClientLauncher.Launch(0, role.Length == 0 ? null : role, -1,
+				(launchRoot.Length == 0) ? null : launchRoot,
+				false, null, 1, 0, uid, null,
+				(javaHome.Length == 0) ? null : javaHome,
+				(expandedDirect.Length == 0) ? "" : expandedDirect, memoryArg, extraJvm);
+			return result;
+		}
+		catch (Exception ex)
+		{
+			result.Message = ex.Message;
+			LogHelper.LogError(ex, "[启动客户端] 静默启动失败");
+			return result;
+		}
+	}
+
 	/// <summary>外部入口（快速启动页角色组/启动卡栏目）：按显示名选中条目并立即启动。</summary>
 	public async void LaunchEntryFromOutside(string display)
 	{
@@ -1475,6 +1859,8 @@ public sealed class RoleLauncherPanel
 			AppSettings settings = SettingsManager.Instance;
 			string label = (card != null) ? card.Name : preset!.Name;
 			string clientRoot = (_clientBox.Text ?? "").Trim();
+			// 指定版本目录时直接以 versions\<name> 作为启动根目录，避免自动挑到不含 MythosNexus 的普通版。
+			string launchRoot = ResolveLaunchRoot(clientRoot, SelectedVersionName());
 			string directText = ExpandDirect(preset, (_directBox.Text ?? "").Trim());
 			// JRE 优先级（2026-11-20）：启动卡 JavaHome > 自选路径（OfficialClientJavaHome）> 下拉选择（OfficialClientJreSelected）> 自动
 			string javaHome = ((card?.JavaHome ?? "") ?? "").Trim();
@@ -1515,7 +1901,7 @@ public sealed class RoleLauncherPanel
 					proxyPort,
 					(roleName.Length == 0) ? null : roleName,
 					accountIndex,
-					(clientRoot.Length == 0) ? null : clientRoot,
+					(launchRoot.Length == 0) ? null : launchRoot,
 					false,
 					null,
 					2,

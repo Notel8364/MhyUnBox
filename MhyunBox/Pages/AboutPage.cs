@@ -185,6 +185,45 @@ public sealed partial class AboutPage : Page
 					Margin = new Thickness(0.0, 6.0, 0.0, 0.0)
 				});
 			}
+			// 资助名单（2026-11-21）：致谢声明下方追加；名字来自仓库 funding 分支的 funding.txt。
+			// 幂等：重复构造/重新进入页面不会重复插入。
+			bool hasFunding = false;
+			foreach (object child in usage.Children)
+			{
+				if (child is TextBlock ft && (ft.Text ?? "") == "资助名单")
+				{
+					hasFunding = true;
+					break;
+				}
+			}
+			if (!hasFunding)
+			{
+				usage.Children.Add(new TextBlock
+				{
+					Text = "资助名单",
+					FontSize = 14.0,
+					FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+					Margin = new Thickness(0.0, 14.0, 0.0, 0.0)
+				});
+				usage.Children.Add(new TextBlock
+				{
+					Text = "（排名不分先后，感谢每一份支持）",
+					FontSize = 12.0,
+					Opacity = 0.65,
+					Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
+				});
+				var fundingNames = new TextBlock
+				{
+					Text = "加载中…",
+					FontSize = 13.0,
+					Opacity = 0.9,
+					TextWrapping = TextWrapping.Wrap,
+					IsTextSelectionEnabled = true,
+					Margin = new Thickness(0.0, 4.0, 0.0, 0.0)
+				};
+				usage.Children.Add(fundingNames);
+				_ = LoadFundingAsync(fundingNames);
+			}
 			}
 		}
 		catch (Exception ex3)
@@ -330,6 +369,23 @@ public sealed partial class AboutPage : Page
 			AppVersion.ApplyTo(AboutRoot);
 			RelayoutAbout(base.ActualWidth);
 		};
+	}
+
+	/// <summary>资助名单异步加载：远程分支读不到时显示本地兜底/空状态，不阻塞关于页。</summary>
+	private static async Task LoadFundingAsync(TextBlock target)
+	{
+		try
+		{
+			System.Collections.Generic.List<string> names = await FundingService.LoadAsync();
+			target.Text = (names.Count == 0)
+				? "暂无资助记录（欢迎通过爱发电支持）"
+				: string.Join("、", names);
+		}
+		catch (Exception ex)
+		{
+			target.Text = "资助名单加载失败";
+			LogHelper.DebugError(ex, "[资助名单] 显示失败");
+		}
 	}
 
 	private void Page_SizeChanged(object sender, SizeChangedEventArgs e)

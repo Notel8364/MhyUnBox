@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using MhyunBox.Settings;
@@ -309,6 +310,175 @@ public static class NexusEndpointService
 		}
 	}
 
+	/// <summary>机器人宿主客户端（挂号版）的版本目录；找不到返回空串。</summary>
+	public static string ResolveHostVersionDir(string serverHint)
+	{
+		try
+		{
+			string dir = ResolveClientDir(serverHint);
+			return (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir)) ? dir : "";
+		}
+		catch
+		{
+			return "";
+		}
+	}
+
+	/// <summary>
+	/// 会话多开页「启动挂号版」用的宿主目录：优先当前已有机器人监听端口所属的服务器，
+	/// 其次显示组里已启用的机器人卡；都没有才退回第一个挂号版（避免默认开成元素芝士）。
+	/// </summary>
+	public static string ResolveHostVersionDirForDisplay()
+	{
+		try
+		{
+			string gameDir = ResolveGameDir();
+			if (!string.IsNullOrWhiteSpace(gameDir))
+			{
+				List<Endpoint> all = Load(gameDir);
+				HashSet<int> active = new HashSet<int>(
+					ProxyCaptureService.ActiveBindingsSnapshot().Select(b => b.ListenPort));
+				foreach (Endpoint e in all)
+				{
+					if (!IsBotGroup(e) || e.ListenPort <= 0 || !active.Contains(e.ListenPort))
+					{
+						continue;
+					}
+					string activeDir = ResolveHostVersionDir(e.ServerHint);
+					if (activeDir.Length > 0)
+					{
+						return activeDir;
+					}
+				}
+				HashSet<string>? scope = DisplayScopeCardKeys();
+				foreach (Endpoint e in all)
+				{
+					if (!e.Enabled || !IsBotGroup(e) || e.ListenPort <= 0)
+					{
+						continue;
+					}
+					if (scope != null && !scope.Contains(e.Key))
+					{
+						continue;
+					}
+					string enabledDir = ResolveHostVersionDir(e.ServerHint);
+					if (enabledDir.Length > 0)
+					{
+						return enabledDir;
+					}
+				}
+			}
+		}
+		catch
+		{
+		}
+		return ResolveHostVersionDir("");
+	}
+
+	private static readonly object HostProcessLock = new object();
+	private static string _hostProcessDir = "";
+	private static bool _hostProcessRunning;
+	private static DateTime _hostProcessCheckedAt = DateTime.MinValue;
+
+	/// <summary>
+	/// 宿主挂号版是否在运行：读取 javaw/java 命令行里是否包含版本目录名。
+	/// 结果缓存 5 秒，避免会话多开页刷新时反复起 PowerShell。
+	/// </summary>
+	public static bool IsHostClientRunning(string versionDir)
+	{
+		if (string.IsNullOrWhiteSpace(versionDir))
+		{
+			return false;
+		}
+		lock (HostProcessLock)
+		{
+			if (string.Equals(_hostProcessDir, versionDir, StringComparison.OrdinalIgnoreCase)
+				&& (DateTime.Now - _hostProcessCheckedAt).TotalSeconds < 5)
+			{
+				return _hostProcessRunning;
+			}
+		}
+		bool running = false;
+		try
+		{
+			string name = Path.GetFileName(versionDir.TrimEnd('\\', '/'));
+			string script = "$n='" + name.Replace("'", "''")
+				+ "'; @(Get-CimInstance Win32_Process -Filter \"Name='javaw.exe' OR Name='java.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($n) }).Count";
+			ProcessStartInfo psi = new ProcessStartInfo("powershell.exe")
+			{
+				RedirectStandardOutput = true,
+				RedirectStandardError = true,
+				UseShellExecute = false,
+				CreateNoWindow = true
+			};
+			psi.ArgumentList.Add("-NoProfile");
+			psi.ArgumentList.Add("-NonInteractive");
+			psi.ArgumentList.Add("-WindowStyle");
+			psi.ArgumentList.Add("Hidden");
+			psi.ArgumentList.Add("-Command");
+			psi.ArgumentList.Add(script);
+			using Process? proc = Process.Start(psi);
+			if (proc != null)
+			{
+				string output = proc.StandardOutput.ReadToEnd();
+				if (!proc.WaitForExit(3000))
+				{
+					try
+					{
+						proc.Kill();
+					}
+					catch
+					{
+					}
+				}
+				running = output.Trim().Length > 0 && output.Trim() != "0";
+			}
+		}
+		catch
+		{
+			running = false;
+		}
+		lock (HostProcessLock)
+		{
+			_hostProcessDir = versionDir;
+			_hostProcessRunning = running;
+			_hostProcessCheckedAt = DateTime.Now;
+		}
+		return running;
+	}
+
+	/// <summary>启动机器人宿主客户端（挂号版）：版本目录直接作为 clientRoot。</summary>
+	public static OfficialClientLaunchResult LaunchHostClient(string serverHint)
+	{
+		OfficialClientLaunchResult result = new OfficialClientLaunchResult();
+		string dir = string.IsNullOrWhiteSpace(serverHint) ? ResolveHostVersionDirForDisplay() : ResolveHostVersionDir(serverHint);
+		if (dir.Length == 0)
+		{
+			result.Message = "未找到挂号版客户端目录（versions\\*挂号版）";
+			return result;
+		}
+		if (IsHostClientRunning(dir))
+		{
+			result.Ok = true;
+			result.Message = "挂号版已在运行";
+			return result;
+		}
+		int memMb = 2000;
+		string extraJvm = "";
+		try
+		{
+			memMb = MhyunBox.Pages.RoleLauncherPanel.ResolveMemoryMb();
+			extraJvm = MhyunBox.Pages.RoleLauncherPanel.ResolveJvmArgs();
+		}
+		catch
+		{
+		}
+		result = OfficialClientLauncher.Launch(0, null, -1, dir, false, null, 1, 0, 0L, null, null, null,
+			"-Xmx" + memMb + "M", extraJvm);
+		LogHelper.Log("[实例多开] 启动宿主挂号版：" + Path.GetFileName(dir) + " → " + result.Message);
+		return result;
+	}
+
 	/// <summary>枚举所有安装了交易行行情模组的客户端目录（market-prices 目录或 *交易行行情*.jar）。</summary>
 	private static List<string> EnumerateMarketClientDirs()
 	{
@@ -451,6 +621,27 @@ public static class NexusEndpointService
 		{
 			WrittenBotAccounts[BotAccountSlot(clientDir, user, listenPort)] = DateTime.Now;
 			MissingBotStrikes.Remove(BotAccountSlot(clientDir, user, listenPort));
+		}
+	}
+
+	/// <summary>
+	/// 本进程是否写过这张卡的机器人账号（= 用户手动启动过）。
+	/// 游戏重启/掉线后的自愈只恢复这类卡，避免总开关关闭时又把没启动的卡冒出来。
+	/// </summary>
+	private static bool WasBotAccountWritten(Endpoint e)
+	{
+		if (e == null || e.ListenPort <= 0)
+		{
+			return false;
+		}
+		string user = string.IsNullOrWhiteSpace(e.RoleName) ? e.User : e.RoleName;
+		if (string.IsNullOrWhiteSpace(user))
+		{
+			return false;
+		}
+		lock (WrittenBotAccounts)
+		{
+			return WrittenBotAccounts.ContainsKey(BotAccountSlot(ClientDirOf(e), user, e.ListenPort));
 		}
 	}
 
@@ -2118,10 +2309,12 @@ public static class NexusEndpointService
 				{
 					continue;
 				}
-				// 总开关关闭时只维护「用户手动启动、当前确实在监听」的机器人；
+				// 总开关关闭时只维护「用户手动启动过、当前确实在监听」的机器人；
 				// 不能再把已启用但没在跑的卡片写回客户端，否则关掉自启动后游戏一开还是会冒出一堆机器人。
-				if (!masterOn && !active.Any(b => b.ListenPort == e.ListenPort
-					&& (b.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase)))
+				if (!masterOn
+					&& !WasBotAccountWritten(e)
+					&& !active.Any(b => b.ListenPort == e.ListenPort
+						&& (b.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase)))
 				{
 					continue;
 				}
@@ -2166,25 +2359,26 @@ public static class NexusEndpointService
 			{
 				return 0;
 			}
-			// 总开关关闭 = 不再自动恢复任何机器人（包括这次游戏进服的补启动）。
-			if (!SettingsManager.Instance.AutoStartBotOnStartup)
-			{
-				return 0;
-			}
+			// 总开关只控制「程序启动时自启」；游戏掉线/重启后的自愈对用户手动启动过的卡始终生效，
+			// 否则关掉总开关后机器人一掉线就再也回不来。
+			bool masterOn = SettingsManager.Instance.AutoStartBotOnStartup;
 			List<Endpoint> all = Load(gameDir);
+			IReadOnlyList<ProxyCaptureService.ActiveBindingInfo> active = ProxyCaptureService.ActiveBindingsSnapshot();
+			HashSet<int> botPorts = active
+				.Where(b => (b.Tag ?? "").StartsWith("nexus-", StringComparison.OrdinalIgnoreCase))
+				.Select(b => b.ListenPort)
+				.ToHashSet();
 			List<Endpoint> targets = all
-				.Where(e => e.Enabled && e.AutoStart && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e)
+				.Where(e => e.Enabled && IsBotGroup(e) && e.ListenPort > 0 && InDisplayScope(e)
 					&& HasUsableAccount(e)
-					&& string.Equals(ClientDirOf(e), clientDir, StringComparison.OrdinalIgnoreCase))
+					&& string.Equals(ClientDirOf(e), clientDir, StringComparison.OrdinalIgnoreCase)
+					&& (masterOn ? e.AutoStart : (botPorts.Contains(e.ListenPort) || WasBotAccountWritten(e))))
 				.ToList();
 			if (targets.Count == 0)
 			{
 				return 0;
 			}
-			HashSet<int> bindingPorts = ProxyCaptureService.ActiveBindingsSnapshot()
-				.Select(b => b.ListenPort)
-				.ToHashSet();
-			List<Endpoint> missing = targets.Where(e => !bindingPorts.Contains(e.ListenPort)).ToList();
+			List<Endpoint> missing = targets.Where(e => !botPorts.Contains(e.ListenPort)).ToList();
 			if (missing.Count == 0)
 			{
 				LogHelper.Log("[游戏监听] 自启动机器人代理 " + targets.Count + " 个都已在监听，无需重启");
@@ -3261,6 +3455,12 @@ public static class NexusEndpointService
 		try
 		{
 			int removed = PruneBotAccountsByPorts(new List<Endpoint>(), new HashSet<int>(), clearAllLoopback: true);
+			// 总开关关闭 = 明确关停：手动启动记忆一并清空，避免游戏重启后又按「手动卡」把账号写回来。
+			lock (WrittenBotAccounts)
+			{
+				WrittenBotAccounts.Clear();
+				MissingBotStrikes.Clear();
+			}
 			LogHelper.Log("[实例多开] 已清理游戏内机器人代理卡片：账号/绑定 " + removed + " 条");
 			return removed;
 		}
